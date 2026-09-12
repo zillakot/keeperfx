@@ -195,7 +195,9 @@ impl Renderer {
         let mut parameters = [0; 16];
         for (bytes, value) in
             parameters
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
                 .zip([frame.width, frame.height, scale, 0])
         {
             bytes.copy_from_slice(&value.to_le_bytes());
