@@ -1,11 +1,12 @@
-mod frame;
-mod gpu;
+mod offline;
 mod report;
 mod sequence;
 
 use anyhow::{Context, Result, bail, ensure};
-use frame::Frame;
+use keeperfx_frame_replay::frame::{self, Frame};
+use offline::Replay;
 use serde_json::json;
+use std::time::Instant;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -71,11 +72,18 @@ fn run() -> Result<()> {
     if is_sequence {
         let entries = sequence::load(&input)?;
         fs::create_dir_all(&output)?;
+        let mut renderer = pollster::block_on(Replay::new())?;
         let mut results = Vec::new();
         for (index, entry) in entries.iter().enumerate() {
             let name = format!("frame-{index:04}");
-            let result = replay(&entry.frame, &entry.reference, &output.join(&name), scale)
-                .with_context(|| format!("sequence frame {index}"))?;
+            let result = replay(
+                &mut renderer,
+                &entry.frame,
+                &entry.reference,
+                &output.join(&name),
+                scale,
+            )
+            .with_context(|| format!("sequence frame {index}"))?;
             results.push(
                 json!({"index":index, "report":format!("{name}/report.html"),
                 "source":entry.frame, "reference":entry.reference,
@@ -87,7 +95,8 @@ fn run() -> Result<()> {
         let passed = results.iter().all(|result| result["passed"] == true);
         let summary = json!({"format":"KFXSEQ01", "source":input, "scale":scale,
             "passed":passed, "frame_count":results.len(), "frames":results,
-            "resource_reuse":"none; each frame uses a new GPU device and resources"});
+            "resource_reuse":"one renderer; textures and bindings retained until dimensions change",
+            "setup_ms": renderer.setup_ms});
         fs::write(
             output.join("sequence-report.json"),
             serde_json::to_vec_pretty(&summary)?,
@@ -100,7 +109,7 @@ fn run() -> Result<()> {
         fs::write(
             output.join("report.html"),
             format!(
-                r#"<!doctype html><meta charset="utf-8"><title>Frame sequence replay</title><h1>Sequence: {}</h1><p>Exact RGBA comparisons in manifest order. Each frame uses new GPU resources.</p><ol>{links}</ol>"#,
+                r#"<!doctype html><meta charset="utf-8"><title>Frame sequence replay</title><h1>Sequence: {}</h1><p>Exact RGBA comparisons in manifest order. One renderer retains GPU resources across frames.</p><ol>{links}</ol>"#,
                 if passed { "PASS" } else { "FAIL" }
             ),
         )?;
@@ -113,7 +122,8 @@ fn run() -> Result<()> {
         ensure!(passed, "sequence pixel comparison failed");
         return Ok(());
     }
-    let (changed, capture_mismatch) = replay(&input, &reference, &output, scale)?;
+    let mut renderer = pollster::block_on(Replay::new())?;
+    let (changed, capture_mismatch) = replay(&mut renderer, &input, &reference, &output, scale)?;
     ensure!(
         changed == 0 && capture_mismatch == 0,
         "pixel comparison failed"
@@ -121,7 +131,13 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn replay(input: &Path, reference: &Path, output: &Path, scale: u32) -> Result<(usize, usize)> {
+fn replay(
+    renderer: &mut Replay,
+    input: &Path,
+    reference: &Path,
+    output: &Path,
+    scale: u32,
+) -> Result<(usize, usize)> {
     let frame = Frame::load(input)?;
     let (rw, rh, reference_pixels) = frame::read_png(reference)?;
     ensure!(
@@ -130,11 +146,14 @@ fn replay(input: &Path, reference: &Path, output: &Path, scale: u32) -> Result<(
     );
     let (capture_mismatch, _, _) = report::compare(&reference_pixels, &frame.rgba())?;
     let reference_pixels = frame::scale_rgba(&reference_pixels, rw, rh, scale)?;
-    let rendered = pollster::block_on(gpu::render(&frame, scale))?;
+    let start = Instant::now();
+    let pixels = renderer.render(&frame, scale)?;
+    let render_readback_ms = start.elapsed().as_secs_f64() * 1000.0;
     let metadata = json!({
         "source": input.to_string_lossy(), "scale":scale,
-        "adapter":rendered.adapter,"backend":rendered.backend,
-        "setup_ms":rendered.setup_ms,"render_readback_ms":rendered.render_readback_ms,
+        "adapter":renderer.adapter,"backend":renderer.backend,
+        "setup_ms":renderer.setup_ms,"render_readback_ms":render_readback_ms,
+        "setup_scope":"shared renderer initialization; excluded from render_readback_ms",
         "capture_reference_different_pixels":capture_mismatch,
     });
     let changed = report::write(
@@ -142,7 +161,7 @@ fn replay(input: &Path, reference: &Path, output: &Path, scale: u32) -> Result<(
         rw * scale,
         rh * scale,
         &reference_pixels,
-        &rendered.pixels,
+        &pixels,
         metadata,
     )?;
     println!(

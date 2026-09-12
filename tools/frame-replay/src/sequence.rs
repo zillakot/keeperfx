@@ -47,7 +47,7 @@ fn parse(manifest: &Value, directory: &Path) -> Result<Vec<Entry>> {
         .collect()
 }
 
-fn fixture_frames() -> Vec<(&'static str, Frame)> {
+pub(crate) fn fixture_frames() -> Vec<(&'static str, Frame)> {
     let baseline = Frame::fixture();
     let mut palette = baseline.clone();
     palette.palette[17 * 4..17 * 4 + 3].copy_from_slice(&[240, 9, 31]);

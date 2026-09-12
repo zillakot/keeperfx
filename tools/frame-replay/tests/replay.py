@@ -51,6 +51,7 @@ def main():
         report = read(output / "sequence-report.json")
         assert report["passed"]
         assert report["frame_count"] == 7
+        assert report["resource_reuse"].startswith("one renderer;")
         assert [entry["index"] for entry in report["frames"]] == list(range(7))
         assert all(entry["different_pixels"] == 0 for entry in report["frames"])
         assert all(entry["capture_reference_different_pixels"] == 0 for entry in report["frames"])
@@ -73,6 +74,7 @@ def main():
         report = read(output / "sequence-report.json")
         assert not report["passed"]
         assert report["frame_count"] == 7
+        assert report["resource_reuse"].startswith("one renderer;")
         assert [entry["index"] for entry in report["frames"] if not entry["passed"]] == [2]
         changed = report["frames"][2]
         assert changed["capture_reference_different_pixels"] == expected

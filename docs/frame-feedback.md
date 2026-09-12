@@ -101,8 +101,10 @@ presentation ordinal, requested settings and content/engine hashes.
 
 Black difference pixels mean an exact match. A mismatch produces the report and
 returns exit code 1. The capture's palette expansion is also checked against SDL
-before reporting success. GPU setup and render/readback timings include CPU work
-and are not gameplay FPS or GPU-only benchmarks.
+before reporting success. `setup_ms` records shared renderer initialization once (the same value is repeated
+in each frame report). `render_readback_ms` includes that frame's resource resizing,
+uploads, drawing, readback and CPU work. Neither is gameplay FPS or a GPU-only
+benchmark, and these boundaries differ from the former per-frame setup timing.
 
 The output target is `Rgba8Unorm`: the palette already contains display-encoded
 bytes, so an sRGB render target would incorrectly encode them a second time.
@@ -155,10 +157,49 @@ through software Vulkan, and verifies deliberate index, palette and alpha
 mismatches. Captured game artwork remains under the ignored `out` directory and
 is not uploaded by CI.
 
-Sequence replay currently creates GPU resources separately for each frame. It
-proves ordered input/reference coverage and exact per-frame RGBA conversion;
-it does not yet test stale textures or palette uploads in a retained GPU context.
-Those checks belong to the subsequent reusable-renderer extraction.
+## Reusable renderer
+
+The Rust package exposes `frame::Frame` and `gpu::Renderer` as a library.
+The offline CLI creates one renderer per invocation, including all entries in a
+sequence. A future adapter can select a surface-compatible device and queue and
+pass them to `Renderer::new`; surface and window integration remain separate work.
+
+`Renderer::render(&Frame, scale)` copies the input bytes, submits GPU work and
+returns a borrowed `Rgba8Unorm` texture. It does not wait for completion or map a
+readback buffer. Submit any copy or sampling of that texture before the next
+render, which may overwrite it. The caller must serialize rendering and consumers
+on the supplied queue. The shader preserves transparent RGB and alpha without
+blending or a second sRGB conversion.
+
+The renderer owns the device, queue, pipeline, palette texture and uniform buffer.
+It retains the indexed texture and bind group until input dimensions change, and
+the output texture and view until scaled output dimensions change. Scale-only
+changes update the uniform and output; palette-only updates retain every resource.
+There is one current input and output allocation, with no cache of previous sizes.
+Dropped resources remain alive inside wgpu until submitted work using them
+completes; callers control the amount of work in flight. Offline replay waits for
+each frame, so it cannot accumulate an unbounded sequence of pending readbacks.
+
+The library validates dimensions, scales, palette/index lengths and device texture
+limits before changing retained resources. Rejected inputs leave the renderer
+usable. It owns the supplied device's error/loss callbacks and records the first
+GPU error as terminal. `check_status()` reports errors delivered so far; a future
+adapter must drive device polling and handle polling failures as well as late
+callbacks, then replace the device and renderer after failure. This extraction
+does not implement automatic device recovery or a live fallback.
+
+Only the binary's `offline` module allocates/maps readback buffers. It checks the
+device buffer limit, bounds completion waits and unmaps even on readback failure.
+GPU-dependent tests run explicitly in CI and can be run locally with:
+
+```sh
+cargo test --locked --manifest-path tools/frame-replay/Cargo.toml -- --ignored
+```
+
+Those tests check actual texture/bind-group identity, size and scale transitions
+through one renderer, pending-work resource lifetimes, exact RGBA restoration after
+rejected inputs, deliberate mismatches and terminal validation/device-loss errors.
+They require a GPU adapter; the regular unit tests remain GPU-independent.
 
 ## Validation scope
 
