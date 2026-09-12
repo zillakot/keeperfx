@@ -16,6 +16,7 @@ practical guide for the work you want to do.
 | [World-data reference](data_structure.md) | Things, creature controls, rooms, slabs, subtiles, columns and cubes |
 | [macOS development](macos.md) | Build and run the native Apple Silicon game with the required assets |
 | [Frame capture and Rust replay](frame-feedback.md) | Obtain quick visual feedback, compare exact pixels and interpret the timings |
+| [Performance baselines](performance-baselines.md) | Isolated native simulation, drawing and presentation measurements and their limits |
 | [Original game files](files_required_from_original_dk.txt) | Files to copy from an original Dungeon Keeper installation |
 | [Steam Deck development](steam-deck.md) | Existing Linux build and remote deployment workflow |
 

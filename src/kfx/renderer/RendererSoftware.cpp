@@ -1,6 +1,7 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererSoftware.h"
 #include "kfx/renderer/FrameCapture.h"
+#include "performance_capture.h"
 #include "bflib_video.h"       // PALETTE_COLORS, lbWindow, SDL, vsync_enabled
 #include "bflib_vidsurface.h"  // lbDrawSurface (goes away when the framebuffer migrates)
 #include "bflib_mouse.h"       // LbMouseOnBeginSwap/EndSwap (software cursor around present)
@@ -126,12 +127,23 @@ bool RendererSoftware::ScheduleScreenshot(const char* path, int fmt)
 
 void RendererSoftware::PresentFrame()
 {
-    if (lbDrawSurface == NULL || !ensure_present_target())
+    if (lbDrawSurface == NULL || !ensure_present_target()) {
+        performance_failed("presentation target unavailable");
         return;
+    }
+    if (performance_active()) {
+        int output_width = 0, output_height = 0, actual_vsync = -2;
+        SDL_GetRenderOutputSize(m_renderer, &output_width, &output_height);
+        SDL_GetRenderVSync(m_renderer, &actual_vsync);
+        performance_renderer_info(SDL_GetRendererName(m_renderer), SDL_GetCurrentVideoDriver(),
+            lbDrawSurface->w, lbDrawSurface->h, output_width, output_height, actual_vsync);
+    }
+    performance_begin(PerfPresentation);
     SDL_Surface* texture_surface;
     if (!SDL_LockTextureToSurface(m_texture, NULL, &texture_surface))
     {
         ERRORLOG("Present texture lock failed: %s", SDL_GetError());
+        performance_failed("texture lock failed");
         return;
     }
     LbMouseOnBeginSwap();
@@ -139,14 +151,19 @@ void RendererSoftware::PresentFrame()
     if (!SDL_BlitSurface(lbDrawSurface, NULL, texture_surface, NULL))
     {
         ERRORLOG("Present blit failed: %s", SDL_GetError());
+        performance_failed("palette blit failed");
         SDL_UnlockTexture(m_texture);
         LbMouseOnEndSwap();
         return;
     }
     CaptureFrameIfRequested(lbDrawSurface, texture_surface);
     SDL_UnlockTexture(m_texture);
-    SDL_RenderClear(m_renderer);
-    SDL_RenderTexture(m_renderer, m_texture, NULL, NULL);
-    SDL_RenderPresent(m_renderer);
+    if (!SDL_RenderClear(m_renderer)) performance_failed("SDL_RenderClear failed");
+    if (!SDL_RenderTexture(m_renderer, m_texture, NULL, NULL)) performance_failed("SDL_RenderTexture failed");
+    performance_begin(PerfPresentWait);
+    const bool presented = SDL_RenderPresent(m_renderer);
+    performance_end(PerfPresentWait);
     LbMouseOnEndSwap();
+    performance_end(PerfPresentation);
+    if (!presented) performance_failed("SDL_RenderPresent failed");
 }

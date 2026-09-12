@@ -135,7 +135,8 @@ Moving terrain, sprites or lighting to GPU drawing is a separate graphics projec
 not a prerequisite for using Rust. It needs scene data before rasterization, which
 the current framebuffer replay does not supply.
 
-Profile representative workloads first: a quiet level, a busy dungeon and
+Use the [performance baseline runner](../performance-baselines.md) to profile
+representative workloads first: a quiet level, a busy dungeon and
 possession, with recorded resolution, frame limits and VSync settings. Measure
 simulation, CPU drawing, presentation, memory and frame-time distributions.
 Choose a GPU rendering milestone only when those measurements justify it. Specify

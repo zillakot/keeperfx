@@ -53,6 +53,7 @@
 #include "scrcapt.h"
 #include "frontmenu_ingame_evnt.h"
 #include "engine_redraw.h"
+#include "performance_capture.h"
 #include "bflib_crash.h"
 #include "gui_topmsg.h"
 #include "front_easter.h"
@@ -499,7 +500,9 @@ void gameplay_loop_draw()
         game.delta_time = min(time_since_last_draw, 1.L);
         time_since_last_draw = 0;
         interpolate_time = min(max(game.process_turn_time, 0.L), 1.L);
+        performance_begin(PerfDraw);
         keeper_screen_redraw();
+        performance_end(PerfDraw);
     }
     keeper_wait_for_screen_focus();
     // Direct information/error messages
@@ -595,7 +598,11 @@ static void gameplay_loop_logic()
     }
     game.process_turn_time -= 1.0;
 
+    performance_prepare_turn();
+    if (exit_keeper) return;
+    performance_begin(PerfSimulation);
     update();
+    performance_end(PerfSimulation);
 
     frametime_end_measurement(Frametime_Logic);
 

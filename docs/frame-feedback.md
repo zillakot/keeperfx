@@ -5,6 +5,8 @@ description: Capture game frames headlessly and compare standalone Rust/wgpu out
 
 # Frame capture and Rust replay
 
+For live original-engine timing, use the separate [performance baseline runner](performance-baselines.md).
+
 The standalone Rust/wgpu tool replays the existing indexed framebuffer. It does
 not replace the game's renderer or change its artwork. Reference and replay must
 match every RGBA byte, including alpha.
