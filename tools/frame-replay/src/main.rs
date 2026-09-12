@@ -1,15 +1,26 @@
 mod frame;
 mod gpu;
 mod report;
+mod sequence;
 
 use anyhow::{Context, Result, bail, ensure};
 use frame::Frame;
 use serde_json::json;
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 fn run() -> Result<()> {
     let mut args = env::args_os().skip(1);
-    let input = args.next().context("usage: keeperfx-frame-replay FRAME.kfx --out DIRECTORY [--reference PNG] [--scale 1..8]\n       keeperfx-frame-replay --fixture DIRECTORY")?;
+    let input = args.next().context("usage: keeperfx-frame-replay FRAME.kfx --out DIRECTORY [--reference PNG] [--scale 1..8]\n       keeperfx-frame-replay --fixture DIRECTORY\n       keeperfx-frame-replay --sequence MANIFEST --out DIRECTORY [--scale 1..8]\n       keeperfx-frame-replay --sequence-fixture DIRECTORY")?;
+    if input == "--sequence-fixture" {
+        let directory = PathBuf::from(args.next().context("fixture output directory required")?);
+        ensure!(args.next().is_none(), "unexpected fixture arguments");
+        sequence::fixture(&directory)?;
+        println!("Created synthetic sequence in {}", directory.display());
+        return Ok(());
+    }
     if input == "--fixture" {
         let directory = PathBuf::from(args.next().context("fixture output directory required")?);
         ensure!(args.next().is_none(), "unexpected fixture arguments");
@@ -26,7 +37,12 @@ fn run() -> Result<()> {
         println!("Created synthetic fixture in {}", directory.display());
         return Ok(());
     }
-    let input = PathBuf::from(input);
+    let is_sequence = input == "--sequence";
+    let input = if is_sequence {
+        PathBuf::from(args.next().context("sequence manifest required")?)
+    } else {
+        PathBuf::from(input)
+    };
     let mut reference = input.with_file_name("reference.png");
     let mut output = None;
     let mut scale = 1;
@@ -35,6 +51,10 @@ fn run() -> Result<()> {
         if arg == "--out" {
             output = Some(PathBuf::from(value));
         } else if arg == "--reference" {
+            ensure!(
+                !is_sequence,
+                "sequence references are specified in its manifest"
+            );
             reference = PathBuf::from(value);
         } else if arg == "--scale" {
             scale = value.to_str().context("invalid scale")?.parse::<u32>()?;
@@ -47,8 +67,63 @@ fn run() -> Result<()> {
         !output.exists(),
         "output directory already exists; choose a new directory to preserve previous comparisons"
     );
-    let frame = Frame::load(&input)?;
-    let (rw, rh, reference_pixels) = frame::read_png(&reference)?;
+    ensure!((1..=8).contains(&scale), "scale must be between 1 and 8");
+    if is_sequence {
+        let entries = sequence::load(&input)?;
+        fs::create_dir_all(&output)?;
+        let mut results = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let name = format!("frame-{index:04}");
+            let result = replay(&entry.frame, &entry.reference, &output.join(&name), scale)
+                .with_context(|| format!("sequence frame {index}"))?;
+            results.push(
+                json!({"index":index, "report":format!("{name}/report.html"),
+                "source":entry.frame, "reference":entry.reference,
+                "different_pixels":result.0,
+                "capture_reference_different_pixels":result.1,
+                "passed":result == (0, 0)}),
+            );
+        }
+        let passed = results.iter().all(|result| result["passed"] == true);
+        let summary = json!({"format":"KFXSEQ01", "source":input, "scale":scale,
+            "passed":passed, "frame_count":results.len(), "frames":results,
+            "resource_reuse":"none; each frame uses a new GPU device and resources"});
+        fs::write(
+            output.join("sequence-report.json"),
+            serde_json::to_vec_pretty(&summary)?,
+        )?;
+        let links = results.iter().enumerate().map(|(index, result)| format!(
+            r#"<li><a href="frame-{index:04}/report.html">Frame {index}</a>: {} (GPU: {}, capture: {})</li>"#,
+            if result["passed"] == true { "PASS" } else { "FAIL" },
+            result["different_pixels"], result["capture_reference_different_pixels"]
+        )).collect::<String>();
+        fs::write(
+            output.join("report.html"),
+            format!(
+                r#"<!doctype html><meta charset="utf-8"><title>Frame sequence replay</title><h1>Sequence: {}</h1><p>Exact RGBA comparisons in manifest order. Each frame uses new GPU resources.</p><ol>{links}</ol>"#,
+                if passed { "PASS" } else { "FAIL" }
+            ),
+        )?;
+        println!(
+            "Sequence {}: {} frames; report: {}",
+            if passed { "PASS" } else { "FAIL" },
+            entries.len(),
+            output.join("report.html").display()
+        );
+        ensure!(passed, "sequence pixel comparison failed");
+        return Ok(());
+    }
+    let (changed, capture_mismatch) = replay(&input, &reference, &output, scale)?;
+    ensure!(
+        changed == 0 && capture_mismatch == 0,
+        "pixel comparison failed"
+    );
+    Ok(())
+}
+
+fn replay(input: &Path, reference: &Path, output: &Path, scale: u32) -> Result<(usize, usize)> {
+    let frame = Frame::load(input)?;
+    let (rw, rh, reference_pixels) = frame::read_png(reference)?;
     ensure!(
         (rw, rh) == (frame.width, frame.height),
         "reference dimensions do not match the captured frame"
@@ -63,7 +138,7 @@ fn run() -> Result<()> {
         "capture_reference_different_pixels":capture_mismatch,
     });
     let changed = report::write(
-        &output,
+        output,
         rw * scale,
         rh * scale,
         &reference_pixels,
@@ -81,11 +156,7 @@ fn run() -> Result<()> {
         capture_mismatch,
         output.join("report.html").display()
     );
-    ensure!(
-        changed == 0 && capture_mismatch == 0,
-        "pixel comparison failed"
-    );
-    Ok(())
+    Ok((changed, capture_mismatch))
 }
 
 fn main() {

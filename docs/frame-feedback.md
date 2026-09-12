@@ -44,6 +44,40 @@ Scales 1–8 use integer nearest-neighbor replication. Inputs and scaled outputs
 are limited to 8192 pixels per axis and 16 megapixels. Existing capture/report
 directories are rejected so an older result cannot be mistaken for a new one.
 
+## Reference cases
+
+The runner accepts `--scene dungeon|menu|possession`, `--campaign`, `--level`,
+`--resolution WIDTHxHEIGHT`, `--turn`, `--frames` and `--interval`. Defaults retain
+the original single dungeon frame at 640×480 on campaign `keeporig`, level 1,
+turn 20. Menu capture waits for the main menu; gameplay capture waits for the
+requested turn. Possession enters an owned creature through the engine's control
+path and waits for the creature view before capturing.
+
+For example, after building the engine:
+
+```sh
+python3 scripts/capture-frame.py --scene menu --resolution 800x600 --out out/reference-menu
+python3 scripts/capture-frame.py --scene dungeon --campaign keeporig --level 2 --resolution 1280x800 --frames 3 --interval 2 --out out/reference-dungeon
+python3 scripts/capture-frame.py --scene possession --frames 3 --out out/reference-possession
+scripts/preview-frame.sh out/reference-possession out/possession-comparison 2
+```
+
+`--frames` accepts 1–32; `--interval` accepts 1–60 eligible presentation calls.
+Presentation calls are distinct from simulation turns, and successive captures
+may contain identical pixels. Each sequence preserves its original order and
+actual capture metadata. The runner rejects a silently substituted resolution,
+incomplete sequences, and output outside the repository's ignored `out` tree.
+Scenes are selected from fresh temporary games; personal saves are never loaded.
+A campaign without a suitable owned creature cannot produce a possession case.
+The runner fixes its isolated settings to 20 turns per second and allows the
+scheduled duration plus 60 seconds for startup and capture, with a minimum timeout
+of 120 seconds and a maximum of 183 seconds for the accepted arguments.
+
+Palette animation may occur in captured game sequences, but those frames do not
+guarantee a palette-only transition. The synthetic sequence below provides that
+controlled case, including alpha transitions that the game's opaque palette
+cannot produce.
+
 ## Outputs
 
 | File | Purpose |
@@ -56,6 +90,12 @@ directories are rejected so an older result cannot be mistaken for a new one.
 | `comparison/comparison.png` | Reference on the left, GPU output on the right |
 | `comparison/difference.png` | Maximum RGBA error per pixel, amplified eight times in red |
 | `comparison/report.json`, `report.html` | Metrics and an offline viewer with view/zoom controls |
+
+With multiple frames, each `frame-NNNN/` directory contains the three capture
+files. Root `sequence.json` records their order; logs stay at the root. The preview
+script detects the sequence and writes one comparison report per frame plus a
+sequence summary. Each frame's metadata includes dimensions, view, turn,
+presentation ordinal, requested settings and content/engine hashes.
 
 Black difference pixels mean an exact match. A mismatch produces the report and
 returns exit code 1. The capture's palette expansion is also checked against SDL
@@ -75,9 +115,15 @@ Rows have no padding. Trailing bytes and invalid dimensions are rejected.
 
 The game capture hook is inactive unless `KFX_FRAME_CAPTURE` names a new output
 directory whose parent exists. `KFX_FRAME_CAPTURE_TURN` defaults to 20;
-`KFX_FRAME_CAPTURE_EXIT=1` exits after the single capture attempt. The Python
-runner sets these variables only for its headless child process and checks for
-complete output even if the engine returns success after a startup failure.
+`KFX_FRAME_CAPTURE_SCENE` defaults to `dungeon`, `KFX_FRAME_CAPTURE_COUNT` to 1,
+and `KFX_FRAME_CAPTURE_INTERVAL` to 1. `KFX_FRAME_CAPTURE_EXIT=1` exits after the
+capture attempt or sequence. The Python runner sets these variables only for its
+headless child process and checks for complete output even if the engine returns
+success after a startup failure.
+
+A sequence manifest has format `KFXSEQ01` and a `frames` array containing `frame`
+and `reference` paths relative to the manifest. Every entry pairs a frozen indexed
+frame with its exact RGBA reference; it is not an instruction to rerun gameplay.
 
 ## Checks without original assets
 
@@ -86,13 +132,31 @@ export CARGO_TARGET_DIR="$PWD/out/rust-target"
 cargo test --locked --manifest-path tools/frame-replay/Cargo.toml
 cargo run --locked --manifest-path tools/frame-replay/Cargo.toml -- --fixture out/fixture
 scripts/preview-frame.sh out/fixture out/fixture-check 3
+cargo run --locked --manifest-path tools/frame-replay/Cargo.toml -- --sequence-fixture out/sequence-fixture
+scripts/preview-frame.sh out/sequence-fixture out/sequence-check 2
+python3 -m unittest discover -s scripts/tests -v
 ```
 
-The synthetic fixture uses all palette indices, asymmetric rows and an odd width
-to exercise row alignment, orientation and scaling. CI runs parser/comparison
-tests, renders scales 1/2/3 through software Vulkan, and verifies that changing a
-single index causes a failed comparison. Captured game artwork remains under
-the ignored `out` directory and is not uploaded by CI.
+With a built engine and original assets, also verify failed live captures keep
+gameplay running unless `KFX_FRAME_CAPTURE_EXIT=1`:
+
+```sh
+KFX_TEST_ENGINE=out/macos/keeperfx KFX_TEST_GAME_DIR=out/game \
+  python3 -m unittest discover -s scripts/tests -v
+```
+
+The synthetic fixtures use all palette indices, asymmetric rows and odd widths
+to exercise row alignment, orientation and scaling. Ordered cases include
+palette-only changes, transparent entries with nonzero RGB, index changes and
+dimension changes. CI runs parser/comparison and capture-isolation tests, renders
+through software Vulkan, and verifies deliberate index, palette and alpha
+mismatches. Captured game artwork remains under the ignored `out` directory and
+is not uploaded by CI.
+
+Sequence replay currently creates GPU resources separately for each frame. It
+proves ordered input/reference coverage and exact per-frame RGBA conversion;
+it does not yet test stale textures or palette uploads in a retained GPU context.
+Those checks belong to the subsequent reusable-renderer extraction.
 
 ## Validation scope
 

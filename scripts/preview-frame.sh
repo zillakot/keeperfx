@@ -12,5 +12,10 @@ fi
 capture="$1"
 output="${2:-out/frame-preview-$(date +%Y%m%d-%H%M%S)}"
 scale="${3:-1}"
+if [[ -f "$capture/sequence.json" ]]; then
+    input=(--sequence "$capture/sequence.json")
+else
+    input=("$capture/frame.kfx" --reference "$capture/reference.png")
+fi
 cargo run --locked --manifest-path tools/frame-replay/Cargo.toml --release -- \
-    "$capture/frame.kfx" --reference "$capture/reference.png" --out "$output" --scale "$scale"
+    "${input[@]}" --out "$output" --scale "$scale"
