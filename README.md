@@ -46,6 +46,9 @@ or [Steam](https://store.steampowered.com/app/1996630/Dungeon_Keeper_Gold/).
 
 
 ## Development
+
+For this fork's native Apple Silicon build, see [macOS development](docs/macos.md).
+
 To get started with KeeperFX development, refer to the [Development Guide](https://github.com/dkfans/keeperfx/wiki/Building-KeeperFX) for 
 detailed instructions on setting up a development environment and building KeeperFX from source.
 

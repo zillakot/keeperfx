@@ -723,7 +723,7 @@ static const char * find_music_file_for_mod_list(short fgroup, const char * fnam
             continue;
 
         char mod_dir[256] = {0};
-        sprintf(mod_dir, "%s/%s", MODS_DIR_NAME, mod_item->name);
+        snprintf(mod_dir, sizeof(mod_dir), "%s/%s", MODS_DIR_NAME, mod_item->name);
 
         const char *fpath = prepare_file_path_mod(mod_dir, fgroup, fname);
         if (fpath[0] != 0 && LbFileExists(fpath))

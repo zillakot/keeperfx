@@ -1279,7 +1279,7 @@ void draw_mini_things_in_hand(long x, long y)
             scrpos_y = scrbase_y + scale_ui_value(14) * irow;
             draw_gui_panel_sprite_left(scrpos_x - 2, scrpos_y + scale_ui_value(shift_y), ps_units_per_px, spr_idx);
         } else
-        if ((thing->class_id == TCls_Object))
+        if (thing->class_id == TCls_Object)
         {
             spr_idx = get_object_model_stats(thing->model)->hand_icon;
             if (irow > 0)

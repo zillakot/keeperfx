@@ -26,7 +26,6 @@
 extern "C" {
 #endif
 /******************************************************************************/
-#pragma pack(1)
 
 struct TbLoadFiles;
 
@@ -52,7 +51,6 @@ struct TbLoadFilesV2 {
     LoadFilesUnpackFunc UnpackFunc;
 };
 
-#pragma pack()
 /******************************************************************************/
 const char * defaultModifyDataLoadFilename(const char *);
 ModifyDataLoadFnameFunc *LbDataLoadSetModifyFilenameFunction(ModifyDataLoadFnameFunc *newfunc);

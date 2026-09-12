@@ -171,17 +171,21 @@ else()
     pkg_check_modules(MINIZIP    REQUIRED IMPORTED_TARGET minizip)
     pkg_check_modules(ZLIB       REQUIRED IMPORTED_TARGET zlib)
 
-    # Not reliably packaged; use the prebuilt lin64 static libs (as linux.mk does).
-    kfx_fetch(astronomy "${KFX_DEPS_BASE}/20250418/astronomy-lin64.tar.gz")
-    kfx_fetch(centijson "${KFX_DEPS_BASE}/20250418/centijson-lin64.tar.gz")
-    kfx_fetch(enet6     "${KFX_DEPS_BASE}/20260213/enet6-lin64.tar.gz")
-    kfx_fetch(libcurl   "${KFX_DEPS_BASE}/20260310/libcurl-lin64.tar.gz")
+    if(APPLE)
+        include(MacDependencies)
+    else()
+        # Not reliably packaged; use the prebuilt lin64 static libs (as linux.mk does).
+        kfx_fetch(astronomy "${KFX_DEPS_BASE}/20250418/astronomy-lin64.tar.gz")
+        kfx_fetch(centijson "${KFX_DEPS_BASE}/20250418/centijson-lin64.tar.gz")
+        kfx_fetch(enet6     "${KFX_DEPS_BASE}/20260213/enet6-lin64.tar.gz")
+        kfx_fetch(libcurl   "${KFX_DEPS_BASE}/20260310/libcurl-lin64.tar.gz")
 
-    kfx_imported(astronomy_static "${D}/astronomy/libastronomy.a" "${D}/astronomy/include")
-    kfx_imported(centijson_static "${D}/centijson/libjson.a"      "${D}/centijson/include")
-    kfx_imported(enet6_static     "${D}/enet6/libenet6.a"         "${D}/enet6/include")
-    kfx_imported(curl_static      "${D}/libcurl/lib/libcurl.a"    "${D}/libcurl/include")
-    target_link_libraries(curl_static INTERFACE ssl crypto zstd)
+        kfx_imported(astronomy_static "${D}/astronomy/libastronomy.a" "${D}/astronomy/include")
+        kfx_imported(centijson_static "${D}/centijson/libjson.a"      "${D}/centijson/include")
+        kfx_imported(enet6_static     "${D}/enet6/libenet6.a"         "${D}/enet6/include")
+        kfx_imported(curl_static      "${D}/libcurl/lib/libcurl.a"    "${D}/libcurl/include")
+        target_link_libraries(curl_static INTERFACE ssl crypto zstd)
+    endif()
 
     add_library(centitoml OBJECT "${KFX_CENTITOML_SRC}/toml_api.c")
     target_link_libraries(centitoml PUBLIC centijson_static)
@@ -207,6 +211,9 @@ function(kfx_link_dependencies TARGET)
             PkgConfig::SPNG PkgConfig::MINIZIP PkgConfig::ZLIB
             astronomy_static centijson_static enet6_static curl_static
             centitoml
-            miniupnpc natpmp dl)
+            miniupnpc natpmp ${CMAKE_DL_LIBS})
+        if(APPLE)
+            target_link_libraries(${TARGET} PRIVATE Iconv::Iconv)
+        endif()
     endif()
 endfunction()

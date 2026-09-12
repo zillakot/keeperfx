@@ -71,6 +71,9 @@ enum GBoxFlags {
     GBoxF_InList = 0x02,
 };
 
+#pragma pack(push)
+#pragma pack()
+
 union GuiVariant {
     long lval;
     int32_t *lptr;
@@ -197,6 +200,8 @@ struct ToolTipBox {
       short pos_x;
       short pos_y;
 };
+
+#pragma pack(pop)
 
 struct FrontEndButtonData {
         unsigned short capstr_idx;

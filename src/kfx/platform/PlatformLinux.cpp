@@ -13,6 +13,10 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <fnmatch.h>
+#ifdef __APPLE__
+#include <filesystem>
+#include <mach-o/dyld.h>
+#endif
 #include "post_inc.h"
 
 static bool filespec_is_pattern(const char* filespec)
@@ -29,7 +33,14 @@ static std::string directory_from_filespec(const char* filespec)
     return ".";
 }
 
-const char* PlatformLinux::GetOSVersion() const { return "Linux"; }
+const char* PlatformLinux::GetOSVersion() const
+{
+#ifdef __APPLE__
+    return "macOS";
+#else
+    return "Linux";
+#endif
+}
 const void* PlatformLinux::GetImageBase() const { return nullptr; }
 const char* PlatformLinux::GetWineVersion() const { return nullptr; } // running native
 const char* PlatformLinux::GetWineHost() const { return nullptr; }    // running native
@@ -47,7 +58,7 @@ TbFileFind* PlatformLinux::FileFindFirst(const char* filespec, TbFileEntry* entr
                     continue;
                 }
                 const std::string file_path = path + "/" + de->d_name;
-                if (is_pattern && fnmatch(filespec, file_path.c_str(), FNM_FILE_NAME | FNM_CASEFOLD) != 0) {
+                if (is_pattern && fnmatch(filespec, file_path.c_str(), FNM_PATHNAME | FNM_CASEFOLD) != 0) {
                     continue;
                 }
                 struct stat sb;
@@ -91,7 +102,27 @@ void PlatformLinux::ShutdownSteam() {}
 /******************************************************************************/
 // Process entry point.
 
-extern "C" int main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
+#ifdef __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string path(size, '\0');
+    if (_NSGetExecutablePath(path.data(), &size) != 0) {
+        return 1;
+    }
+    std::error_code error;
+    auto executable = std::filesystem::canonical(path.c_str(), error);
+    if (error) {
+        return 1;
+    }
+    auto bundle = executable.parent_path().parent_path().parent_path();
+    if (bundle.extension() == ".app") {
+        std::filesystem::current_path(bundle.parent_path(), error);
+        if (error) {
+            return 1;
+        }
+    }
+#endif
     return kfxmain(argc, argv);
 }
