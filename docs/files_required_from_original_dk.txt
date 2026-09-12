@@ -1,36 +1,18 @@
-List of files required from original DK.
-------------------------------
+Original Dungeon Keeper files required by KeeperFX
+-------------------------------------------------
 
-This document lists files which need to be added
- to KeeperFX from original Dungeon Keeper CD.
+Copy these 14 files into a complete KeeperFX installation, preserving the
+relative paths below. The source can be an original CD or a supported digital
+installation. The native Mac engine uses the data files, not the Windows EXE.
 
-These files have been checked to be identical
- in the following versions of Dungeon Keeper:
-- Dungeon Keeper, english release
-- Dungeon Keeper, multilingual release
-- Dungeon Keeper Gold, english release
-- Dungeon Keeper Gold, multilingual release
-
-It is also confirmed that the following products
- do not contain all of these files:
-- The Deeper Dungeons addon
-- Ripped versions available on the Internet
-
-Files included in GOG version:
- http://www.gog.com/en/gamecard/dungeon_keeper
-can be used, but only those inside CD image file
-shipped with that version. The CD image has to be
-extracted or mounted to use these files.
-
-List of required files will follow:
+For edition-specific extraction instructions, see:
+https://keeperfx.net/wiki/launcher-application
 
 ./data/bluepal.dat
 ./data/bluepall.dat
 ./data/dogpal.pal
 ./data/hitpall.dat
 ./data/lightng.pal
-./data/main.pal
-./data/mapfadeg.dat
 ./data/redpal.col
 ./data/redpall.dat
 ./data/slab0-0.dat

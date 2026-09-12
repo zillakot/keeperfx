@@ -1,3 +1,8 @@
+---
+type: index
+description: Introduces KeeperFX and this personal fork for native Mac support, pixel-art preservation and incremental Rust graphics development.
+---
+
 # KeeperFX
 
 ![KeeperFX Logo](/docs/assets/readme-banner.png)
@@ -9,6 +14,19 @@
 
 [Visit our website](https://keeperfx.net) | [Join our Discord (Keeper Klan)](https://discord.gg/hE4p7vy2Hb)
 
+
+## This fork
+
+This is [zillakot/keeperfx](https://github.com/zillakot/keeperfx), a personal fork
+of [dkfans/keeperfx](https://github.com/dkfans/keeperfx) for learning and incremental
+modernization while preserving the original pixel art.
+
+The fork adds a native Apple Silicon development build and standalone Rust/wgpu
+frame-comparison tools. The running game still uses its C/C++ software renderer;
+the Rust tools provide development feedback, with no demonstrated gameplay speedup.
+
+Start with [Understanding KeeperFX](docs/architecture/project-overview.md), or use
+the [documentation index](docs/README.md) to find build, data and graphics guides.
 
 ## Intro
 KeeperFX (Dungeon Keeper Fan eXpansion) is an open-source project that aims to fix up, enhance and modernize 
@@ -47,7 +65,9 @@ or [Steam](https://store.steampowered.com/app/1996630/Dungeon_Keeper_Gold/).
 
 ## Development
 
-For this fork's native Apple Silicon build, see [macOS development](docs/macos.md).
+Use [macOS development](docs/macos.md) to build and run this fork on Apple Silicon.
+Use [frame capture and Rust replay](docs/frame-feedback.md) for offline graphics
+experiments. Commands in these guides run from the repository root.
 
 To get started with KeeperFX development, refer to the [Development Guide](https://github.com/dkfans/keeperfx/wiki/Building-KeeperFX) for 
 detailed instructions on setting up a development environment and building KeeperFX from source.
@@ -68,8 +88,10 @@ be added to the KeeperFX development channel.
 
 
 ## Tools
+
 | Tool | Usage |
 |---|---|
+| [Rust frame replay](docs/frame-feedback.md) | Compares captured game frames against an offscreen Rust/wgpu rendering. |
 | sndbanker | Makes usable ingame sounds from SFX archives. |
 | po2ngdat | Converts `.po` files (language) to `.dat`. |
 | png2bestpal | Decides the best in-game color palette for an image and creates a `.pal` file. |
@@ -87,7 +109,7 @@ KeeperFX could be further improved in these key areas:
 - Expand creative freedom for modders even further
 - Native cross-platform support
 - Improve code readability and maintainability
-- Lua support
+- Extend Lua scripting
 - ...
 
 
@@ -99,6 +121,10 @@ We welcome contributions from the community to improve and expand KeeperFX.
 
 
 ## Code Signing Policy
+
+The local Mac development app uses ad-hoc signing and requires Homebrew libraries.
+The policy below describes upstream Windows signing.
+
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
 
