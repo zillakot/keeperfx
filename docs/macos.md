@@ -1,5 +1,7 @@
 # macOS development build
 
+For offline graphics development, see [frame capture and Rust replay](frame-feedback.md).
+
 This fork targets Apple Silicon with a native CMake build. It requires Homebrew
 libraries at runtime; the CI artifact is an engine binary, not a standalone app.
 

@@ -1,5 +1,6 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererSoftware.h"
+#include "kfx/renderer/FrameCapture.h"
 #include "bflib_video.h"       // PALETTE_COLORS, lbWindow, SDL, vsync_enabled
 #include "bflib_vidsurface.h"  // lbDrawSurface (goes away when the framebuffer migrates)
 #include "bflib_mouse.h"       // LbMouseOnBeginSwap/EndSwap (software cursor around present)
@@ -142,6 +143,7 @@ void RendererSoftware::PresentFrame()
         LbMouseOnEndSwap();
         return;
     }
+    CaptureFrameIfRequested(lbDrawSurface, texture_surface);
     SDL_UnlockTexture(m_texture);
     SDL_RenderClear(m_renderer);
     SDL_RenderTexture(m_renderer, m_texture, NULL, NULL);

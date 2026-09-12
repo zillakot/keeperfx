@@ -1,0 +1,12 @@
+[package]
+name = "keeperfx-frame-replay"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+
+[dependencies]
+anyhow = "1"
+png = "0.18"
+pollster = "0.4"
+serde_json = "1"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "metal", "vulkan", "dx12", "wgsl"] }
