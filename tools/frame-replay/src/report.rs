@@ -11,7 +11,12 @@ pub fn compare(reference: &[u8], rendered: &[u8]) -> Result<(usize, u8, Vec<u8>)
     let mut changed = 0;
     let mut maximum = 0;
     let mut difference = Vec::with_capacity(reference.len());
-    for (a, b) in reference.chunks_exact(4).zip(rendered.chunks_exact(4)) {
+    for (a, b) in reference
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(rendered.as_chunks::<4>().0.iter())
+    {
         let error = a
             .iter()
             .zip(b)
