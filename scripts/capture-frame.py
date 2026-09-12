@@ -40,7 +40,7 @@ def clone_assets(source, destination, size=(640, 480)):
     settings = (source / "keeperfx.cfg").read_text()
     mode = f"{size[0]}x{size[1]}w32"
     values = {
-        "API_ENABLED": "FALSE", "DELTA_TIME": "OFF",
+        "API_ENABLED": "FALSE", "DELTA_TIME": "OFF", "TURNS_PER_SECOND": "20",
         "FRONTEND_RES": " ".join([mode] * 3),
         "INGAME_RES": " ".join([mode] * 3),
     }
@@ -104,8 +104,10 @@ def main():
         command = [str(engine), "-nointro", "-nosound", "-altinput", "-skipheartzoom"]
         if args.scene != "menu":
             command += ["-campaign", args.campaign, "-level", str(args.level)]
+        scheduled_turns = (0 if args.scene == "menu" else args.turn) + (args.frames - 1) * args.interval
+        timeout = max(120, 60 + (scheduled_turns + 19) // 20)
         result = subprocess.run(command, cwd=work, env=environment,
-                                capture_output=True, text=True, timeout=120)
+                                capture_output=True, text=True, timeout=timeout)
         log = (work / "keeperfx.log").read_text(errors="replace") if (work / "keeperfx.log").exists() else ""
         try:
             if result.returncode:

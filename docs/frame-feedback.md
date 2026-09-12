@@ -69,6 +69,9 @@ actual capture metadata. The runner rejects a silently substituted resolution,
 incomplete sequences, and output outside the repository's ignored `out` tree.
 Scenes are selected from fresh temporary games; personal saves are never loaded.
 A campaign without a suitable owned creature cannot produce a possession case.
+The runner fixes its isolated settings to 20 turns per second and allows the
+scheduled duration plus 60 seconds for startup and capture, with a minimum timeout
+of 120 seconds and a maximum of 183 seconds for the accepted arguments.
 
 Palette animation may occur in captured game sequences, but those frames do not
 guarantee a palette-only transition. The synthetic sequence below provides that
@@ -132,6 +135,14 @@ scripts/preview-frame.sh out/fixture out/fixture-check 3
 cargo run --locked --manifest-path tools/frame-replay/Cargo.toml -- --sequence-fixture out/sequence-fixture
 scripts/preview-frame.sh out/sequence-fixture out/sequence-check 2
 python3 -m unittest discover -s scripts/tests -v
+```
+
+With a built engine and original assets, also verify failed live captures keep
+gameplay running unless `KFX_FRAME_CAPTURE_EXIT=1`:
+
+```sh
+KFX_TEST_ENGINE=out/macos/keeperfx KFX_TEST_GAME_DIR=out/game \
+  python3 -m unittest discover -s scripts/tests -v
 ```
 
 The synthetic fixtures use all palette indices, asymmetric rows and odd widths

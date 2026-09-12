@@ -244,7 +244,9 @@ void CaptureFrameIfRequested(SDL_Surface* indexed, SDL_Surface* rgba)
         ERRORLOG("Frame capture failed in %s; use a new directory with an existing parent", options.directory);
         std::fprintf(stderr, "Frame capture failed in %s; use a new directory with an existing parent\n", options.directory);
         finished = true;
-        exit_keeper = 1;
+        if (options.exit_after) {
+            exit_keeper = 1;
+        }
     } else if (captured == options.count) {
         SYNCLOG("Captured %u frame(s) in %s", captured, options.directory);
         finished = true;
