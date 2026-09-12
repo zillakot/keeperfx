@@ -24,35 +24,14 @@ jobs:
           cargo fmt --manifest-path tools/frame-replay/Cargo.toml --check
           cargo clippy --locked --manifest-path tools/frame-replay/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml
-      - name: Replay synthetic fixture
+      - name: Check capture isolation and completeness
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Replay synthetic frames and sequences
         run: |
           cargo build --locked --manifest-path tools/frame-replay/Cargo.toml
-          replay=out/rust-target/debug/keeperfx-frame-replay
-          "$replay" --fixture out/fixture
-          for scale in 1 2 3; do
-            "$replay" out/fixture/frame.kfx --out "out/report-$scale" --scale "$scale"
-          done
-          python3 - <<'PY'
-          from pathlib import Path
-          frame = Path('out/fixture/frame.kfx')
-          data = bytearray(frame.read_bytes())
-          data[-1] ^= 1
-          frame.write_bytes(data)
-          PY
-          if "$replay" out/fixture/frame.kfx --out out/report-mismatch; then
-            echo "Expected the modified frame to fail comparison" >&2
-            exit 1
-          fi
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          report = json.loads(Path('out/report-mismatch/report.json').read_text())
-          assert not report['passed']
-          assert report['different_pixels'] == 1
-          assert report['capture_reference_different_pixels'] == 1
-          PY
+          python3 tools/frame-replay/tests/replay.py out/rust-target/debug/keeperfx-frame-replay out/synthetic-replay
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: synthetic-frame-reports
-          path: out/report-*
+          path: out/synthetic-replay

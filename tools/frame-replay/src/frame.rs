@@ -8,6 +8,7 @@ use std::{
 const HEADER: usize = 16 + 256 * 4;
 pub const MAX_PIXELS: u64 = 16 * 1024 * 1024;
 
+#[derive(Clone)]
 pub struct Frame {
     pub width: u32,
     pub height: u32,
