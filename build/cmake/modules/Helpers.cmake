@@ -13,6 +13,13 @@ function(apply_keeperfx_warnings TARGET)
             -Werror -Wno-format-truncation
             -march=x86-64 -fno-omit-frame-pointer -fmessage-length=0 -O3
             $<$<COMPILE_LANGUAGE:C>:-Wimplicit>)
+    elseif(APPLE)
+        target_compile_options(${TARGET} PRIVATE
+            -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare
+            -Wno-unknown-pragmas -Wno-missing-field-initializers -Wno-gnu-folding-constant -Wno-error=constant-conversion
+            -Wno-bitwise-instead-of-logical -Wno-c23-extensions
+            -fno-omit-frame-pointer
+            $<$<COMPILE_LANGUAGE:C>:-Wno-absolute-value>)
     else()
         target_compile_options(${TARGET} PRIVATE
             -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unknown-pragmas
@@ -28,7 +35,7 @@ function(apply_keeperfx_link_flags TARGET)
         target_link_options(${TARGET} PRIVATE
             -mwindows -Wl,--enable-auto-import -Wl,-Map,${TARGET}.map)
         target_link_libraries(${TARGET} PUBLIC -static stdc++ winpthread -dynamic)
-    else()
+    elseif(NOT APPLE)
         target_link_options(${TARGET} PRIVATE -g -rdynamic)
     endif()
 endfunction()

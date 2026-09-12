@@ -1,0 +1,32 @@
+name: Build macOS
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          brew install cmake ninja pkgconf sdl3 sdl3_image sdl3_mixer ffmpeg \
+            openal-soft luajit libspng minizip miniupnpc libnatpmp
+      - name: Build
+        run: |
+          openal_prefix=$(brew --prefix openal-soft)
+          export PKG_CONFIG_PATH="$openal_prefix/lib/pkgconfig"
+          cmake -S . -B out/macos -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DPACKAGE_SUFFIX=Mac-CI
+          cmake --build out/macos --target keeperfx --parallel 3
+          test "$(lipo -archs out/macos/keeperfx)" = arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keeperfx-macos-arm64-engine
+          path: out/macos/keeperfx

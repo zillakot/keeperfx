@@ -40,7 +40,9 @@
 #endif
 #if defined(BF_POSIX_CRASH)
 #include <execinfo.h>
+#ifdef __linux__
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 #include <dlfcn.h>
 #endif
