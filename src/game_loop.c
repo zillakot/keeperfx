@@ -584,8 +584,12 @@ static void gameplay_loop_logic()
 #endif // FUNCTESTING
     do_draw = display_should_be_updated_this_turn() || (!LbIsActive());
     poll_inputs();
-    input_eastegg();
-    input();
+    if (performance_requested() && game.game_kind == GKind_LocalGame) {
+        clear_packets();
+    } else {
+        input_eastegg();
+        input();
+    }
     exchange_packets();
     update_multiplayer_clock_adjust();
     update_gameplay_delta_time();
@@ -599,7 +603,7 @@ static void gameplay_loop_logic()
     game.process_turn_time -= 1.0;
 
     performance_prepare_turn();
-    if (exit_keeper) return;
+    if (performance_requested() && exit_keeper) return;
     performance_begin(PerfSimulation);
     update();
     performance_end(PerfSimulation);

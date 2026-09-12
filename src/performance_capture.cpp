@@ -211,6 +211,8 @@ void performance_renderer_info(const char* renderer, const char* driver, int wid
     p.output_width = output_width; p.output_height = output_height; p.vsync = vsync;
 }
 
+int performance_requested(void) { return profile().output && *profile().output; }
+
 int performance_active(void) { return profile().active; }
 
 void performance_failed(const char* reason)

@@ -15,7 +15,9 @@ python3 scripts/profile-game.py --scene possession --out out/perf-possession
 ```
 
 These commands open a native game window and exit after the bounded sample.
-Keep the window visible and avoid input during measurement. Other applications,
+Keep the window visible during measurement. In an opted-in local game the hook
+suppresses gameplay command input (including mouse-look) from startup through
+completion, while SDL event polling continues. Other applications,
 window occlusion, power mode, temperature and display configuration can affect
 results; record those conditions when comparing runs. The runner clones only
 assets into a temporary installation, creates empty saves, and records its own

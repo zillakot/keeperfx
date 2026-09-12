@@ -12,6 +12,7 @@ enum PerformanceScope {
     PerfScopeCount,
 };
 
+int performance_requested(void);
 int performance_active(void);
 void performance_failed(const char* reason);
 void performance_prepare_turn(void);
