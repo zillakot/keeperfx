@@ -51,15 +51,18 @@ will be small or quick.
 
 ## Next milestone: optional live Rust presentation
 
-First expand the fixtures enough to cover palettes, transparent entries, interface
-screens, different resolutions and possession. Then extract reusable rendering
-logic from [the replay tool](../../tools/frame-replay/src/gpu.rs) into a library
-that both the offline tool and a live adapter can use.
+Ordered fixtures now cover palette and alpha changes, transparent RGB, interface
+screens, resolutions and possession. The [reusable Rust renderer](../../tools/frame-replay/src/gpu.rs)
+retains its device, queue, pipeline and reusable textures across offline sequence
+frames. Its library submits rendering without readback; the offline comparison
+adapter handles readback separately. The [frame-feedback guide](../frame-feedback.md#reusable-renderer)
+defines ownership, reuse, limits and failure behavior.
 
-The current tool creates GPU resources and reads back the result for each run.
-The live path must instead retain the device, queue, surface and reusable textures
-across frames, and avoid routine GPU-to-CPU readback. Continue drawing the world
-with the existing CPU renderer and upload its indexed pixels and palette.
+The next step is a live adapter with surface/window ownership and lifecycle
+handling. Avoid routine GPU-to-CPU readback in that path. Continue drawing the
+world with the existing CPU renderer and upload its indexed pixels and palette.
+The retained offscreen renderer does not establish live presentation correctness
+or a performance improvement.
 
 Use the [renderer interfaces](../../src/kfx/renderer/IRenderer.h) and
 [SDL window implementation](../../src/kfx/platform/WindowSystemSDL.cpp) to define
