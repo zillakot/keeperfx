@@ -13,6 +13,7 @@ practical guide for the work you want to do.
 | --- | --- |
 | [Understanding KeeperFX](architecture/project-overview.md) | Engine structure, game loop, shared state, graphics, content and the role of Rust |
 | [Rust port plan](product/rust-port-plan.md) | Proposed migration phases, the next live presentation milestone and validation criteria |
+| [Audio modernization plan](product/audio-modernization-plan.md) | Sound remastering and replacement, Rust audio ownership, audition pack and compatibility criteria |
 | [World-data reference](data_structure.md) | Things, creature controls, rooms, slabs, subtiles, columns and cubes |
 | [macOS development](macos.md) | Build and run the native Apple Silicon game with the required assets |
 | [Frame capture and Rust replay](frame-feedback.md) | Obtain quick visual feedback, compare exact pixels and interpret the timings |
