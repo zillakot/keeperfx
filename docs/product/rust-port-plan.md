@@ -39,6 +39,11 @@ simulation equivalence.
 | 5. Migrate gameplay systems | Move rules and simulation one system at a time | Replayed command sequences produce equivalent gameplay state; save/load, Lua and multiplayer checks cover each migrated system |
 | 6. Move application ownership | Rust owns startup, game orchestration and the remaining game implementation | Agreed campaign, input, audio, rendering, save/load and multiplayer coverage; a distributable build without the KeeperFX C/C++ implementation |
 
+The [audio modernization plan](audio-modernization-plan.md) defines a parallel
+track for sound remastering and replacement, audio compatibility fixtures and
+gradual Rust ownership. Its initial audition pack can use the existing engine;
+live audio and graphics integration share explicit lifecycle checks.
+
 The order prioritizes our existing graphics work. A bounded utility can be tackled
 independently if platform integration delays phase 2. Later phases require their
 own scoped designs; success with frame replay is not evidence that the whole port
