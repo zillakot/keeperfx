@@ -27,6 +27,8 @@ the Rust tools provide development feedback, with no demonstrated gameplay speed
 
 Start with [Understanding KeeperFX](docs/architecture/project-overview.md), or use
 the [documentation index](docs/README.md) to find build, data and graphics guides.
+The [Rust port plan](docs/product/rust-port-plan.md) describes the proposed migration
+sequence and its validation criteria.
 
 ## Intro
 KeeperFX (Dungeon Keeper Fan eXpansion) is an open-source project that aims to fix up, enhance and modernize 

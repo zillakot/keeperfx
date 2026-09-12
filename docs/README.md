@@ -12,6 +12,7 @@ practical guide for the work you want to do.
 | Read this | For |
 | --- | --- |
 | [Understanding KeeperFX](architecture/project-overview.md) | Engine structure, game loop, shared state, graphics, content and the role of Rust |
+| [Rust port plan](product/rust-port-plan.md) | Proposed migration phases, the next live presentation milestone and validation criteria |
 | [World-data reference](data_structure.md) | Things, creature controls, rooms, slabs, subtiles, columns and cubes |
 | [macOS development](macos.md) | Build and run the native Apple Silicon game with the required assets |
 | [Frame capture and Rust replay](frame-feedback.md) | Obtain quick visual feedback, compare exact pixels and interpret the timings |
@@ -40,5 +41,5 @@ The [upstream development guide](https://github.com/dkfans/keeperfx/wiki/Buildin
 covers upstream build workflows. Additional inherited notes remain in this
 folder; use the guides above for this fork's Mac and Rust workflows.
 
-Track further work in [this fork's issues](https://github.com/zillakot/keeperfx/issues)
-and [pull requests](https://github.com/zillakot/keeperfx/pulls).
+Track implementation and validation in [this fork's pull requests](https://github.com/zillakot/keeperfx/pulls).
+Issues are currently disabled in the fork.

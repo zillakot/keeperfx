@@ -29,7 +29,9 @@ sprites and textures as the reference appearance.
 | Live gameplay rendering | The existing CPU software renderer draws the world; SDL presents it. Rust is not in this path. |
 | Performance | No gameplay speedup has been demonstrated by the replay tooling. It accelerates development feedback. |
 
-A future GPU world renderer or broader Rust migration would be additional work.
+The [Rust port plan](../product/rust-port-plan.md) proposes the migration sequence
+and validation criteria. A GPU world renderer or broader Rust migration would be
+additional work.
 Before pursuing performance changes, measure simulation, drawing and presentation
 separately. Reproducing the current pixels is a correctness milestone, not an FPS
 benchmark.
