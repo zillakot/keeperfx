@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KeeperFX frame comparison</title>
+<style>
+:root { color-scheme: dark; font: 16px system-ui; background: #17191c; color: #eee; }
+body { margin: 24px; }
+h1 { font-size: 24px; margin-bottom: 8px; }
+p { color: #b9c1cb; max-width: 85ch; line-height: 1.5; }
+.controls { display:flex; gap:24px; align-items:center; margin:24px 0; }
+select { padding:8px; margin-left:8px; }
+#summary { font-family:monospace; padding:16px; border:1px solid #566; border-radius:8px; }
+.panes { display:flex; gap:16px; }
+figure { margin:0; min-width:0; flex:1; }
+figcaption { margin-bottom:10px; font-weight:600; }
+.viewport { overflow:auto; max-height:75vh; background:#000; border:1px solid #444; }
+img { display:block; image-rendering:pixelated; }
+a { color:#a9ceff; }
+.pass { color:#89dda6; } .fail { color:#ff9696; }
+</style>
+<h1>KeeperFX frame comparison</h1>
+<p>SDL reference versus Rust/wgpu palette replay. A black difference image means every RGBA byte matches. This checks offscreen rendering, not the Mac window compositor.</p>
+<div id="summary"></div>
+<div class="controls">
+<label>View<select id="view"><option value="pair">Side by side</option><option value="reference">SDL reference</option><option value="gpu">Rust/wgpu</option><option value="difference">Difference ×8</option></select></label>
+<label>Zoom<select id="zoom"><option value="1">1× pixels</option><option value="2">2× pixels</option><option value="4">4× pixels</option><option value="fit">Fit to panel</option></select></label>
+<a href="report.json">Metrics</a><a href="comparison.png">Comparison PNG</a>
+</div>
+<div class="panes"><figure id="left"><figcaption>SDL reference</figcaption><div class="viewport"><img id="reference" src="reference.png" alt="SDL reference frame"></div></figure><figure id="right"><figcaption id="caption">Rust/wgpu</figcaption><div class="viewport"><img id="result" src="gpu.png" alt="GPU-rendered frame"></div></figure></div>
+<p id="timing"></p>
+<script>
+const report = REPORT_DATA;
+const summary = document.getElementById('summary');
+summary.className = report.passed ? 'pass' : 'fail';
+summary.textContent = `${report.passed ? 'PASS' : 'FAIL'} · ${report.different_pixels.toLocaleString()} / ${report.total_pixels.toLocaleString()} pixels differ · max channel error ${report.max_channel_error}/255 · ${report.width} × ${report.height} · ${report.adapter} (${report.backend})`;
+document.getElementById('timing').textContent = `GPU setup ${report.setup_ms.toFixed(1)} ms; render submission and CPU readback ${report.render_readback_ms.toFixed(1)} ms. These are one-shot wall-clock timings, not gameplay FPS or GPU-only timings. Capture/reference mismatches: ${report.capture_reference_different_pixels}.`;
+function refresh() {
+ const mode=document.getElementById('view').value, zoom=document.getElementById('zoom').value;
+ document.getElementById('left').hidden=mode!=='pair' && mode!=='reference';
+ document.getElementById('right').hidden=mode==='reference';
+ document.getElementById('result').src=mode==='difference' ? 'difference.png' : 'gpu.png';
+ document.getElementById('result').alt=mode==='difference' ? 'Amplified pixel differences' : 'GPU-rendered frame';
+ document.getElementById('caption').textContent=mode==='difference' ? 'Difference ×8 (including alpha)' : 'Rust/wgpu';
+ for(const img of document.querySelectorAll('img')) img.style.width=zoom==='fit' ? '100%' : `${report.width*Number(zoom)}px`;
+}
+document.getElementById('view').addEventListener('change',refresh);
+document.getElementById('zoom').addEventListener('change',refresh);
+refresh();
+</script>
+</html>

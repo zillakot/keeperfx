@@ -51,3 +51,4 @@ crash_log.txt
 debug.log
 .local/
 /keeperfx_vs2010
+/tools/frame-replay/target/
