@@ -4,6 +4,7 @@
 #include "creature_states.h"
 #include "game_legacy.h"
 #include "config_keeperfx.h"
+#include "packets.h"
 #include <SDL3/SDL.h>
 #include <array>
 #include <chrono>
@@ -116,6 +117,9 @@ void performance_prepare_turn(void)
 {
     Profile& p = profile();
     if (!p.output || !*p.output || p.finished) return;
+    if (quit_game || exit_keeper || get_local_packet()->action == PckA_ForceApplicationClose) {
+        fail(p, "game closed before capture completed"); return;
+    }
     if (!p.initialized) {
         p.initialized = true;
         const char* scene = std::getenv("KFX_PERF_SCENE");

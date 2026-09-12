@@ -584,9 +584,7 @@ static void gameplay_loop_logic()
 #endif // FUNCTESTING
     do_draw = display_should_be_updated_this_turn() || (!LbIsActive());
     poll_inputs();
-    if (performance_requested() && game.game_kind == GKind_LocalGame) {
-        clear_packets();
-    } else {
+    if (!performance_requested() || game.game_kind != GKind_LocalGame) {
         input_eastegg();
         input();
     }
