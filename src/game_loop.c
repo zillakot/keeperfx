@@ -53,6 +53,7 @@
 #include "scrcapt.h"
 #include "frontmenu_ingame_evnt.h"
 #include "engine_redraw.h"
+#include "performance_capture.h"
 #include "bflib_crash.h"
 #include "gui_topmsg.h"
 #include "front_easter.h"
@@ -499,7 +500,9 @@ void gameplay_loop_draw()
         game.delta_time = min(time_since_last_draw, 1.L);
         time_since_last_draw = 0;
         interpolate_time = min(max(game.process_turn_time, 0.L), 1.L);
+        performance_begin(PerfDraw);
         keeper_screen_redraw();
+        performance_end(PerfDraw);
     }
     keeper_wait_for_screen_focus();
     // Direct information/error messages
@@ -580,9 +583,11 @@ static void gameplay_loop_logic()
     }
 #endif // FUNCTESTING
     do_draw = display_should_be_updated_this_turn() || (!LbIsActive());
-    poll_inputs();
-    input_eastegg();
-    input();
+    if (!poll_inputs() && performance_requested()) force_application_close();
+    if (!performance_requested() || game.game_kind != GKind_LocalGame) {
+        input_eastegg();
+        input();
+    }
     exchange_packets();
     update_multiplayer_clock_adjust();
     update_gameplay_delta_time();
@@ -595,7 +600,11 @@ static void gameplay_loop_logic()
     }
     game.process_turn_time -= 1.0;
 
+    performance_prepare_turn();
+    if (performance_requested() && exit_keeper) return;
+    performance_begin(PerfSimulation);
     update();
+    performance_end(PerfSimulation);
 
     frametime_end_measurement(Frametime_Logic);
 
