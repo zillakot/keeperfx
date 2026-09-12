@@ -1,3 +1,8 @@
+---
+type: guide
+description: Capture game frames headlessly and compare standalone Rust/wgpu output against SDL without affecting personal saves.
+---
+
 # Frame capture and Rust replay
 
 The standalone Rust/wgpu tool replays the existing indexed framebuffer. It does
@@ -6,7 +11,8 @@ match every RGBA byte, including alpha.
 
 ## Quick feedback on macOS
 
-With the native build dependencies, Rust stable, and game data in `out/game`:
+Install the dependencies from [macOS development](macos.md) and Rust stable,
+and prepare game data in `out/game`. Run from the repository root:
 
 ```sh
 scripts/graphics-feedback.sh
@@ -87,3 +93,15 @@ to exercise row alignment, orientation and scaling. CI runs parser/comparison
 tests, renders scales 1/2/3 through software Vulkan, and verifies that changing a
 single index causes a failed comparison. Captured game artwork remains under
 the ignored `out` directory and is not uploaded by CI.
+
+## Validation scope
+
+[PR #2](https://github.com/zillakot/keeperfx/pull/2) records zero-difference Metal
+comparisons for a real game frame at 1× and 2×, synthetic alignment/alpha cases,
+and a deliberate one-pixel failure. CI separately checks synthetic frames through
+software Vulkan and builds the game on macOS, Linux and Windows.
+
+The recorded cached build/capture/replay run took about 7.5 seconds locally.
+That measures the developer feedback loop, not gameplay performance. See the
+[project overview](architecture/project-overview.md#purpose-of-this-fork) for the
+boundary between the live engine and this prototype.
