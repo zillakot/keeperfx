@@ -45,6 +45,7 @@ pub const TILED_IMAGE: u32 = 8;
 pub const MOVIE: u32 = 13;
 pub const MAP_VIEW: u32 = 14;
 pub const BITMAP: u32 = 15;
+pub const TRANSITION: u32 = 16;
 pub const OPAQUE: u32 = 256;
 const DRAW_SHADER: &str = concat!(
     include_str!("draw.wgsl"),
@@ -59,7 +60,9 @@ const DRAW_SHADER: &str = concat!(
     "\n",
     include_str!("draw_map_view.wgsl"),
     "\n",
-    include_str!("draw_trig.wgsl")
+    include_str!("draw_trig.wgsl"),
+    "\n",
+    include_str!("draw_transition.wgsl")
 );
 const MAX_COMMANDS: usize = 262_144;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);

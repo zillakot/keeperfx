@@ -15,6 +15,9 @@ struct KfxWgpuNativeResource {
     uint32_t width, height, pitch;
 };
 typedef void (*KfxWgpuNativeOracle)(uint8_t* pixels, uint32_t pitch, void* context);
+uint64_t kfx_wgpu_native_snapshot(const struct KfxGpolyTarget* target,
+    uint32_t width, uint32_t height, uint32_t pitch, uint8_t* checkpoint);
+void kfx_wgpu_native_snapshot_release(uint64_t snapshot);
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget* target,
     const struct KfxWgpuDrawCommand* command, const struct KfxWgpuNativeResource* source,
     const struct KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context);
@@ -39,6 +42,7 @@ public:
         uint64_t verified_batches = 0, verification_cpu_spans = 0;
         uint64_t resident_sequences = 0, resident_batches = 0, cpu_barriers = 0, target_alias_barriers = 0;
         uint64_t barrier_readbacks = 0, verification_readbacks = 0, invalid_frames = 0, missing_cpu_barriers = 0;
+        uint64_t transition_checkpoint_bytes = 0, transition_snapshot_copy_bytes = 0, transition_commands = 0;
         uint64_t native_commands = 0, verification_cpu_commands = 0, gpu_sprite_commands = 0;
         uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
@@ -60,6 +64,9 @@ public:
     void DetachPresenter();
     uint64_t ResidentTarget(const KfxGpolyTarget& target);
     void* Context() const { return m_context; }
+    uint64_t Snapshot(const KfxGpolyTarget& target, uint32_t width, uint32_t height,
+        uint32_t pitch, uint8_t* checkpoint);
+    void ReleaseSnapshot(uint64_t snapshot);
     int SubmitNative(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table,
         KfxWgpuNativeOracle oracle, void* oracle_context);
@@ -90,6 +97,7 @@ private:
     int Fail(const char* reason);
     void ReplayPending();
     bool RasterizePending(uint8_t* pixels, uint32_t pitch) const;
+    bool PrepareNativeTarget();
     bool ExecutePending(KfxWgpuNativeOracle oracle = nullptr, void* oracle_context = nullptr);
     bool SameTarget(const KfxGpolyTarget& target) const;
     bool Materialize();

@@ -103,6 +103,7 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
             destination = trig_sample(c, pixel, destination);
             continue;
         }
+        if c.operation.x == 16u { source = transition_sample(c, id.xy); }
         if c.operation.x == 15u { source = bitmap_sample(c, id.xy); }
         if c.operation.x == 14u { source = map_view_sample(c, id.xy, destination); }
         if c.operation.x == 13u { source = movie_sample(c, id.xy); }

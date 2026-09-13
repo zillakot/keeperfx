@@ -19,6 +19,7 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
 #include "engine_redraw.h"
+#include "kfx/renderer/software/WgpuTransition.h"
 
 #include "globals.h"
 #include "bflib_basics.h"
@@ -86,6 +87,7 @@ unsigned char smooth_on;
 static unsigned char * map_fade_ghost_table;
 static unsigned char * map_fade_dest;
 static unsigned char * map_fade_src;
+static uint64_t map_fade_src_snapshot, map_fade_dest_snapshot;
 static long draw_spell_cost;
 /******************************************************************************/
 static void draw_creature_view_icons(struct Thing* creatng)
@@ -257,7 +259,7 @@ void load_engine_window(TbGraphicsWindow *ewnd)
     local_state.engine_window_height = ewnd->height;
 }
 
-void map_fade(unsigned char *outbuf, unsigned char *srcbuf1, unsigned char *srcbuf2, unsigned char *fade_tbl, unsigned char *ghost_tbl, long a6, long const xmax, long const ymax, long a9)
+static void map_fade_native(unsigned char *outbuf, unsigned char *srcbuf1, unsigned char *srcbuf2, unsigned char *fade_tbl, unsigned char *ghost_tbl, long a6, long const xmax, long const ymax, long a9)
 {
     long ix;
     long iy;
@@ -344,6 +346,30 @@ void map_fade(unsigned char *outbuf, unsigned char *srcbuf1, unsigned char *srcb
     }
 }
 
+struct MapFadeOracle {
+    unsigned char *first, *second, *fade, *ghost;
+    long progress, width, height;
+};
+
+static void map_fade_oracle(uint8_t* pixels, uint32_t pitch, void* context)
+{
+    struct MapFadeOracle* o=(struct MapFadeOracle*)context;
+    map_fade_native(pixels,o->first,o->second,o->fade,o->ghost,o->progress,o->width,o->height,pitch);
+}
+
+void map_fade(unsigned char *outbuf, unsigned char *srcbuf1, unsigned char *srcbuf2,
+    unsigned char *fade_tbl, unsigned char *ghost_tbl, long progress, long width, long height, long pitch)
+{
+    struct MapFadeOracle o={srcbuf1,srcbuf2,fade_tbl,ghost_tbl,progress,width,height};
+    uint64_t a=srcbuf1==map_fade_dest ? map_fade_dest_snapshot : 0;
+    uint64_t b=srcbuf2==map_fade_src ? map_fade_src_snapshot : 0;
+    if (width >= 256 && width <= 640 && height > 0 && height <= 480 && pitch >= width && pitch <= 8192 &&
+        progress >= 0 && progress <= 32 && kfx_wgpu_map_fade(outbuf,pitch,width,height,srcbuf1,srcbuf2,
+            a,b,fade_tbl,ghost_tbl,progress,map_fade_oracle,&o)) return;
+    if (kfx_wgpu_native_cpu_barrier())
+        map_fade_native(outbuf,srcbuf1,srcbuf2,fade_tbl,ghost_tbl,progress,width,height,pitch);
+}
+
 void generate_map_fade_ghost_table(const char *fname, unsigned char *palette, unsigned char *ghost_table)
 {
     if (LbFileLoadAt(fname, ghost_table) != PALETTE_COLORS*PALETTE_COLORS)
@@ -366,44 +392,35 @@ void generate_map_fade_ghost_table(const char *fname, unsigned char *palette, un
     }
 }
 
-/**
- * Renders source and destination screens for map fading.
- * Stores them in given buffers.
- * @param fade_src
- * @param fade_dest
- * @param scanline Line width of the two given buffers.
- * @param height Height to be filled in given buffers.
- */
+static uint64_t capture_map_fade_buffer(unsigned char* destination, int pitch, int height)
+{
+    int width=MyScreenWidth/pixel_size;
+    struct KfxGpolyTarget target={lbDisplay.WScreen,lbDisplay.GraphicsScreenWidth,
+        lbDisplay.GraphicsScreenHeight,lbDisplay.GraphicsScreenWidth};
+    uint64_t snapshot=0;
+    if (kfx_wgpu_native_enabled() && width > 0 && width <= pitch && height > 0)
+        snapshot=kfx_wgpu_native_snapshot(&target,width,height,pitch,destination);
+    if (!snapshot && kfx_wgpu_native_cpu_barrier()) {
+        for (int i=0;i<height;i++)
+            memcpy(destination+(size_t)pitch*i,lbDisplay.WScreen+(size_t)lbDisplay.GraphicsScreenWidth*i,width);
+    }
+    return snapshot;
+}
+
 void prepare_map_fade_buffers(unsigned char *fade_src, unsigned char *fade_dest, int scanline, int height)
 {
+    kfx_wgpu_native_snapshot_release(map_fade_src_snapshot);
+    kfx_wgpu_native_snapshot_release(map_fade_dest_snapshot);
+    map_fade_src_snapshot=map_fade_dest_snapshot=0;
     struct PlayerInfo* player = get_my_player();
-    // render the 3D screen
     if (player->view_mode_restore == PVM_IsoWibbleView || player->view_mode_restore == PVM_IsoStraightView)
-      redraw_isometric_view();
+        redraw_isometric_view();
     else
-      redraw_frontview();
-    // Copy the screen to fade source temp buffer
-    int i;
-    int fadebuf_pos = 0;
-    for (i = 0; i < height; i++)
-    {
-        unsigned char* src = lbDisplay.WScreen + lbDisplay.GraphicsScreenWidth * i;
-        unsigned char* dst = &fade_src[fadebuf_pos];
-        fadebuf_pos += scanline;
-        memcpy(dst, src, MyScreenWidth/pixel_size);
-    }
-    // create the parchment screen
+        redraw_frontview();
+    map_fade_src_snapshot=capture_map_fade_buffer(fade_src,scanline,height);
     load_parchment_file();
     redraw_minimal_overhead_view();
-    // Copy the screen to fade destination temp buffer
-    fadebuf_pos = 0;
-    for (i = 0; i < height; i++)
-    {
-        unsigned char* src = lbDisplay.WScreen + lbDisplay.GraphicsScreenWidth * i;
-        unsigned char* dst = &fade_dest[fadebuf_pos];
-        fadebuf_pos += scanline;
-        memcpy(dst, src, MyScreenWidth/pixel_size);
-    }
+    map_fade_dest_snapshot=capture_map_fade_buffer(fade_dest,scanline,height);
 }
 
 long map_fade_in(long palette_fade_step)
@@ -591,7 +608,7 @@ void redraw_creature_view(void)
     performance_end(PerfDrawOverlays);
 }
 
-void smooth_screen_area(unsigned char *scrbuf, long x, long y, long w, long h, long scanln)
+static void smooth_screen_area_native(unsigned char *scrbuf, long x, long y, long w, long h, long scanln)
 {
     SYNCDBG(7,"Starting");
     unsigned char* lnbuf = scrbuf + scanln * y + x;
@@ -607,6 +624,22 @@ void smooth_screen_area(unsigned char *scrbuf, long x, long y, long w, long h, l
       }
       lnbuf += scanln;
     }
+}
+
+struct SmoothOracle { long x,y,w,h; };
+static void smooth_oracle(uint8_t* pixels, uint32_t pitch, void* context)
+{
+    struct SmoothOracle* o=(struct SmoothOracle*)context;
+    smooth_screen_area_native(pixels,o->x,o->y,o->w,o->h,pitch);
+}
+
+void smooth_screen_area(unsigned char *scrbuf, long x, long y, long w, long h, long scanln)
+{
+    struct SmoothOracle o={x,y,w,h};
+    if (x >= 0 && y >= 0 && w <= scanln && h <= lbDisplay.GraphicsScreenHeight &&
+        scanln > 0 && scanln <= 8192 && w > x+1 && h > y+1 &&
+        kfx_wgpu_smooth(scrbuf,scanln,lbDisplay.GraphicsScreenHeight,x,y,w,h,pixmap.ghost,smooth_oracle,&o)) return;
+    if (kfx_wgpu_native_cpu_barrier()) smooth_screen_area_native(scrbuf,x,y,w,h,scanln);
 }
 
 void redraw_isometric_view(void)

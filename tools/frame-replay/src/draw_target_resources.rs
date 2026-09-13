@@ -216,7 +216,10 @@ impl DrawRenderer {
                 "invalid snapshot command ABI"
             );
             ensure!(
-                c.kind == IMAGE && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
+                (c.kind == IMAGE || c.kind == TRANSITION)
+                    && c.blend <= 2
+                    && c.colour <= 255
+                    && c.transparent <= OPAQUE,
                 "invalid snapshot image operation"
             );
             let rectangle = bounds(c.x, c.y, c.width, c.height)?;
@@ -225,6 +228,92 @@ impl DrawRenderer {
                 .target_snapshots
                 .get(&c.source)
                 .context("unknown source snapshot")?;
+            if c.kind == TRANSITION {
+                ensure!(
+                    commands.len() == 1 && c.blend == 0 && c.transparent == OPAQUE,
+                    "transition requires one opaque command"
+                );
+                ensure!(
+                    c.x >= 0 && c.y >= 0 && c.width > 0 && c.height > 0,
+                    "invalid transition rectangle"
+                );
+                let table = self
+                    .resources
+                    .get(&c.table)
+                    .context("unknown transition table")?;
+                let source_offset = reserve(
+                    c.source,
+                    source.pitch as usize * source.height as usize,
+                    &mut batch.snapshots,
+                    &mut batch.asset_words,
+                    limit,
+                )?;
+                let table_offset = reserve(
+                    c.table,
+                    table.bytes.len(),
+                    &mut batch.tables,
+                    &mut batch.asset_words,
+                    limit,
+                )?;
+                let mut second_offset = 0;
+                let mut second_pitch = 0;
+                match c.source_x {
+                    0 => {
+                        ensure!(
+                            (256..=640).contains(&c.width)
+                                && (1..=480).contains(&c.height)
+                                && c.source_width == c.width
+                                && c.source_height == c.height
+                                && c.step_low <= 32
+                                && table.bytes.len() == 33 * 256 + 65536,
+                            "invalid map transition dimensions or tables"
+                        );
+                        let second_id = u64::from(c.start_low) | (u64::from(c.start_high) << 32);
+                        let second = self
+                            .target_snapshots
+                            .get(&second_id)
+                            .context("unknown second transition snapshot")?;
+                        ensure!(
+                            source.width >= c.width
+                                && source.height >= c.height
+                                && second.width >= c.width
+                                && second.height >= c.height,
+                            "transition source too small"
+                        );
+                        second_offset = reserve(
+                            second_id,
+                            second.pitch as usize * second.height as usize,
+                            &mut batch.snapshots,
+                            &mut batch.asset_words,
+                            limit,
+                        )?;
+                        second_pitch = second.pitch;
+                    }
+                    1 => {
+                        ensure!(
+                            table.bytes.len() == 65536
+                                && (c.x as u64 + c.width as u64) < source.width as u64
+                                && (c.y as u64 + c.height as u64) < source.height as u64,
+                            "invalid smoothing source or tables"
+                        );
+                    }
+                    _ => anyhow::bail!("unknown transition operation"),
+                }
+                batch.words.extend([TRANSITION, 0, 0, 0]);
+                batch.words.extend(rectangle);
+                batch.words.extend(clip);
+                batch
+                    .words
+                    .extend([source_offset, table_offset, source.pitch, 0]);
+                batch
+                    .words
+                    .extend([c.source_x, 0, c.source_width, c.source_height]);
+                batch
+                    .words
+                    .extend([second_offset, second_pitch, c.step_low, 0]);
+                batch.words.extend([OPAQUE, 0, 0, 0]);
+                continue;
+            }
             ensure!(
                 c.width > 0 && c.height > 0 && c.source_width > 0 && c.source_height > 0,
                 "empty snapshot image"

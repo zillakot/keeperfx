@@ -19,7 +19,10 @@ uint64_t kfx_wgpu_draw_target_snapshot(void *drawing, uint64_t target,
 int32_t kfx_wgpu_draw_target_snapshot_release(void *drawing, uint64_t snapshot,
     char *error, size_t capacity);
 
-/* IMAGE commands only: source is a snapshot; table is an ordinary CPU asset.
+/* IMAGE or single TRANSITION command: source is a snapshot; table is a CPU asset.
+ * TRANSITION source_x=0 selects map fade (start_low/high hold the second snapshot,
+ * step_low is progress 0..32; table is 33 fade rows followed by the ghost table).
+ * source_x=1 smooths the specified rectangle from the source snapshot and ghost table.
  * Uses IMAGE nearest sampling, clip, transparency and blend semantics. Overlap reads
  * immutable snapshot pixels, never earlier destination writes. Calls order with other
  * draw submissions. Invalid batches leave the target unchanged; terminal GPU failure

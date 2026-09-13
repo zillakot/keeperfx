@@ -17,6 +17,7 @@ jobs:
       KFX_GPOLY_FIXTURE: ${{ github.workspace }}/out/gpoly-fixture.bin
       KFX_GPOLY_TRIANGLE_FIXTURE: ${{ github.workspace }}/out/gpoly-tests/triangles.bin
       KFX_MINIMAP_FIXTURE: ${{ github.workspace }}/out/minimap-tests/minimap.bin
+      KFX_TRANSITION_FIXTURE: ${{ github.workspace }}/out/transition-tests/transitions.bin
       KFX_MAP_VIEW_FIXTURE: ${{ github.workspace }}/out/map-view-tests/map-views.bin
       KFX_MOVIE_FRAME_FIXTURE: ${{ github.workspace }}/out/movie-frame-tests/movie-frames.bin
       KFX_RAW_IMAGE_FIXTURE: ${{ github.workspace }}/out/raw-image-tests/raw-images.bin
@@ -93,6 +94,12 @@ jobs:
           cmake --build out/map-view-tests --parallel 2
           ctest --test-dir out/map-view-tests --output-on-failure
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_map_view_gpu -- --ignored --nocapture --test-threads=1
+      - name: Compare transitions with native drawing
+        run: |
+          cmake -S tests/transitions -B out/transition-tests
+          cmake --build out/transition-tests --parallel 2
+          ctest --test-dir out/transition-tests --output-on-failure
+          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_transition_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare movie frames with native drawing
         run: |
           cmake -S tests/movie-frames -B out/movie-frame-tests
