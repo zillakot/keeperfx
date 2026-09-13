@@ -137,6 +137,11 @@ bounds and preservation of existing output directories:
 python3 -m unittest discover -s scripts/tests -p test_audio_audition.py -v
 ```
 
+An isolated native OpenAL run loaded the mod through `[after_base]` without
+custom-load errors and shut down cleanly. Its idle scenario triggered none of
+the seven replacement families: this establishes loader/startup compatibility,
+not actual playback or listening evidence for the replacements.
+
 Listening acceptance is open. No headphone or speaker listening was performed
 by the producing agent, and passing signal/decoder tests does not establish
 artistic quality. Evaluate recognition, fatigue, impact timing, speech masking,

@@ -224,7 +224,7 @@
       "stderr": ""
     }
   ],
-  "focused_tests": 8,
+  "focused_tests": 9,
   "listening": "not performed; open acceptance gate",
-  "runtime": "tracked separately by reference worker"
+  "runtime": "Isolated native OpenAL after_base mod startup/shutdown completed without custom-load errors; idle scenario triggered none of the seven replaced families, so no replacement playback or listening claim"
 }

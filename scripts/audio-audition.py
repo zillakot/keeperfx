@@ -34,6 +34,8 @@ def rms(samples):
 
 
 def write_wav(path, samples, rate, width=2):
+    if not samples or any(not math.isfinite(x) or abs(x) > 1 for x in samples):
+        raise ValueError('WAV export requires finite nonempty signal within full scale')
     path.parent.mkdir(parents=True, exist_ok=True)
     scale = (1 << (8 * width - 1)) - 1
     pcm = b''.join(max(-scale, min(scale, round(x * scale))).to_bytes(width, 'little', signed=True)

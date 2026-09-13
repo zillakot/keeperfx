@@ -104,6 +104,14 @@ class AuditionTests(unittest.TestCase):
             self.assertTrue((root / 'private/local/ab/mentor_angry.wav').is_file())
             self.assertTrue((root / 'private/local/ab/heart_loop_three_cycles.wav').is_file())
 
+    def test_export_rejects_clipping_and_invalid_signal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'bad.wav'
+            for samples in ([], [1.01], [float('nan')], [float('inf')]):
+                with self.assertRaisesRegex(ValueError, 'full scale'):
+                    AUDIO.write_wav(target, samples, 48000)
+            self.assertFalse(target.exists())
+
     def test_existing_output_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
