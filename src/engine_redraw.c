@@ -88,6 +88,9 @@ static unsigned char * map_fade_ghost_table;
 static unsigned char * map_fade_dest;
 static unsigned char * map_fade_src;
 static uint64_t map_fade_src_snapshot, map_fade_dest_snapshot;
+static const unsigned char *map_fade_src_owner, *map_fade_dest_owner;
+static int map_fade_snapshot_width, map_fade_snapshot_height, map_fade_snapshot_pitch;
+static int map_fade_buffers_valid=1;
 static long draw_spell_cost;
 /******************************************************************************/
 static void draw_creature_view_icons(struct Thing* creatng)
@@ -360,9 +363,14 @@ static void map_fade_oracle(uint8_t* pixels, uint32_t pitch, void* context)
 void map_fade(unsigned char *outbuf, unsigned char *srcbuf1, unsigned char *srcbuf2,
     unsigned char *fade_tbl, unsigned char *ghost_tbl, long progress, long width, long height, long pitch)
 {
+    if (!map_fade_buffers_valid && (srcbuf1==map_fade_dest_owner || srcbuf2==map_fade_src_owner)) {
+        kfx_wgpu_native_invalidate_frame();
+        return;
+    }
     struct MapFadeOracle o={srcbuf1,srcbuf2,fade_tbl,ghost_tbl,progress,width,height};
-    uint64_t a=srcbuf1==map_fade_dest ? map_fade_dest_snapshot : 0;
-    uint64_t b=srcbuf2==map_fade_src ? map_fade_src_snapshot : 0;
+    int captured=width==map_fade_snapshot_pitch && width<=map_fade_snapshot_width && height<=map_fade_snapshot_height;
+    uint64_t a=captured && srcbuf1==map_fade_dest_owner ? map_fade_dest_snapshot : 0;
+    uint64_t b=captured && srcbuf2==map_fade_src_owner ? map_fade_src_snapshot : 0;
     if (width >= 256 && width <= 640 && height > 0 && height <= 480 && pitch >= width && pitch <= 8192 &&
         progress >= 0 && progress <= 32 && kfx_wgpu_map_fade(outbuf,pitch,width,height,srcbuf1,srcbuf2,
             a,b,fade_tbl,ghost_tbl,progress,map_fade_oracle,&o)) return;
@@ -400,9 +408,11 @@ static uint64_t capture_map_fade_buffer(unsigned char* destination, int pitch, i
     uint64_t snapshot=0;
     if (kfx_wgpu_native_enabled() && width > 0 && width <= pitch && height > 0)
         snapshot=kfx_wgpu_native_snapshot(&target,width,height,pitch,destination);
-    if (!snapshot && kfx_wgpu_native_cpu_barrier()) {
-        for (int i=0;i<height;i++)
-            memcpy(destination+(size_t)pitch*i,lbDisplay.WScreen+(size_t)lbDisplay.GraphicsScreenWidth*i,width);
+    if (!snapshot) {
+        if (kfx_wgpu_native_cpu_barrier()) {
+            for (int i=0;i<height;i++)
+                memcpy(destination+(size_t)pitch*i,lbDisplay.WScreen+(size_t)lbDisplay.GraphicsScreenWidth*i,width);
+        } else map_fade_buffers_valid=0;
     }
     return snapshot;
 }
@@ -412,6 +422,10 @@ void prepare_map_fade_buffers(unsigned char *fade_src, unsigned char *fade_dest,
     kfx_wgpu_native_snapshot_release(map_fade_src_snapshot);
     kfx_wgpu_native_snapshot_release(map_fade_dest_snapshot);
     map_fade_src_snapshot=map_fade_dest_snapshot=0;
+    map_fade_buffers_valid=1;
+    map_fade_src_owner=fade_src; map_fade_dest_owner=fade_dest;
+    map_fade_snapshot_width=MyScreenWidth/pixel_size;
+    map_fade_snapshot_height=height; map_fade_snapshot_pitch=scanline;
     struct PlayerInfo* player = get_my_player();
     if (player->view_mode_restore == PVM_IsoWibbleView || player->view_mode_restore == PVM_IsoStraightView)
         redraw_isometric_view();
@@ -636,7 +650,8 @@ static void smooth_oracle(uint8_t* pixels, uint32_t pitch, void* context)
 void smooth_screen_area(unsigned char *scrbuf, long x, long y, long w, long h, long scanln)
 {
     struct SmoothOracle o={x,y,w,h};
-    if (x >= 0 && y >= 0 && w <= scanln && h <= lbDisplay.GraphicsScreenHeight &&
+    if (x >= 0 && x < scanln && y >= 0 && y < lbDisplay.GraphicsScreenHeight &&
+        w <= scanln && h <= lbDisplay.GraphicsScreenHeight &&
         scanln > 0 && scanln <= 8192 && w > x+1 && h > y+1 &&
         kfx_wgpu_smooth(scrbuf,scanln,lbDisplay.GraphicsScreenHeight,x,y,w,h,pixmap.ghost,smooth_oracle,&o)) return;
     if (kfx_wgpu_native_cpu_barrier()) smooth_screen_area_native(scrbuf,x,y,w,h,scanln);

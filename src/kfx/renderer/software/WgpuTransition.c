@@ -47,7 +47,7 @@ int kfx_wgpu_smooth(uint8_t* dst, int pitch, int height, int x, int y, int right
     const uint8_t* ghost, KfxWgpuNativeOracle oracle, void* context)
 {
     if (!kfx_wgpu_native_enabled() || !dst || !ghost || !oracle || pitch < 1 || pitch > 8192 ||
-        height < 1 || height > 8192 || x < 0 || y < 0 || right > pitch || bottom > height ||
+        height < 1 || height > 8192 || x < 0 || x >= pitch || y < 0 || y >= height || right > pitch || bottom > height ||
         right <= x+1 || bottom <= y+1 || overlap(dst,(size_t)pitch*height,ghost,65536)) return 0;
     struct KfxGpolyTarget target={dst,pitch,height,pitch};
     uint64_t snapshot=kfx_wgpu_native_snapshot(&target,pitch,height,pitch,NULL);

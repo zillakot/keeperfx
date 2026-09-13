@@ -7,8 +7,10 @@
 #include <vector>
 #define SYNCDBG(...) ((void)0)
 static int32_t xtab[640][2],ytab[480][2];
-static uint8_t *map_fade_src,*map_fade_dest;
 static uint64_t map_fade_src_snapshot,map_fade_dest_snapshot;
+static const uint8_t *map_fade_src_owner,*map_fade_dest_owner;
+static int map_fade_snapshot_width,map_fade_snapshot_height,map_fade_snapshot_pitch;
+static int map_fade_buffers_valid=1;
 static struct { int GraphicsScreenHeight; } lbDisplay;
 static struct { uint8_t ghost[65536]; } pixmap;
 using std::min;
@@ -42,9 +44,10 @@ int main()
         auto snapshot=bridge.Snapshot(target,320,200,320,first.data());
         assert(snapshot);
         if(resident)assert(bridge.GetCounters().bridge_initial_index_bytes==initial);
-        map_fade_dest=first.data();map_fade_dest_snapshot=snapshot;
+        map_fade_dest_owner=first.data();map_fade_dest_snapshot=snapshot;
+        map_fade_snapshot_width=map_fade_snapshot_pitch=320;map_fade_snapshot_height=200;
         bridge.BeginResident();paint(bridge,target,211);
-        map_fade_src=second.data();map_fade_src_snapshot=bridge.Snapshot(target,320,200,320,second.data());
+        map_fade_src_owner=second.data();map_fade_src_snapshot=bridge.Snapshot(target,320,200,320,second.data());
         assert(map_fade_src_snapshot);
         for(auto pixel:first)assert(pixel==17);
         for(auto pixel:second)assert(pixel==211);
@@ -74,6 +77,12 @@ int main()
         assert(bridge.Failed() && !bridge.FrameValid() && !bridge.CpuBarrier());
         for(auto pixel:screen)assert(pixel==81);
         bridge.ReleaseSnapshot(snapshot);
+        bridge.FullRedraw();assert(bridge.FrameValid());
+        map_fade_buffers_valid=0;map_fade_src_owner=checkpoint.data();
+        map_fade(screen.data(),checkpoint.data(),checkpoint.data(),fade,pixmap.ghost,16,320,200,327);
+        assert(!bridge.FrameValid() && !bridge.CpuBarrier());
+        map_fade_buffers_valid=1;
+        bridge.FullRedraw();assert(bridge.FrameValid());
     }
     std::puts("real bridge snapshots, retained transitions, smoothing, residency, oracle and failure passed");
 }

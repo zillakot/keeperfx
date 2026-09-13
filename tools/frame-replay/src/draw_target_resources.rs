@@ -111,7 +111,7 @@ impl DrawRenderer {
         self.target_resource_counters
     }
 
-    /// IMAGE sources are GPU snapshots; blend tables are ordinary immutable CPU resources.
+    /// IMAGE and single TRANSITION sources are GPU snapshots; tables are CPU resources.
     pub fn submit_target_images(&mut self, target: u64, commands: &[Command]) -> Result<()> {
         self.check_status()?;
         let (width, height) = self.target_dimensions(target)?;

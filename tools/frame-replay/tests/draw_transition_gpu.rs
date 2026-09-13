@@ -134,6 +134,22 @@ fn actual_native_transitions() -> Result<()> {
             d.submit_target_images(target, &[command, command]).is_err(),
             "dependent batch accepted"
         );
+        for change in 0..6 {
+            let mut invalid = command;
+            match change {
+                0 => invalid.blend = 1,
+                1 => invalid.abi_version = 2,
+                2 => invalid.table = a,
+                3 => invalid.transparent = 0,
+                4 => invalid.reserved[1] = 1,
+                _ if command.source_x == 0 => invalid.step_low = 33,
+                _ => invalid.width = width,
+            }
+            ensure!(
+                d.submit_target_images(target, &[invalid]).is_err(),
+                "malformed transition accepted"
+            );
+        }
         ensure!(
             d.readback(target)? == actual,
             "rejected transition changed target"

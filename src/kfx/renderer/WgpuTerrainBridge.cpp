@@ -16,6 +16,9 @@ extern "C" int kfx_wgpu_native_enabled(void)
 extern "C" int kfx_wgpu_native_cpu_barrier(void)
 { return active_bridge == nullptr || active_bridge->IsOracleActive() || active_bridge->CpuBarrier(); }
 
+extern "C" void kfx_wgpu_native_invalidate_frame(void)
+{ if (active_bridge && !active_bridge->IsOracleActive()) active_bridge->InvalidateFrame(); }
+
 extern "C" void kfx_wgpu_native_flush(void)
 { if (active_bridge != nullptr && !active_bridge->IsOracleActive()) active_bridge->Flush(); }
 
@@ -194,6 +197,12 @@ bool WgpuTerrainBridge::CpuBarrier()
     m_resident_lease = false;
     m_gpu_valid = false;
     return valid;
+}
+
+void WgpuTerrainBridge::InvalidateFrame()
+{
+    if (!m_frame_invalid) ++m_counts.invalid_frames;
+    m_frame_invalid = true;
 }
 
 void WgpuTerrainBridge::FullRedraw()
@@ -716,6 +725,7 @@ extern "C" int kfx_wgpu_native_shadow(const KfxGpolyTarget*, const KfxWgpuDrawCo
 extern "C" int kfx_wgpu_native_enabled(void) { return 0; }
 extern "C" int kfx_wgpu_native_cpu_barrier(void) { return 1; }
 extern "C" void kfx_wgpu_native_flush(void) {}
+extern "C" void kfx_wgpu_native_invalidate_frame(void) {}
 extern "C" void kfx_wgpu_terrain_boundary(int) {}
 extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
     const KfxWgpuNativeResource*, const KfxWgpuNativeResource*, KfxWgpuNativeOracle, void*) { return 0; }

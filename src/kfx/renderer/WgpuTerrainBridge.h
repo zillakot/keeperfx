@@ -8,6 +8,7 @@ extern "C" {
 void kfx_wgpu_terrain_boundary(int allow_terrain);
 int kfx_wgpu_native_enabled(void);
 int kfx_wgpu_native_cpu_barrier(void);
+void kfx_wgpu_native_invalidate_frame(void);
 void kfx_wgpu_native_flush(void);
 struct KfxWgpuNativeResource {
     const uint8_t* bytes;
@@ -56,6 +57,7 @@ public:
     // CPU pixels are unavailable inside a resident lease until this succeeds.
     bool CpuBarrier();
     void BeginResident();
+    void InvalidateFrame();
     bool FrameValid() const { return !m_frame_invalid; }
     // Call only after a successful full CPU overwrite, before the next frame draws.
     void FullRedraw();

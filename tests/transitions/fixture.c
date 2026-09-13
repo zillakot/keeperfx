@@ -7,12 +7,14 @@
 #define min(a,b) ((a)<(b)?(a):(b))
 #define SYNCDBG(...) ((void)0)
 static int32_t xtab[640][2],ytab[480][2];
-static uint8_t *map_fade_src,*map_fade_dest;
 static uint64_t map_fade_src_snapshot,map_fade_dest_snapshot;
+static const uint8_t *map_fade_src_owner,*map_fade_dest_owner;
+static int map_fade_snapshot_width,map_fade_snapshot_height,map_fade_snapshot_pitch;
+static int map_fade_buffers_valid=1;
 static struct { uint8_t *WScreen; int GraphicsScreenWidth,GraphicsScreenHeight; } lbDisplay;
-static struct { uint8_t ghost[65536]; } pixmap;
-static int MyScreenWidth,pixel_size=1;
-struct PlayerInfo { int view_mode_restore; };
+static struct { uint8_t ghost[65536],fade_tables[33*256]; } pixmap;
+static int MyScreenWidth,MyScreenHeight,pixel_size=1;
+struct PlayerInfo { int view_mode_restore,view_mode,instance_num,instance_remain_turns,id_number,allocflags; };
 static struct PlayerInfo player;
 enum { PVM_IsoWibbleView=1,PVM_IsoStraightView=2 };
 static unsigned views,loads,parchments;
@@ -27,12 +29,13 @@ static void redraw_minimal_overhead_view(void){parchments++;memset(lbDisplay.WSc
 struct Snapshot { uint8_t* pixels; unsigned width,height,pitch; };
 static struct Snapshot snapshots[8];
 static FILE* output;
-static unsigned count,enabled=1,accepted=1,barrier=1,oracle_calls;
+static unsigned count,enabled=1,accepted=1,barrier=1,oracle_calls,invalid_frames,frame_valid=1;
 static uint8_t initial[MAX],expected[MAX],screen[MAX],first[MAX],second[MAX],fade[33*256];
 static int fw,fh,fp,progress,sx,sy,sw,sh;
 static void word(uint32_t n){uint8_t b[]={n,n>>8,n>>16,n>>24};if(fwrite(b,1,4,output)!=4)abort();}
 int kfx_wgpu_native_enabled(void){return enabled;}
 int kfx_wgpu_native_cpu_barrier(void){return barrier;}
+void kfx_wgpu_native_invalidate_frame(void){invalid_frames++;frame_valid=0;}
 uint64_t kfx_wgpu_native_snapshot(const struct KfxGpolyTarget* target,uint32_t width,uint32_t height,uint32_t pitch,uint8_t* checkpoint)
 {
     if(!accepted)return 0;
@@ -88,6 +91,56 @@ static void fallback(void(*draw)(void))
     }
     free(reference);
 }
+#define PALETTE_COLORS 256
+static uint8_t poly_pool[65536+128000],engine_palette[768];
+static uint8_t *map_fade_src,*map_fade_dest,*map_fade_ghost_table;
+static unsigned ghost_generations,mode_changes,engine_changes,menu_changes,maintains;
+static void generate_map_fade_ghost_table(const char* name,uint8_t* palette,uint8_t* table)
+{(void)name;(void)palette;ghost_generations++;for(unsigned i=0;i<65536;i++)table[i]=(i*3+(i>>8)*7)&255;}
+#include "progress.inc"
+enum {PVT_MapScreen=3,PVM_ParchmentView=4,PVM_ParchFadeIn=5,PVM_ParchFadeOut=6,PI_Unset=0,PlaF_MouseInputDisabled=1,PLAYER_INSTANCES_COUNT=3};
+static int my_player_number;
+static struct {int tooltips_on;} settings;
+static struct {int tooltips_restore,status_menu_restore;} local_state;
+static int is_my_player(struct PlayerInfo* p){return p==&player;}
+static struct PlayerInfo* get_player(int n){(void)n;return &player;}
+static void set_player_mode(struct PlayerInfo* p,int mode){if(mode!=PVT_MapScreen)abort();p->view_mode=PVM_ParchmentView;mode_changes++;}
+static void set_engine_view(struct PlayerInfo* p,int view){p->view_mode=view;engine_changes++;}
+static void toggle_status_menu(int visible){(void)visible;menu_changes++;}
+#include "finish_in.inc"
+#include "finish_out.inc"
+typedef long (*InstncInfo_Func)(struct PlayerInfo*,int32_t*);
+static struct PlayerInstanceInfo { InstncInfo_Func maintain_cb,end_cb;int32_t maintain_end_callback_parameter; } player_instance_info[3];
+static long maintain(struct PlayerInfo* p,int32_t* n){(void)p;(void)n;maintains++;return 0;}
+#include "instance.inc"
+static void check_failed_progress(void)
+{
+    fw=320;fh=200;fp=327;MyScreenWidth=320;MyScreenHeight=200;
+    for(int direction=0;direction<2;direction++)for(int retry=0;retry<2;retry++) {
+        reset();accepted=0;enabled=retry?0:1;barrier=retry?1:0;
+        player.instance_num=direction+1;player.instance_remain_turns=8;
+        player.view_mode=direction?PVM_ParchFadeOut:PVM_ParchFadeIn;
+        player.view_mode_restore=PVM_IsoStraightView;player.allocflags=PlaF_MouseInputDisabled;
+        player_instance_info[direction+1]=(struct PlayerInstanceInfo){maintain,direction?pinstfe_fade_from_map:pinstfe_fade_to_map,0};
+        unsigned v=views,p=parchments,l=loads,g=ghost_generations,m=maintains;
+        unsigned ends=direction?engine_changes:mode_changes;
+        long step=direction?32:0;
+        for(int frame=0;frame<8;frame++) {
+            frame_valid=1;
+            process_player_instance(&player);
+            if(player.view_mode==PVM_ParchFadeIn)step=map_fade_in(step);
+            else if(player.view_mode==PVM_ParchFadeOut)step=map_fade_out(step);
+            else {
+                if(player.view_mode!=PVM_ParchmentView && player.view_mode!=PVM_IsoStraightView)abort();
+                if(frame!=7 || !frame_valid)abort();
+            }
+            if(frame<7 && frame_valid!=(unsigned)retry)abort();
+        }
+        if(views!=v+1 || parchments!=p+1 || loads!=l+1 || ghost_generations!=g+1 || maintains!=m+8 ||
+            (direction?engine_changes:mode_changes)!=ends+1 || player.instance_num!=PI_Unset ||
+            player.allocflags&PlaF_MouseInputDisabled || map_fade_buffers_valid!=retry || step!=(direction?4:28))abort();
+    }
+}
 int main(int argc,char** argv)
 {
     if(argc!=2)return 2;output=fopen(argv[1],"wb");if(!output)return 2;
@@ -108,6 +161,16 @@ int main(int argc,char** argv)
     }
     reset();struct MapFadeOracle o={screen,second,fade,pixmap.ghost,16,256,3};
     if(kfx_wgpu_map_fade(screen,263,256,3,screen,second,0,0,fade,pixmap.ghost,16,map_fade_oracle,&o))abort();
+    fw=256;fh=3;fp=263;progress=16;
+    for(int alias=1;alias<=3;alias++) {
+        reset();memcpy(expected,screen,(size_t)fp*fh);
+        map_fade_native(expected,alias&1?expected:first,alias&2?expected:second,
+            fade,pixmap.ghost,progress,fw,fh,fp);
+        unsigned calls=oracle_calls;
+        map_fade(screen,alias&1?screen:first,alias&2?screen:second,
+            fade,pixmap.ghost,progress,fw,fh,fp);
+        if(oracle_calls!=calls || memcmp(screen,expected,(size_t)fp*fh))abort();
+    }
     fw=320;fh=200;fp=327;MyScreenWidth=fw;
     for(int mode=0;mode<3;mode++) {
         reset();player.view_mode_restore=mode;unsigned v=views,l=loads,p=parchments;
@@ -115,7 +178,20 @@ int main(int argc,char** argv)
         if(views!=v+1 || loads!=l+1 || parchments!=p+1)abort();
         for(int i=0;i<fw*fh;i++)if(first[i]!=(mode?17:39) || second[i]!=211)abort();
     }
+    fw=256;fh=3;fp=263;progress=16;reset();
+    map_fade(screen,second,first,fade,pixmap.ghost,progress,fw,fh,fp);
     kfx_wgpu_native_snapshot_release(map_fade_src_snapshot);kfx_wgpu_native_snapshot_release(map_fade_dest_snapshot);
+    map_fade_src_snapshot=map_fade_dest_snapshot=0;
+    reset();accepted=barrier=0;
+    unsigned v=views,l=loads,p=parchments;
+    prepare_map_fade_buffers(first,second,256,3);
+    if(map_fade_buffers_valid || views!=v+1 || loads!=l+1 || parchments!=p+1)abort();
+    for(int frame=0;frame<3;frame++) {
+        reset();enabled=0;unsigned bad=invalid_frames;
+        map_fade(screen,second,first,fade,pixmap.ghost,frame*4,256,3,263);
+        if(invalid_frames!=bad+1 || memcmp(screen,initial,(size_t)fp*fh))abort();
+    }
+    check_failed_progress();
     fseek(output,4,SEEK_SET);word(count);fclose(output);
     printf("%u actual native transition cases; disabled, decline, barriers, capture state passed\n",count);return 0;
 }
