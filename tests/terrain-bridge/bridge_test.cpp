@@ -513,6 +513,54 @@ int main()
         assert(bridge.GetCounters().gpu_spans == 0 && bridge.GetCounters().cpu_replayed_spans == 1);
         fail_readback = false;
     }
+    {
+        // Registered pages are keyed by pointer: two pages drawn in one frame must
+        // not collide, and each must render its own bytes.
+        std::vector<uint8_t> first(KFX_GPOLY_TEXTURE_BYTES), second(KFX_GPOLY_TEXTURE_BYTES);
+        for (size_t i = 0; i < first.size(); ++i) {
+            first[i] = (i * 31 + 5) & 255;
+            second[i] = first[i] ^ 0x3c;
+        }
+        kfx_render_asset_range(first.data(), first.size());
+        kfx_render_asset_range(second.data(), second.size());
+        kfx_render_asset_range(fade.data(), fade.size());
+        kfx_render_assets_changed();
+        const KfxGpolySpan top = {2, 3, 12, 0x3010, 0x03000801, 0x22, 0x01000100};
+        const KfxGpolySpan bottom = {2, 5, 12, 0x3010, 0x03000801, 0x22, 0x01000100};
+        std::vector<uint8_t> keyed(24 * 10, 0x6a), keyed_expected = keyed;
+        KfxGpolyTarget keyed_target = {keyed.data(), 20, 10, 24};
+        {
+            WgpuTerrainBridge bridge(0, false, false);
+            kfx_wgpu_terrain_boundary(1);
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &top, first.data(), fade.data()) == 1);
+            oracle(keyed_expected, keyed_target.pitch, top, first, fade);
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &bottom, second.data(), fade.data()) == 1);
+            oracle(keyed_expected, keyed_target.pitch, bottom, second, fade);
+            kfx_wgpu_terrain_boundary(0);
+            assert(keyed == keyed_expected);
+            bool differ = false;
+            for (uint32_t i = 0; i < top.count; ++i)
+                differ = differ || keyed[3 * 24 + 2 + i] != keyed[5 * 24 + 2 + i];
+            assert(differ);
+            // Rewriting registered bytes without a bump serves the cached upload;
+            // the bump is what makes the new bytes visible.
+            const std::vector<uint8_t> stale = keyed;
+            for (auto& value : second) value ^= 0x5a;
+            kfx_wgpu_terrain_boundary(1);
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &bottom, second.data(), fade.data()) == 1);
+            kfx_wgpu_terrain_boundary(0);
+            assert(keyed == stale);
+            kfx_render_assets_changed();
+            kfx_wgpu_terrain_boundary(1);
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &bottom, second.data(), fade.data()) == 1);
+            oracle(keyed_expected, keyed_target.pitch, bottom, second, fade);
+            kfx_wgpu_terrain_boundary(0);
+            assert(keyed == keyed_expected);
+        }
+        // An unregistered pointer must fall back to content comparison.
+        assert(kfx_render_asset_stable(first.data(), first.size()));
+        assert(!kfx_render_asset_stable(texture.data(), texture.size()));
+    }
 #endif
     std::puts("Terrain bridge ordering, resource ownership, CPU interleave and failure reconstruction passed");
 }
