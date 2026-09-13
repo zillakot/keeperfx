@@ -60,7 +60,18 @@ impl DrawRenderer {
             commands.len() <= self.device.limits().max_compute_workgroups_per_dimension as usize,
             "triangle validation dispatch exceeds device limits"
         );
-        let limit = self.device.limits().max_storage_buffer_binding_size as usize / 4;
+        ensure!(
+            target.width.div_ceil(8) <= self.device.limits().max_compute_workgroups_per_dimension
+                && target.height.div_ceil(8)
+                    <= self.device.limits().max_compute_workgroups_per_dimension,
+            "triangle pixel dispatch exceeds device limits"
+        );
+        let limit = self
+            .device
+            .limits()
+            .max_storage_buffer_binding_size
+            .min(self.device.limits().max_buffer_size) as usize
+            / 4;
         let mut assets = Vec::new();
         let mut offsets = HashMap::new();
         let mut metadata = Vec::new();
@@ -91,7 +102,7 @@ impl DrawRenderer {
                             .len()
                             .checked_add(length)
                             .is_some_and(|size| size <= limit),
-                        "triangle assets exceed storage limit"
+                        "triangle assets exceed buffer limit"
                     );
                     let offset = assets.len() as u32;
                     assets.extend(resource.bytes[..length].iter().map(|&byte| u32::from(byte)));

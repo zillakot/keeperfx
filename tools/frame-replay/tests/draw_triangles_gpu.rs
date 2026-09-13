@@ -1,4 +1,4 @@
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use keeperfx_frame_replay::{
     draw::{CLEAR, Command, DrawRenderer, TriangleCommand},
     gpoly::Vertex,
@@ -159,5 +159,105 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
     eprintln!(
         "PASS: {count} original native triangles through production DrawRenderer, ordered overlapping batches, immutable mutated assets, late invalid shade/resource/vertex atomic rejection"
     );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Metal/Vulkan"]
+fn triangle_device_limit_rejection_preserves_target_and_device() -> Result<()> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))?;
+    for (width, height, limits, message) in [
+        (
+            8,
+            8,
+            wgpu::Limits {
+                max_buffer_size: 65_536,
+                ..Default::default()
+            },
+            "triangle assets exceed buffer limit",
+        ),
+        (
+            16,
+            8,
+            wgpu::Limits {
+                max_compute_workgroups_per_dimension: 1,
+                ..Default::default()
+            },
+            "triangle pixel dispatch",
+        ),
+        (
+            8,
+            16,
+            wgpu::Limits {
+                max_compute_workgroups_per_dimension: 1,
+                ..Default::default()
+            },
+            "triangle pixel dispatch",
+        ),
+    ] {
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                required_limits: limits,
+                ..Default::default()
+            }))?;
+        let renderer = keeperfx_frame_replay::gpu::Renderer::new(device, queue)?;
+        let mut drawing = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm)?;
+        let target = drawing.create_target(width, height)?;
+        let initial = drawing.readback(target)?;
+        let source = drawing.create_resource(&[0; 7968], 32, 32, 256)?;
+        let table = drawing.create_resource(&[0; 16384], 256, 64, 256)?;
+        let command = TriangleCommand {
+            abi_version: 1,
+            reserved: 0,
+            source,
+            table,
+            vertices: [
+                Vertex {
+                    x: 0,
+                    y: 0,
+                    u: 0,
+                    v: 0,
+                    shade: 0,
+                },
+                Vertex {
+                    x: 8,
+                    y: 0,
+                    u: 0,
+                    v: 0,
+                    shade: 0,
+                },
+                Vertex {
+                    x: 0,
+                    y: 8,
+                    u: 0,
+                    v: 0,
+                    shade: 0,
+                },
+            ],
+        };
+        let error = drawing
+            .submit_triangles(target, &[command])
+            .err()
+            .context("triangle submission exceeded device limit without rejection")?;
+        ensure!(error.to_string().contains(message), "{error}");
+        ensure!(
+            drawing.readback(target)? == initial,
+            "rejected batch changed target"
+        );
+        let small_target = drawing.create_target(8, 8)?;
+        drawing.submit(
+            small_target,
+            &[Command {
+                kind: CLEAR,
+                colour: 23,
+                ..Default::default()
+            }],
+        )?;
+        ensure!(
+            drawing.readback(small_target)? == [23; 64],
+            "triangle rejection poisoned device"
+        );
+    }
     Ok(())
 }
