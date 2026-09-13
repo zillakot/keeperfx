@@ -104,6 +104,39 @@ input and pacing (and can invoke drawing), while its draw scope includes
 presentation. The exported scopes are narrower so those overlapping debug values
 are not reused as component baselines.
 
+## Coarse drawing breakdown
+
+Add `--draw-breakdown` to collect four non-overlapping children of `draw`:
+
+| Series | Boundary |
+| --- | --- |
+| `draw_scene` | `draw_view()` and `draw_frontview_engine()` setup and bucket construction before dispatch |
+| `draw_raster` | Complete isometric/possession `display_drawlist()` dispatch, including terrain, sprites, shadows and bucket overlays |
+| `draw_front_raster` | Complete front-view `display_fast_drawlist()` dispatch, including textured quads, sprites and bucket overlays |
+| `draw_overlays` | View HUD, messages, hand and tooltip blocks, plus the common post-view overlay block in `redraw_display()` |
+| `draw_unaccounted` | Derived per frame: `draw` minus the four children above |
+
+Each child accumulates all visits within one draw and emits exactly one sample,
+including zero for an unvisited scope. The engine rejects overlapping or unfinished
+children. The report requires complete, ordered child blocks immediately preceding
+their enclosing draw, and rejects a child sum exceeding its parent. These children
+are already included in `draw`; do not add them to it. Zero does not prove a family
+was absent: uninstrumented paths remain in `draw_unaccounted`.
+
+These are whole dispatch timings, with no per-primitive or per-pixel clocks.
+Terrain and sprites remain interleaved inside each dispatch; use a separate sampling
+profile to investigate those families. Unaccounted time includes framebuffer setup,
+view orchestration, smoothing/lens effects outside the hooks, other paths and timer
+bookkeeping. Scene preparation also includes existing state updates at that boundary.
+These scopes describe host work and do not establish GPU execution time.
+
+The flag sets `KFX_PERF_DRAW_BREAKDOWN=1`; the default explicitly sets it to `0`.
+Both modes keep the existing top-level timing boundaries and 60 FPS cap. Compare
+serial matched runs from the same executable with and without this flag to quantify
+the added clock, bookkeeping and sample overhead before interpreting the breakdown.
+The default mode still has inactive hook calls. Four extra records per drawn frame
+share the existing 100,000-record limit; long runs can reach that limit sooner.
+
 ## Collection bounds and outputs
 
 The hook is inactive unless `KFX_PERF_OUTPUT` names a new CSV file whose parent

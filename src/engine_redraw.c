@@ -64,6 +64,7 @@
 #include "packets.h"
 #include "custom_sprites.h"
 #include "keeperfx.hpp"
+#include "performance_capture.h"
 #include "post_inc.h"
 
 #ifdef __cplusplus
@@ -562,6 +563,7 @@ void redraw_creature_view(void)
             ewnd.width, ewnd.height, lbDisplay.GraphicsScreenWidth);
     }
     remove_explored_flags_for_power_sight(player);
+    performance_begin(PerfDrawOverlays);
     if ((game.operation_flags & GOF_ShowGui) != 0) {
         draw_whole_status_panel();
     }
@@ -586,6 +588,7 @@ void redraw_creature_view(void)
             }
         }
     }
+    performance_end(PerfDrawOverlays);
 }
 
 void smooth_screen_area(unsigned char *scrbuf, long x, long y, long w, long h, long scanln)
@@ -625,6 +628,7 @@ void redraw_isometric_view(void)
             ewnd.width, ewnd.height, lbDisplay.GraphicsScreenWidth);
     }
     remove_explored_flags_for_power_sight(player);
+    performance_begin(PerfDrawOverlays);
     if ((game.operation_flags & GOF_ShowGui) != 0) {
         draw_whole_status_panel();
     }
@@ -637,6 +641,7 @@ void redraw_isometric_view(void)
     draw_power_hand();
     draw_tooltip();
     SYNCDBG(8,"Finished");
+    performance_end(PerfDrawOverlays);
 }
 
 void redraw_frontview(void)
@@ -647,6 +652,7 @@ void redraw_frontview(void)
     update_explored_flags_for_power_sight(player);
     draw_frontview_engine(render_cam);
      remove_explored_flags_for_power_sight(player);
+    performance_begin(PerfDrawOverlays);
     if (flag_is_set(game.operation_flags,GOF_ShowGui)) {
         draw_whole_status_panel();
     }
@@ -658,6 +664,7 @@ void redraw_frontview(void)
     draw_power_hand();
     draw_tooltip();
     gui_draw_all_boxes();
+    performance_end(PerfDrawOverlays);
 }
 
 int get_place_room_pointer_graphics(RoomKind rkind)
@@ -988,7 +995,7 @@ void redraw_display(void)
         ERRORLOG("Unsupported drawing state, %d",(int)player->view_mode);
         break;
     }
-    //LbTextSetWindow(0, 0, MyScreenWidth, MyScreenHeight);
+    performance_begin(PerfDrawOverlays);
     LbTextSetFont(winfont);
     RendererClearDrawFlags(Lb_TEXT_ONE_COLOR);
     int tx_units_per_px = ( (MyScreenHeight < 400) && (dbc_initialized && dbc_enabled) ) ? scale_ui_value(32) : (22 * units_per_pixel) / LbTextLineHeight();
@@ -1126,6 +1133,7 @@ void redraw_display(void)
     draw_eastegg();
   //show_onscreen_msg(8, "Physical(%d,%d) Graphics(%d,%d) Lens(%d,%d)", (int)lbDisplay.PhysicalScreenWidth, (int)lbDisplay.PhysicalScreenHeight, (int)lbDisplay.GraphicsScreenWidth, (int)lbDisplay.GraphicsScreenHeight, (int)eye_lens_width, (int)eye_lens_height);
     SYNCDBG(7,"Finished");
+    performance_end(PerfDrawOverlays);
 }
 
 /**

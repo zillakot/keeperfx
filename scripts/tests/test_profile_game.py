@@ -33,10 +33,20 @@ def engine_output(output, args=None):
                               "process_cpu": {"available": True, "source": "getrusage(RUSAGE_SELF)",
                                               "user_ns": 200_000_000, "system_ns": 100_000_000},
                               "rust_allocations": {"available": True, "calls": 10, "requested_bytes": 2000}}}
+    metadata["draw_breakdown"] = getattr(args, "draw_breakdown", False)
     rows = ["kind,turn,wall_ns"]
     for turn in range(start, end):
         rows += [f"{kind},{turn},{(turn - start + 1) * 1000000}" for kind in profile.KINDS
                  if kind != "frame_interval" or turn != start]
+    if metadata["draw_breakdown"]:
+        expanded = []
+        for row in rows:
+            if row.startswith("draw,"):
+                _, turn, duration = row.split(",")
+                expanded += [f"{kind},{turn},{int(duration) // 10 if kind != 'draw_front_raster' else 0}"
+                             for kind in profile.DRAW_KINDS]
+            expanded.append(row)
+        rows = expanded
     (output / "raw.csv").write_text("\n".join(rows) + "\n")
     (output / "raw.csv.json").write_text(json.dumps(metadata))
     return metadata
@@ -64,6 +74,62 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(report["resources"]["process_cpu"]["core_equivalents"], 0.3)
             self.assertEqual(report["resources"]["rust_allocations"]["calls_per_presentation"], 0.5)
             self.assertTrue(any("HEADLESS" in item for item in report["limitations"]))
+
+    def test_draw_breakdown_is_nested_and_reports_per_frame_remainder(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            args = arguments(draw_breakdown=True)
+            engine_output(output, args)
+            report = profile.summarize(output, args)
+            for kind in (*profile.DRAW_KINDS, "draw_unaccounted"):
+                self.assertEqual(report["wall_ms"][kind]["count"], 20)
+            self.assertEqual(report["wall_ms"]["draw_scene"]["mean"], 1.05)
+            self.assertEqual(report["wall_ms"]["draw_front_raster"]["max"], 0)
+            self.assertAlmostEqual(report["wall_ms"]["draw_unaccounted"]["mean"], 7.35)
+            self.assertTrue(any("combines terrain, sprites" in item for item in report["limitations"]))
+            with self.assertRaisesRegex(RuntimeError, "does not match"):
+                profile.summarize(output, arguments())
+
+    def test_draw_breakdown_rejects_missing_duplicate_reordered_or_overlapping_children(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            args = arguments(draw_breakdown=True)
+            engine_output(output, args)
+            raw = (output / "raw.csv").read_text()
+            first = "draw_scene,40,100000\n"
+            second = "draw_raster,40,100000\n"
+            invalids = [raw.replace(first, ""), raw.replace(first, first + first),
+                        raw.replace(first + second, second + first),
+                        raw.replace(first, "draw_scene,41,100000\n"),
+                        raw.replace(first, "draw_scene,40,1000000\n"),
+                        raw.replace(first, first + "simulation,40,1000000\n"),
+                        raw + "draw_scene,60,0\n"]
+            for index, invalid in enumerate(invalids):
+                with self.subTest(index=index):
+                    (output / "raw.csv").write_text(invalid)
+                    with self.assertRaises(RuntimeError):
+                        profile.summarize(output, args)
+
+    def test_draw_breakdown_pairs_multiple_draws_in_one_simulation_turn(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            args = arguments(draw_breakdown=True)
+            engine_output(output, args)
+            path = output / "raw.csv"
+            raw = path.read_text()
+            extra = "".join(f"{kind},40,0\n" for kind in profile.DRAW_KINDS)
+            extra += "draw,40,5000000\npresentation,40,1000000\npresent_wait,40,1000000\nframe_interval,40,1000000\n"
+            path.write_text(raw.replace("simulation,41,2000000\n", extra + "simulation,41,2000000\n"))
+            report = profile.summarize(output, args)
+            self.assertEqual(report["wall_ms"]["draw_unaccounted"]["count"], 21)
+            self.assertAlmostEqual(report["wall_ms"]["draw_unaccounted"]["mean"], (147 + 5) / 21)
+
+    def test_draw_breakdown_request_requires_engine_support(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            engine_output(output)
+            with self.assertRaisesRegex(RuntimeError, "does not match"):
+                profile.summarize(output, arguments(draw_breakdown=True))
 
     def test_legacy_wall_report_does_not_invent_cpu_or_allocation_data(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -186,6 +252,8 @@ class ProfileTests(unittest.TestCase):
             self.assertNotIn("KFX_WGPU_FAIL_INIT", environment)
             self.assertEqual(environment["KFX_PRESENT_BACKEND"], "sdl")
             self.assertEqual(environment["KFX_PERF_TURNS"], "20")
+            self.assertEqual(environment["KFX_PERF_DRAW_BREAKDOWN"], "0")
+            self.assertEqual(profile.environment_for(arguments(draw_breakdown=True), Path("/output"))["KFX_PERF_DRAW_BREAKDOWN"], "1")
             rust_environment = profile.environment_for(arguments(headless=False, backend="rust"), Path("/output"))
             self.assertEqual(rust_environment["KFX_PRESENT_BACKEND"], "wgpu")
             environment = profile.environment_for(arguments(scene="possession"), Path("/output"))

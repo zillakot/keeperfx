@@ -67,6 +67,7 @@
 #include "vidfade.h"
 #include "vidmode.h"
 
+#include "performance_capture.h"
 #include "post_inc.h"
 
 #ifdef __cplusplus
@@ -7088,6 +7089,7 @@ void draw_view(struct Camera *cam, unsigned char a2)
     long aposc;
     long bposc;
     SYNCDBG(9,"Starting");
+    performance_begin(PerfDrawScene);
     calculate_hud_scale(cam);
     camera_zoom = scale_camera_zoom_to_screen(cam->zoom);
     zoom_mem = cam->zoom;//TODO [zoom] remove when all cam->zoom will be changed to camera_zoom
@@ -7156,7 +7158,10 @@ void draw_view(struct Camera *cam, unsigned char a2)
         process_isometric_map_volume_box(x, y, z, my_player_number);
     }
 
+    performance_end(PerfDrawScene);
+    performance_begin(PerfDrawRaster);
     display_drawlist();
+    performance_end(PerfDrawRaster);
     cam->zoom = zoom_mem;//TODO [zoom] remove when all cam->zoom will be changed to camera_zoom
     SYNCDBG(9,"Finished");
 }
@@ -9269,6 +9274,7 @@ void draw_frontview_engine(struct Camera *cam)
     long long lbbb;
     int32_t i;
     SYNCDBG(9,"Starting");
+    performance_begin(PerfDrawScene);
     player = get_my_player();
     if (cam->zoom > FRONTVIEW_CAMERA_ZOOM_MAX)
         cam->zoom = FRONTVIEW_CAMERA_ZOOM_MAX;
@@ -9333,6 +9339,7 @@ void draw_frontview_engine(struct Camera *cam)
     default:
         ERRORLOG("Illegal quadrant, %d.",qdrant);
         LbScreenLoadGraphicsWindow(&grwnd);
+        performance_end(PerfDrawScene);
         return;
     }
 
@@ -9384,7 +9391,10 @@ void draw_frontview_engine(struct Camera *cam)
         stl_y += y_step2[qdrant];
     }
 
+    performance_end(PerfDrawScene);
+    performance_begin(PerfDrawFrontRaster);
     display_fast_drawlist(cam);
+    performance_end(PerfDrawFrontRaster);
     LbScreenLoadGraphicsWindow(&grwnd);
     cam->zoom = zoom_mem;//TODO [zoom] remove when all cam->zoom will be changed to camera_zoom
     SYNCDBG(9,"Finished");
