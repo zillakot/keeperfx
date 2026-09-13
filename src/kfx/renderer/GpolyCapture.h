@@ -48,6 +48,7 @@ int kfx_gpoly_capture_init(struct KfxGpolyCapture *capture,
 void kfx_gpoly_capture_free(struct KfxGpolyCapture *capture);
 int kfx_gpoly_capture_sink(void *context, const struct KfxGpolyTarget *target,
     const struct KfxGpolySpan *span, const uint8_t *texture, const uint8_t *fade);
+/* Failure leaves pixels unchanged; success replays onto caller-provided initial pixels. */
 int kfx_gpoly_capture_replay(const struct KfxGpolyCapture *capture,
     uint8_t *pixels, size_t length);
 

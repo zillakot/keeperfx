@@ -186,6 +186,26 @@ static void sink_outcomes(void)
     ++tested;
 }
 
+static void replay_failure(void)
+{
+    struct KfxGpolyCapture capture;
+    require(kfx_gpoly_capture_init(&capture, 2, 1), "allocate invalid replay capture");
+    memset(native, 0xa7, TOTAL);
+    memcpy(replay, native, TOTAL);
+    const struct KfxGpolyTarget target = {native + PREFIX, 79, 61, 83};
+    const struct KfxGpolySpan valid = {0, 0, 1, 0x100, 0, 0, 0};
+    const struct KfxGpolySpan invalid = {1, 0, 2, 0x3fff, 0, 1, 0};
+    require(kfx_gpoly_capture_sink(&capture, &target, &valid, texture, fade) ==
+        KFX_GPOLY_DECLINED, "capture valid replay prefix");
+    require(kfx_gpoly_capture_sink(&capture, &target, &invalid, texture, fade) ==
+        KFX_GPOLY_DECLINED, "capture late invalid shade");
+    require(!kfx_gpoly_capture_replay(&capture, replay + PREFIX, SIZE),
+        "invalid shade replay succeeded");
+    require(memcmp(native, replay, TOTAL) == 0, "failed replay partially changed target");
+    kfx_gpoly_capture_free(&capture);
+    ++tested;
+}
+
 int main(int argc, char **argv)
 {
     vec_map = texture;
@@ -217,6 +237,7 @@ int main(int argc, char **argv)
     compare_line(0x1000, 0x1fffffff, 79, 0xff0000ff);
     compare_line(0x3000, 0xff000000, 0xffffffd0, 0xffff00ff);
     sink_outcomes();
+    replay_failure();
     sequence(argc > 1 ? argv[1] : NULL);
     printf("PASS: %u fixtures, %u captured spans; exact legacy indices, bounds, ownership, sink outcomes\n", tested, spans_tested);
     return 0;

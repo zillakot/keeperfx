@@ -102,14 +102,21 @@ int kfx_gpoly_capture_replay(const struct KfxGpolyCapture *capture,
         (uint64_t)capture->target.pitch * capture->target.height > length)
         return 0;
     for (uint32_t i = 0; i < capture->span_count; ++i) {
+        const struct KfxGpolySpan *span = &capture->spans[i].span;
+        uint32_t low = span->start_low;
+        for (uint32_t x = 0; x < span->count; ++x) {
+            if ((low & 0xff00) >= KFX_GPOLY_FADE_BYTES)
+                return 0;
+            low += span->step_low;
+        }
+    }
+    for (uint32_t i = 0; i < capture->span_count; ++i) {
         const struct KfxGpolyCapturedSpan *command = &capture->spans[i];
         const struct KfxGpolySpan *span = &command->span;
         uint32_t low = span->start_low, high = span->start_high;
         for (uint32_t x = 0; x < span->count; ++x) {
             uint32_t uv = ((high << 8) | (high >> 24)) & 0x1f1f;
             uint32_t shade = low & 0xff00;
-            if (shade >= KFX_GPOLY_FADE_BYTES)
-                return 0;
             pixels[(size_t)span->y * capture->target.pitch + span->x + x] =
                 capture->fades[command->fade][shade | capture->textures[command->texture][uv]];
             uint32_t next = low + span->step_low;
