@@ -4,7 +4,7 @@ struct DisplayStruct lbDisplay;
 unsigned char *render_ghost, *render_alpha;
 static unsigned short flags;
 static FILE *fixture;
-static unsigned count, submissions;
+static unsigned count, submissions, ordered_count;
 static int decline, enabled = 1;
 enum { WIDTH = 83, HEIGHT = 61, SIZE = WIDTH * HEIGHT };
 static uint8_t target_pixels[SIZE], expected[SIZE], initial[SIZE], glass[65536], ghost[65536], alpha[65536], remap[256];
@@ -29,7 +29,7 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
     memcpy(expected, initial, SIZE);
     oracle(expected, target->pitch, context);
     require(submissions == before, "oracle recursively submitted a native command");
-    require(lbDisplay.WScreen == target_pixels && lbDisplay.GraphicsWindowPtr == target_pixels + 5 * WIDTH + 3,
+    require(lbDisplay.WScreen == target_pixels && lbDisplay.GraphicsWindowPtr == target_pixels + lbDisplay.GraphicsWindowY * WIDTH + lbDisplay.GraphicsWindowX,
         "oracle failed to restore target aliases");
     require(!memcmp(target_pixels, initial, SIZE), "oracle modified live target");
     uint32_t length = source->length;
@@ -39,6 +39,7 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
     if (command->blend) fwrite(table->bytes, 65536, 1, fixture);
     fwrite(expected, SIZE, 1, fixture);
     count++;
+    ordered_count += (command->source_x & 8) != 0;
     return 1;
 }
 
@@ -128,35 +129,82 @@ int main(int argc, char **argv)
         }
         if (submissions == before) { fallback++; if (mode < 4) scaled_fallback++; }
     }
-    flags = 0;
-    buffer.height = 5;
-    LbSpriteSetScalingData(13,11,7,5,14,15);
-    memcpy(target_pixels,initial,SIZE);
-    decline = 1;
-    LbSpriteDrawUsingScalingData(0,0,&buffer);
-    uint8_t fallback_pixels[SIZE];
-    memcpy(fallback_pixels,target_pixels,SIZE);
-    memcpy(target_pixels,initial,SIZE);
-    decline = 0;
-    enabled = 0;
-    unsigned before = submissions;
-    LbSpriteDrawUsingScalingData(0,0,&buffer);
-    require(submissions == before && !memcmp(target_pixels,fallback_pixels,SIZE),
-        "disabled and declined sprite paths differ");
-    enabled = 1;
-    memcpy(target_pixels,initial,SIZE);
-    LbSpriteDrawUsingScalingData(0,0,&buffer);
-    require(!memcmp(expected,fallback_pixels,SIZE), "oracle differs from native fallback");
-    lbDisplay.GraphicsWindowPtr++;
-    before = submissions;
-    LbSpriteDrawUsingScalingData(0,0,&buffer);
-    require(submissions == before, "inconsistent graphics target alias accepted");
-    lbDisplay.GraphicsWindowPtr--;
+    require(scaled_fallback == 0, "valid scaled sprite declined");
+    uint8_t segmented[] = {
+        1, 0, 1, 255, -2, 1, 17, 2, 93, 0, 0,
+        -1, 1, 127, 1, 0, 2, 4, 8, -2, 0,
+        1, 43, 2, 29, 17, 1, 0, 3, 251, 180, 3, 0,
+        -3, 1, 222, -3, 0,
+        1, 0, -5, 1, 255, 0,
+    };
+    uint8_t trailing[] = {
+        1, 0, 1, 255, 0,
+        -2, 1, 0, 1, 17, 0,
+        3, 127, 0, 255, 1, 19, 3, 0, 27, 93, 0,
+        -5, 1, 255, 1, 0, 0,
+        -7, 0,
+    };
+    for (unsigned pattern = 0; pattern < 3; pattern++)
+    for (unsigned mode = 0; mode < 3; mode++)
+    for (unsigned vertical = 0; vertical < 2; vertical++)
+    for (unsigned mapped = 0; mapped < 2; mapped++)
+    for (unsigned scale = 0; scale < 4; scale++)
+    for (unsigned position = 0; position < 7; position++) {
+        uint8_t *artwork = pattern == 0 ? data : pattern == 1 ? segmented : trailing;
+        struct TbSprite special = {artwork, 7, 5};
+        struct TbSourceBuffer special_buffer = {artwork, 7, 5, 7};
+        lbDisplay.GraphicsWindowX = 0;
+        lbDisplay.GraphicsWindowWidth = WIDTH;
+        lbDisplay.GraphicsWindowPtr = target_pixels + 5 * WIDTH;
+        flags = Lb_SPRITE_FLIP_HORIZ | (vertical ? Lb_SPRITE_FLIP_VERTIC : 0)
+            | (mapped ? Lb_SPRITE_REMAP | Lb_SPRITE_TRANSPAR4 | Lb_SPRITE_TRANSPAR8 : 0);
+        if (mode != 0) flags &= ~(Lb_SPRITE_TRANSPAR4 | Lb_SPRITE_TRANSPAR8);
+        memcpy(target_pixels, initial, SIZE);
+        const int special_scales[][2] = {{WIDTH, 15}, {19, 13}, {4, 13}, {35, 25}};
+        LbSpriteSetScalingData(positions[position][0], positions[position][1], 7, 5,
+            special_scales[scale][0], special_scales[scale][1]);
+        unsigned before = submissions;
+        if (mode == 0) LbSpriteDrawUsingScalingData(0,0,&special_buffer);
+        if (mode == 1) LbSpriteDrawRemapUsingScalingData(0,0,&special_buffer,remap);
+        if (mode == 2) LbSpriteDrawOneColourUsingScalingData(0,0,&special,mapped ? 0 : 211);
+        require(submissions == before + 1, "ordered sprite edge case declined");
+        require(!memcmp(target_pixels,initial,SIZE), "ordered sprite modified CPU target");
+    }
+    lbDisplay.GraphicsWindowX = 3;
+    lbDisplay.GraphicsWindowWidth = 73;
+    lbDisplay.GraphicsWindowPtr = target_pixels + 5 * WIDTH + 3;
+    for (unsigned ordered = 0; ordered < 2; ordered++) {
+        flags = ordered ? Lb_SPRITE_FLIP_HORIZ | Lb_SPRITE_FLIP_VERTIC : 0;
+        buffer.height = 5;
+        LbSpriteSetScalingData(13,11,7,5,14,15);
+        memcpy(target_pixels,initial,SIZE);
+        decline = 1;
+        LbSpriteDrawUsingScalingData(0,0,&buffer);
+        uint8_t fallback_pixels[SIZE];
+        memcpy(fallback_pixels,target_pixels,SIZE);
+        memcpy(target_pixels,initial,SIZE);
+        decline = 0;
+        enabled = 0;
+        unsigned before = submissions;
+        LbSpriteDrawUsingScalingData(0,0,&buffer);
+        require(submissions == before && !memcmp(target_pixels,fallback_pixels,SIZE),
+            "disabled and declined sprite paths differ");
+        enabled = 1;
+        memcpy(target_pixels,initial,SIZE);
+        LbSpriteDrawUsingScalingData(0,0,&buffer);
+        require(!memcmp(expected,fallback_pixels,SIZE), "oracle differs from native fallback");
+        lbDisplay.GraphicsWindowPtr++;
+        before = submissions;
+        LbSpriteDrawUsingScalingData(0,0,&buffer);
+        require(submissions == before, "inconsistent graphics target alias accepted");
+        lbDisplay.GraphicsWindowPtr--;
+    }
     header[1] = count;
     rewind(fixture);
     fwrite(header, sizeof(header), 1, fixture);
     fclose(fixture);
     printf("%u sprite commands; %u explicit scaled fallbacks; %u immediate clipped no-ops\n",
         count, scaled_fallback, fallback - scaled_fallback);
+    printf("%u ordered GPU sprite commands\n", ordered_count);
     return 0;
 }

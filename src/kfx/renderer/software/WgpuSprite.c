@@ -80,6 +80,8 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
     uint8_t *asset = calloc(length, 1);
     if (!asset) return 0;
     int valid = 1;
+    unsigned solid_rl = mode < 4 && scale_up && !blend && (flip & 1);
+    unsigned ordered = 0;
     for (unsigned a = 0; a < 2; a++) {
         unsigned n = a ? h : w;
         int limit = a ? SwTargetWindowHeight() : SwTargetWindowWidth();
@@ -96,7 +98,7 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
             if (start < 0 || count < 0 || start + count > limit ||
                 (previous >= 0 && start != previous) || (mode < 4 && !scale_up && count > 1)) valid = 0;
             previous = start + count;
-            if (mode < 4 && a && scale_up && !blend && (flip & 1) && count > 1) valid = 0;
+            if (a && solid_rl && count > 1) ordered = 1;
             size_t offset = axis + (a ? w * 8 : 0) + i * 8;
             put_u32(asset + offset, start + (a ? SwTargetWindowY() : SwTargetWindowX()));
             put_u32(asset + offset + 4, count);
@@ -112,7 +114,7 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
             if (n > w - x) { valid = 0; break; }
             if (run > 0) for (unsigned i = 0; i < n; i++) {
                 asset[2 * (y * w + x + i)] = *rle++;
-                asset[2 * (y * w + x + i) + 1] = 1;
+                asset[2 * (y * w + x + i) + 1] = ordered && i + 1 == n ? 2 : 1;
             }
             x += n;
         }
@@ -130,7 +132,7 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
     command.clip_y = SwTargetWindowY();
     command.clip_width = SwTargetWindowWidth();
     command.clip_height = SwTargetWindowHeight();
-    command.source_x = flip | ((mode == 2 || mode == 5) ? 4 : 0);
+    command.source_x = flip | ((mode == 2 || mode == 5) ? 4 : 0) | (ordered ? 8 : 0);
     /* The legacy remap and one-colour down/Trans2RL kernels discard the source byte. */
     if ((mode == 1 || mode == 2) && !scale_up && (flip & 1) && blend == 2) {
         command.source_x |= 4;

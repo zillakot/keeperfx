@@ -1,5 +1,8 @@
-use super::{Command, Resource};
-use anyhow::{Result, ensure};
+use super::*;
+
+pub(super) fn ordered(command: &Command) -> bool {
+    command.kind == SPRITE && command.source_x & 8 != 0
+}
 
 pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
     let w = command.source_width as usize;
@@ -9,7 +12,10 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
         "invalid sprite dimensions"
     );
     ensure!(
-        command.source_x <= 7 && command.source_y == 0 && command.transparent == 256,
+        command.source_x <= 15
+            && command.source_y == 0
+            && command.transparent == 256
+            && (!ordered(command) || (command.source_x & 1 != 0 && command.blend == 0)),
         "invalid sprite options"
     );
     let axis = 2 * w * h;
@@ -17,8 +23,19 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
         source.bytes.len() == axis + 8 * (w + h) + 256,
         "invalid sprite asset length"
     );
-    for pixel in source.bytes[..axis].as_chunks::<2>().0 {
-        ensure!(pixel[1] <= 1, "invalid sprite coverage");
+    for row in source.bytes[..axis].chunks_exact(w * 2) {
+        let mut in_run = false;
+        for pixel in row.as_chunks::<2>().0 {
+            ensure!(
+                pixel[1] <= if ordered(command) { 2 } else { 1 },
+                "invalid sprite coverage"
+            );
+            if ordered(command) {
+                ensure!(pixel[1] != 0 || !in_run, "unterminated sprite run");
+                in_run = pixel[1] == 1;
+            }
+        }
+        ensure!(!in_run, "unterminated sprite row");
     }
     for (offset, count) in [(axis, w), (axis + 8 * w, h)] {
         let mut previous = None;
@@ -38,6 +55,134 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn range(source: &Resource, offset: usize) -> (i64, i64) {
+    let start = u32::from_le_bytes(source.bytes[offset..offset + 4].try_into().unwrap());
+    let count = u32::from_le_bytes(source.bytes[offset + 4..offset + 8].try_into().unwrap());
+    (i64::from(start), i64::from(count))
+}
+
+fn validate_target(c: &Command, source: &Resource, width: u32, height: u32) -> Result<()> {
+    ensure!(
+        c.x == 0 && c.y == 0 && c.width == width && c.height == height,
+        "ordered sprite requires full target bounds"
+    );
+    let w = c.source_width as usize;
+    let h = c.source_height as usize;
+    let axis = 2 * w * h;
+    for (offset, count, start, length, limit) in [
+        (axis, w, c.clip_x, c.clip_width, width),
+        (axis + w * 8, h, c.clip_y, c.clip_height, height),
+    ] {
+        ensure!(
+            start >= 0 && i64::from(start) + i64::from(length) <= i64::from(limit),
+            "ordered sprite clip outside target"
+        );
+        for i in 0..count {
+            let (at, n) = range(source, offset + 8 * i);
+            ensure!(
+                at >= i64::from(start) && at + n <= i64::from(start) + i64::from(length),
+                "ordered sprite range outside clip"
+            );
+        }
+    }
+    for sy in 0..h {
+        let ay = if c.source_x & 2 != 0 { h - 1 - sy } else { sy };
+        let (y, n) = range(source, axis + (w + ay) * 8);
+        if n <= 1 || y != 0 {
+            continue;
+        }
+        for sx in 0..w {
+            if source.bytes[2 * (sy * w + sx) + 1] == 2 {
+                let (x, _) = range(source, axis + (w - 1 - sx) * 8);
+                ensure!(x > 0, "ordered sprite row copy outside target");
+            }
+        }
+    }
+    Ok(())
+}
+
+impl DrawRenderer {
+    pub(super) fn submit_ordered_sprites(
+        &mut self,
+        target_id: u64,
+        commands: &[Command],
+    ) -> Result<()> {
+        let target = self
+            .targets
+            .get(&target_id)
+            .context("unknown sprite target")?;
+        pack_commands(
+            commands,
+            &self.resources,
+            target.width,
+            target.height,
+            self.storage_limit() as usize,
+        )?;
+        for c in commands.iter().filter(|c| ordered(c)) {
+            validate_target(c, &self.resources[&c.source], target.width, target.height)?;
+        }
+        for c in commands {
+            if !ordered(c) {
+                self.submit(target_id, std::slice::from_ref(c))?;
+                continue;
+            }
+            let target = &self.targets[&target_id];
+            let (words, assets) = pack_commands(
+                std::slice::from_ref(c),
+                &self.resources,
+                target.width,
+                target.height,
+                self.storage_limit() as usize,
+            )?;
+            let command_buffer = buffer(
+                &self.device,
+                "ordered sprite command",
+                &words,
+                wgpu::BufferUsages::STORAGE,
+            );
+            let asset_buffer = buffer(
+                &self.device,
+                "sprite artwork and run boundaries",
+                &assets,
+                wgpu::BufferUsages::STORAGE,
+            );
+            let parameters = buffer(
+                &self.device,
+                "sprite target dimensions",
+                &[target.width, target.height, 1, 0],
+                wgpu::BufferUsages::UNIFORM,
+            );
+            let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ordered sprite"),
+                layout: &self.compute_sprite_ordered.get_bind_group_layout(0),
+                entries: &[
+                    entry(0, &target.indices),
+                    entry(1, &command_buffer),
+                    entry(2, &asset_buffer),
+                    entry(3, &parameters),
+                ],
+            });
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("native sprite write and row-copy order"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.compute_sprite_ordered);
+                pass.set_bind_group(0, &binding, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+            self.queue.submit([encoder.finish()]);
+            self.check_status()?;
+            self.counters.batches += 1;
+            self.counters.commands += 1;
+            self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+            self.counters.command_upload_bytes += words.len() as u64 * 4;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -82,6 +227,52 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn ordered_sprite_validates_runs_and_copy_extent() {
+        let mut command = Command {
+            kind: SPRITE,
+            width: 8,
+            height: 8,
+            clip_width: 8,
+            clip_height: 8,
+            source_x: 9,
+            source_width: 2,
+            source_height: 1,
+            ..Default::default()
+        };
+        let mut resource = Resource {
+            width: 1,
+            height: 1,
+            pitch: 1,
+            bytes: vec![0; 284],
+        };
+        resource.bytes[1] = 2;
+        resource.bytes[3] = 2;
+        for (offset, value) in [(4, 0u32), (8, 4), (12, 4), (16, 4), (20, 1), (24, 3)] {
+            resource.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        validate(&command, &resource).unwrap();
+        validate_target(&command, &resource, 8, 8).unwrap();
+        resource.bytes[3] = 1;
+        assert!(validate(&command, &resource).is_err());
+        resource.bytes[3] = 0;
+        resource.bytes[1] = 1;
+        assert!(validate(&command, &resource).is_err());
+        resource.bytes[1] = 2;
+        resource.bytes[3] = 2;
+        resource.bytes[20..24].copy_from_slice(&0u32.to_le_bytes());
+        assert!(validate_target(&command, &resource, 8, 8).is_err());
+        command.source_x = 11;
+        assert!(validate_target(&command, &resource, 8, 8).is_err());
+        resource.bytes[24..28].copy_from_slice(&1u32.to_le_bytes());
+        validate_target(&command, &resource, 8, 8).unwrap();
+        command.source_x = 8;
+        assert!(validate(&command, &resource).is_err());
+        command.source_x = 9;
+        command.blend = 1;
+        assert!(validate(&command, &resource).is_err());
     }
 
     #[test]

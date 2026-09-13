@@ -32,3 +32,45 @@ fn sprite_sample(c: Command, pixel: vec2<u32>) -> u32 {
     if (c.source.x & 4u) != 0u { return c.operation.w; }
     return assets[axis + (w + h) * 8u + assets[index]];
 }
+
+@compute @workgroup_size(1)
+fn sprite_ordered() {
+    let c = commands[0];
+    let w = c.source.z;
+    let h = c.source.w;
+    let axis = c.assets.x + 2u * w * h;
+    let remap = axis + (w + h) * 8u;
+    let stride = select(i32(parameters.x), -i32(parameters.x), (c.source.x & 2u) != 0u);
+    for (var sy = 0u; sy < h; sy++) {
+        let ay = select(sy, h - 1u - sy, stride < 0);
+        let ystart = sprite_word(axis + (w + ay) * 8u);
+        let ycount = sprite_word(axis + (w + ay) * 8u + 4u);
+        if ycount == 0u { continue; }
+        let y = select(ystart, ystart + ycount - 1u, stride < 0);
+        var run_right = 0i;
+        var in_run = false;
+        for (var sx = 0u; sx < w; sx++) {
+            let artwork = c.assets.x + 2u * (sy * w + sx);
+            let coverage = assets[artwork + 1u];
+            if coverage == 0u { continue; }
+            let ax = w - 1u - sx;
+            let xstart = sprite_word(axis + ax * 8u);
+            let xcount = sprite_word(axis + ax * 8u + 4u);
+            let right = i32(y * parameters.x + xstart + xcount) - 1;
+            if !in_run { run_right = right; in_run = true; }
+            let colour = select(assets[remap + assets[artwork]], c.operation.w, (c.source.x & 4u) != 0u);
+            for (var dx = 0u; dx < xcount; dx++) {
+                pixels[u32(right - i32(dx))] = colour;
+            }
+            if coverage == 2u {
+                let left = i32(y * parameters.x + xstart) - 1;
+                for (var dy = 1u; dy < ycount; dy++) {
+                    for (var at = left; at <= run_right; at++) {
+                        pixels[u32(at + i32(dy) * stride)] = pixels[u32(at)];
+                    }
+                }
+                in_run = false;
+            }
+        }
+    }
+}
