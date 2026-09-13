@@ -126,9 +126,10 @@ public:
      * @brief Load a custom WAV file and assign it a sample ID
      * @param name Unique identifier for the sound
      * @param filepath Path to WAV file (relative to game directory)
-     * @return Assigned sample ID, or 0 if failed
+     * @param reuse Reuse an identical source; false appends a fresh bank entry
+     * @return Assigned sample ID, or -1 if failed
      */
-    SoundSmplTblID loadCustomSound(const std::string& name, const std::string& filepath);
+    SoundSmplTblID loadCustomSound(const std::string& name, const std::string& filepath, bool reuse = true);
 
     /**
      * @brief Load a custom sound from an in-memory buffer (e.g. read out of a map's
@@ -136,9 +137,10 @@ public:
      * @param name Unique identifier for the sound
      * @param data Raw file bytes (WAV/OGG/FLAC/MP3)
      * @param size Size of data in bytes
-     * @return Assigned sample ID, or -1 if failed (matches loadCustomSound()'s convention)
+     * @param reuse Reuse identical bytes; false appends a fresh bank entry
+     * @return Assigned sample ID, or -1 if failed
      */
-    SoundSmplTblID loadCustomSoundFromMemory(const std::string& name, const unsigned char* data, size_t size);
+    SoundSmplTblID loadCustomSoundFromMemory(const std::string& name, const unsigned char* data, size_t size, bool reuse = true);
 
     /**
      * @brief Get sample ID for loaded custom sound
@@ -217,6 +219,8 @@ public:
     void reapplyCreatureSounds();
 
 private:
+    friend struct SoundLoadTransaction;
+
     SoundManager();
     ~SoundManager();
     
@@ -227,6 +231,7 @@ private:
     // Internal state
     struct CustomSoundEntry {
         std::string filepath;
+        std::vector<unsigned char> source_data;
         SoundSmplTblID sample_id;
         bool loaded;
     };

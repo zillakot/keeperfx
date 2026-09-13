@@ -22,6 +22,26 @@ extern "C" {
 
 namespace KeeperFX {
 
+struct SoundLoadTransaction {
+    SoundManager& manager;
+    decltype(SoundManager::custom_sounds_) custom_sounds;
+    decltype(SoundManager::sound_registry_) registry;
+    size_t total_custom_sounds;
+    bool committed = false;
+
+    explicit SoundLoadTransaction(SoundManager& sm)
+        : manager(sm), custom_sounds(sm.custom_sounds_), registry(sm.sound_registry_),
+          total_custom_sounds(sm.total_custom_sounds_) {}
+
+    ~SoundLoadTransaction() {
+        if (!committed) {
+            manager.custom_sounds_ = std::move(custom_sounds);
+            manager.sound_registry_ = std::move(registry);
+            manager.total_custom_sounds_ = total_custom_sounds;
+        }
+    }
+};
+
 // Singleton instance
 SoundManager& SoundManager::getInstance() {
     static SoundManager instance;
@@ -154,12 +174,13 @@ void SoundManager::stopMusic() {
 }
 
 // Load custom WAV file and assign sample ID
-SoundSmplTblID SoundManager::loadCustomSound(const std::string& name, const std::string& filepath) {
-    // Check if already loaded
+SoundSmplTblID SoundManager::loadCustomSound(const std::string& name, const std::string& filepath, bool reuse) {
     auto it = custom_sounds_.find(name);
-    if (it != custom_sounds_.end() && it->second.loaded) {
+    if (reuse && it != custom_sounds_.end() && it->second.loaded
+        && it->second.filepath == filepath && it->second.source_data.empty()) {
         SYNCDBG(7,"Custom sound '%s' already loaded as bank index % d",
                name.c_str(), it->second.sample_id);
+        registerSound(name.c_str(), it->second.sample_id);
         return it->second.sample_id;
     }
     
@@ -178,8 +199,9 @@ SoundSmplTblID SoundManager::loadCustomSound(const std::string& name, const std:
     entry.filepath = filepath;
     entry.sample_id = get_custom_offset() + bank_index;
     entry.loaded = true;
-    custom_sounds_[name] = entry;
-    
+    custom_sounds_[name] = std::move(entry);
+    registerSound(name.c_str(), get_custom_offset() + bank_index);
+
     total_custom_sounds_++;
     
     SYNCDBG(7,"Loaded custom sound '%s' as bank index %d (filepath: %s)",
@@ -189,9 +211,15 @@ SoundSmplTblID SoundManager::loadCustomSound(const std::string& name, const std:
 }
 
 // Load custom sound from an in-memory buffer (e.g. read out of a map zip) and assign sample ID
-SoundSmplTblID SoundManager::loadCustomSoundFromMemory(const std::string& name, const unsigned char* data, size_t size) {
+SoundSmplTblID SoundManager::loadCustomSoundFromMemory(const std::string& name, const unsigned char* data, size_t size, bool reuse) {
+    if (data == nullptr || size == 0) {
+        return -1;
+    }
     auto it = custom_sounds_.find(name);
-    if (it != custom_sounds_.end() && it->second.loaded) {
+    if (reuse && it != custom_sounds_.end() && it->second.loaded
+        && it->second.source_data.size() == size
+        && memcmp(it->second.source_data.data(), data, size) == 0) {
+        registerSound(name.c_str(), it->second.sample_id);
         SYNCDBG(7,"Custom sound '%s' already loaded as bank index %d",
                name.c_str(), it->second.sample_id);
         return it->second.sample_id;
@@ -204,10 +232,11 @@ SoundSmplTblID SoundManager::loadCustomSoundFromMemory(const std::string& name, 
     }
 
     CustomSoundEntry entry;
-    entry.filepath = name; // no filesystem path — record the logical name instead
+    entry.source_data.assign(data, data + size);
     entry.sample_id = get_custom_offset() + bank_index;
     entry.loaded = true;
-    custom_sounds_[name] = entry;
+    custom_sounds_[name] = std::move(entry);
+    registerSound(name.c_str(), get_custom_offset() + bank_index);
 
     total_custom_sounds_++;
 
@@ -335,18 +364,16 @@ SoundSmplTblID SoundManager::getSoundId(const char* name) const {
     
     std::string name_str(name);
     
-    // Custom sounds take priority — they are campaign/mod/level overrides.
+    auto it = sound_registry_.find(name_str);
+    if (it != sound_registry_.end()) {
+        return it->second.sample_id;
+    }
+
     auto cit = custom_sounds_.find(name_str);
     if (cit != custom_sounds_.end() && cit->second.loaded) {
         return cit->second.sample_id;
     }
 
-    // Fall back to built-in sound registry (numeric IDs from fxdata/sounds.cfg etc.)
-    auto it = sound_registry_.find(name_str);
-    if (it != sound_registry_.end()) {
-        return it->second.sample_id;
-    }
-    
     return 0;
 }
 
@@ -426,6 +453,18 @@ extern "C" void custom_sound_bank_clear();
 
 // Clear all custom sounds - used during save/load to rebuild fresh bank
 void SoundManager::clearCustomSounds() {
+    const SoundSmplTblID custom_offset = get_custom_offset();
+    for (auto it = sound_registry_.begin(); it != sound_registry_.end();) {
+        if (it->second.sample_id >= custom_offset) {
+            it = sound_registry_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    snapshot_valid_ = false;
+    snapshot_registry_.clear();
+    snapshot_custom_sounds_.clear();
+    snapshot_creature_overrides_.clear();
     custom_sounds_.clear();
     creature_sound_overrides_.clear();
     total_custom_sounds_ = 0;
@@ -729,16 +768,16 @@ static bool resolve_sound_path_in_map_zip(const char* path_in, unsigned char** o
 
 // Load a sound named in sounds.cfg under `name`, trying the filesystem first and then
 // the current level's map zip. Returns the assigned sample ID, or <= 0 on failure.
-static SoundSmplTblID load_named_sound_fs_or_zip(KeeperFX::SoundManager& sm, const char* name, const char* path_in)
+static SoundSmplTblID load_named_sound_fs_or_zip(KeeperFX::SoundManager& sm, const char* name, const char* path_in, bool reuse = true)
 {
     char full_path[2048];
     if (resolve_sounds_cfg_sound_path(path_in, full_path, sizeof(full_path))) {
-        return sm.loadCustomSound(name, full_path);
+        return sm.loadCustomSound(name, full_path, reuse);
     }
     unsigned char* data = nullptr;
     size_t size = 0;
     if (resolve_sound_path_in_map_zip(path_in, &data, &size)) {
-        SoundSmplTblID id = sm.loadCustomSoundFromMemory(name, data, size);
+        SoundSmplTblID id = sm.loadCustomSoundFromMemory(name, data, size, reuse);
         free(data);
         return id;
     }
@@ -785,8 +824,6 @@ SoundSmplTblID sound_manager_load_named_sound(const char* name, const char* path
             SYNCDBG(7,"Named sound file not found on disk or in map zip: '%s' (name '%s')", path_in, name);
             return 0;
         }
-        // Custom sounds live in custom_sounds_ which takes priority in getSoundId —
-        // do NOT also register in sound_registry_ or a later base-config reload will overwrite it.
         SYNCDBG(5, "Named sound '%s' loaded from '%s' -> ID %d", name, path_in, id);
         return id;
     }
@@ -818,23 +855,34 @@ SoundSmplTblID sound_manager_load_named_sound(const char* name, const char* path
     stem_prefix[digits_start] = '\0';
     int width = (int)(stem_len - digits_start);
     if (width == 0) { width = 1; base_num = 1; }
-    if (count > 32) count = 32;
+    if (count > 32) {
+        WARNLOG("Named sound '%s' requests %d variants; maximum is 32", name, count);
+        return 0;
+    }
     for (int i = 0; i < count; i++)
         snprintf(expanded[i], 512, "%s%0*d%s", stem_prefix, width, base_num + i, ext_part);
 
+    SoundLoadTransaction transaction(sm);
     SoundSmplTblID first_id = 0;
-    for (int i = 0; i < count; i++) {
-        char variant_name[256];
-        snprintf(variant_name, sizeof(variant_name), "%s_%d", name, i);
-        SoundSmplTblID id = load_named_sound_fs_or_zip(sm, variant_name, expanded[i]);
-        if (id <= 0) {
-            WARNLOG("Named sound variant %d not found on disk or in map zip: '%s' (name '%s')", i, expanded[i], name);
-            continue;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        bool contiguous = true;
+        for (int i = 0; i < count; i++) {
+            char variant_name[256];
+            snprintf(variant_name, sizeof(variant_name), "%s_%d", name, i);
+            SoundSmplTblID id = load_named_sound_fs_or_zip(sm, variant_name, expanded[i], attempt == 0);
+            if (id <= 0) {
+                WARNLOG("Named sound variant %d failed to load: '%s' (name '%s')", i, expanded[i], name);
+                return 0;
+            }
+            if (i == 0) first_id = id;
+            if (id != first_id + i) contiguous = false;
         }
-        if (first_id == 0) first_id = id;
+        if (contiguous) break;
+        // Replaced or cached variants may need a fresh contiguous bank range.
     }
     if (first_id > 0) {
         sm.registerSound(name, first_id, count);
+        transaction.committed = true;
         SYNCDBG(5, "Named sound '%s' loaded %d variant(s) starting at ID %d", name, count, first_id);
     }
     return first_id;
