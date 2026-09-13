@@ -31,6 +31,7 @@
 #include "bflib_sprite.h"
 #include "bflib_vidsurface.h"
 #include "bflib_vidraw.h"
+#include "kfx/renderer/WgpuCursor.h"
 
 #include "keeperfx.hpp"
 #include "post_inc.h"
@@ -75,20 +76,16 @@ void LbCursorSpriteSetScalingHeightSimple(long y, long sheight, long dheight)
     LbSpriteSetScalingHeightSimpleArray(cursor_ysteps_array, y, sheight, dheight);
 }
 
-/**
- * Draws the mouse pointer sprite on a display buffer.
- */
-static long PointerDraw(long x, long y, const struct TbSprite *spr, TbPixel *outbuf, unsigned long scanline)
+static bool PointerScaling(long x, long y, const struct TbSprite *spr)
 {
     unsigned int dwidth;
     unsigned int dheight;
-    // Prepare bounds
     dwidth = scale_ui_value_lofi(spr->SWidth);
     dheight = scale_ui_value_lofi(spr->SHeight);
     if ( (dwidth <= 0) || (dheight <= 0) )
-        return 1;
+        return false;
     if ( (lbDisplay.MouseWindowWidth <= 0) || (lbDisplay.MouseWindowHeight <= 0) )
-        return 1;
+        return false;
     // Normally it would be enough to check if ((dwidth+x) >= gwidth), but due to rounding we need to add swidth
     if ((x < 0) || ((dwidth + spr->SWidth + x) >= lbDisplay.MouseWindowWidth))
     {
@@ -103,11 +100,19 @@ static long PointerDraw(long x, long y, const struct TbSprite *spr, TbPixel *out
     } else {
         LbCursorSpriteSetScalingHeightSimple(y, spr->SHeight, dheight);
     }
-    int32_t *xstep;
-    int32_t *ystep;
-    {
-        xstep = &cursor_xsteps_array[0];
-        ystep = &cursor_ysteps_array[0];
+    return true;
+}
+
+static long PointerDraw(long x, long y, const struct TbSprite *spr, TbPixel *outbuf,
+    unsigned long scanline, bool gpu = false)
+{
+    if (!PointerScaling(x, y, spr)) return 1;
+    int32_t *xstep = cursor_xsteps_array;
+    int32_t *ystep = cursor_ysteps_array;
+    if (gpu) {
+        const KfxGpolyTarget target = {outbuf, static_cast<uint32_t>(scanline),
+            static_cast<uint32_t>(lbDisplay.MouseWindowHeight), static_cast<uint32_t>(scanline)};
+        if (kfx_wgpu_cursor_direct(target, spr, xstep, ystep)) return 0;
     }
     outbuf = &outbuf[xstep[0] + scanline * ystep[0]];
     const struct TbSourceBuffer buffer = {
@@ -116,6 +121,7 @@ static long PointerDraw(long x, long y, const struct TbSprite *spr, TbPixel *out
         spr->SHeight,
         spr->SWidth,
     };
+    kfx_wgpu_cursor_software(CursorSoftwareSprite);
     return LbSpriteDrawUsingScalingUpDataSolidLR(outbuf, scanline, lbDisplay.MouseWindowHeight, xstep, ystep, &buffer);
 }
 
@@ -125,6 +131,7 @@ LbI_PointerHandler::LbI_PointerHandler(void)
 {
     LbScreenSurfaceInit(&surf1);
     LbScreenSurfaceInit(&surf2);
+    gpu_cursor = nullptr;
     this->is_active = false;
     this->needs_redraw = false;
     this->sprite = NULL;
@@ -211,12 +218,18 @@ void LbI_PointerHandler::Initialise(const struct TbSprite *spr, struct TbPoint *
         return;
     }
     buf = (TbPixel *)surfbuf;
-    for (i=0; i < dstheight; i++)
-    {
-        memset(buf, 255, surf1.pitch);
-        buf += surf1.pitch;
+    gpu_cursor = new WgpuCursor;
+    if (!PointerScaling(0, 0, sprite) ||
+        !gpu_cursor->Initialise(surf1, sprite, cursor_xsteps_array, cursor_ysteps_array)) {
+        delete gpu_cursor;
+        gpu_cursor = nullptr;
+        for (i=0; i < dstheight; i++)
+        {
+            memset(buf, 255, surf1.pitch);
+            buf += surf1.pitch;
+        }
+        PointerDraw(0, 0, this->sprite, (TbPixel *)surfbuf, surf1.pitch);
     }
-    PointerDraw(0, 0, this->sprite, (TbPixel *)surfbuf, surf1.pitch);
     LbScreenSurfaceUnlock(&surf1);
     this->position = npos;
     this->spr_offset = noffset;
@@ -224,11 +237,13 @@ void LbI_PointerHandler::Initialise(const struct TbSprite *spr, struct TbPoint *
     this->is_active = true;
     NewMousePos();
     this->needs_redraw = false;
-    LbScreenSurfaceBlit(&surf2, this->draw_pos_x, this->draw_pos_y, &rect_1038, 0x10|0x02);
+    Backup(true);
 }
 
 void LbI_PointerHandler::Draw(bool a1)
 {
+    if (gpu_cursor && gpu_cursor->Compose(draw_pos_x, draw_pos_y, rect_1038, false)) return;
+    kfx_wgpu_cursor_software(CursorSoftwareCompose);
     unsigned long flags;
     flags = 0x10 | 0x08 | 0x04;
     if ( a1 )
@@ -238,16 +253,20 @@ void LbI_PointerHandler::Draw(bool a1)
 
 void LbI_PointerHandler::Backup(bool a1)
 {
+    this->needs_redraw = false;
+    if (gpu_cursor && gpu_cursor->Backup(surf2, draw_pos_x, draw_pos_y, rect_1038)) return;
+    kfx_wgpu_cursor_software(CursorSoftwareBackup);
     unsigned long flags;
     flags = 0x10;
     if ( a1 )
       flags |= 0x02;
-    this->needs_redraw = false;
     LbScreenSurfaceBlit(&this->surf2, this->draw_pos_x, this->draw_pos_y, &rect_1038, flags);
 }
 
 void LbI_PointerHandler::Undraw(bool a1)
 {
+    if (gpu_cursor && gpu_cursor->Compose(draw_pos_x, draw_pos_y, rect_1038, true)) return;
+    kfx_wgpu_cursor_software(CursorSoftwareCompose);
     unsigned long flags;
     flags = 0x10 | 0x08;
     if ( a1 )
@@ -267,6 +286,8 @@ void LbI_PointerHandler::Release(void)
         position = NULL;
         sprite = NULL;
         spr_offset = NULL;
+        delete gpu_cursor;
+        gpu_cursor = nullptr;
         LbScreenSurfaceRelease(&surf1);
         LbScreenSurfaceRelease(&surf2);
     }
@@ -328,7 +349,7 @@ void LbI_PointerHandler::OnBeginSwap(void)
     if (RendererLockFramebuffer() == Lb_SUCCESS)
     {
       PointerDraw(position->x - scale_ui_value_lofi(spr_offset->x), position->y - scale_ui_value_lofi(spr_offset->y),
-          sprite, lbDisplay.WScreen, lbDisplay.GraphicsScreenWidth);
+          sprite, lbDisplay.WScreen, lbDisplay.GraphicsScreenWidth, true);
       RendererUnlockFramebuffer();
     }
 }
