@@ -84,7 +84,14 @@ remains unchanged when control is disabled.
 
 ```sh
 python3 -m unittest discover -s scripts/tests -p 'test_game_control.py'
+python3 scripts/game-control.py launch --out out/control-test --level 1
+KFX_CONTROL_TEST_SESSION=out/control-test/session.json python3 -m unittest discover -s scripts/tests -p 'test_game_control_integration.py'
+python3 scripts/game-control.py quit --session out/control-test/session.json
 ```
+
+The opt-in integration tests execute the engine's authentication and framing,
+input cancellation and subscription cleanup. They require unpaused gameplay and
+move the isolated camera during the held-input cancellation check.
 
 Screenshots plus state predicates establish UI outcomes. For rendering experiments,
 record the executable hash and final Rust verification counts; run performance

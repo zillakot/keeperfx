@@ -70,6 +70,17 @@ struct ApiGlobals
     kfx_socket_t activeSocket;  // Active client socket (only one client at a time)
 } api = { KFX_INVALID_SOCKET, KFX_INVALID_SOCKET }; // sockets start invalid, not 0 (0 is a valid fd)
 
+void api_clear_all_subscriptions(void);
+
+static void api_drop_client(void)
+{
+    api_clear_all_subscriptions();
+    if (game_control_enabled()) game_control_disconnect();
+    if (api.activeSocket != KFX_INVALID_SOCKET) kfx_closesocket(api.activeSocket);
+    api.activeSocket = KFX_INVALID_SOCKET;
+    control_buffer_used = 0;
+}
+
 /**
  * Structure representing a subscribed variable.
  *
@@ -201,9 +212,7 @@ static void api_send(const char *data, int len)
                     game_control_enabled() ? &timeout : NULL) > 0)
                     continue;
                 if (game_control_enabled()) {
-                    game_control_disconnect();
-                    kfx_closesocket(api.activeSocket);
-                    api.activeSocket = KFX_INVALID_SOCKET;
+                    api_drop_client();
                 }
             }
         }
@@ -875,8 +884,7 @@ int api_unsubscribe_var(PlayerNumber plyr_idx, unsigned char valtype, short vali
 
 void api_check_var_update()
 {
-    // Do nothing if API server is not active
-    if (!api.activeSocket)
+    if (api.activeSocket == KFX_INVALID_SOCKET)
     {
         return;
     }
@@ -924,6 +932,7 @@ void api_check_var_update()
                 api_subscriptions[i].var.player_id,
                 api_subscriptions[i].var.name,
                 api_subscriptions[i].var.val);
+            if (api.activeSocket == KFX_INVALID_SOCKET) return;
         }
     }
 }
@@ -1707,7 +1716,7 @@ void api_update_server()
             }
 
             if (game_control_enabled()) {
-                for (int i = 0; i < received; ++i) {
+                for (int i = 0; i < received && api.activeSocket != KFX_INVALID_SOCKET; ++i) {
                     if (buffer[i] == '\n') {
                         control_buffer[control_buffer_used] = 0;
                         if (control_buffer_used)
@@ -1716,10 +1725,7 @@ void api_update_server()
                     } else if (control_buffer_used + 1 < sizeof(control_buffer)) {
                         control_buffer[control_buffer_used++] = buffer[i];
                     } else {
-                        game_control_disconnect();
-                        kfx_closesocket(api.activeSocket);
-                        api.activeSocket = KFX_INVALID_SOCKET;
-                        control_buffer_used = 0;
+                        api_drop_client();
                         break;
                     }
                 }
@@ -1730,11 +1736,7 @@ void api_update_server()
         else if (received == 0)
         {
             // Graceful disconnect
-            if (game_control_enabled()) game_control_disconnect();
-            control_buffer_used = 0;
-            api_clear_all_subscriptions();
-            kfx_closesocket(api.activeSocket);
-            api.activeSocket = KFX_INVALID_SOCKET;
+            api_drop_client();
             JUSTLOG("API connection closed");
         }
         else
@@ -1747,11 +1749,7 @@ void api_update_server()
             if (errno != EAGAIN && errno != EWOULDBLOCK)
 #endif
             {
-                if (game_control_enabled()) game_control_disconnect();
-                control_buffer_used = 0;
-                api_clear_all_subscriptions();
-                kfx_closesocket(api.activeSocket);
-                api.activeSocket = KFX_INVALID_SOCKET;
+                api_drop_client();
                 JUSTLOG("API connection closed");
             }
         }
@@ -1759,11 +1757,7 @@ void api_update_server()
 
     if (game_control_enabled() && api.activeSocket != KFX_INVALID_SOCKET &&
         SDL_GetTicks() - control_client_activity > 3000) {
-        game_control_disconnect();
-        api_clear_all_subscriptions();
-        kfx_closesocket(api.activeSocket);
-        api.activeSocket = KFX_INVALID_SOCKET;
-        control_buffer_used = 0;
+        api_drop_client();
     }
 
     // Handle variable subscriptions
