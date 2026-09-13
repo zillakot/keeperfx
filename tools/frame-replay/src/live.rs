@@ -573,6 +573,48 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a native Metal adapter"]
+    fn nearest_mapping_is_exact_at_maximum_odd_widths() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let mut renderer =
+            Renderer::with_format(device, queue, wgpu::TextureFormat::Bgra8Unorm).unwrap();
+        let palette = crate::frame::Frame::fixture().palette;
+        for (width, output_width) in [(8191, 8192), (8192, 8191), (4095, 4096)] {
+            let indices: Vec<u8> = (0..width).map(|index| (index % 256) as u8).collect();
+            let texture = renderer.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("odd maximum-width test"),
+                size: wgpu::Extent3d {
+                    width: output_width,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            renderer
+                .render_into(
+                    width,
+                    1,
+                    &indices,
+                    width,
+                    &palette,
+                    output_width,
+                    1,
+                    &texture.create_view(&Default::default()),
+                )
+                .unwrap();
+            verify_surface(&renderer, &texture, &indices, width, 1, width, &palette).unwrap();
+        }
+    }
+
+    #[test]
     fn rejects_null_handles_and_invalid_modes() {
         let mut error = [0i8; 100];
         unsafe {

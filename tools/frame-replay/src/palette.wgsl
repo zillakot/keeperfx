@@ -10,7 +10,7 @@ fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let pixel = min(vec2<u32>(position.xy * vec2<f32>(parameters.xy) / vec2<f32>(parameters.zw)), parameters.xy - vec2<u32>(1));
+    let pixel = ((2u * vec2<u32>(position.xy) + vec2<u32>(1)) * parameters.xy) / (2u * parameters.zw);
     let index = textureLoad(indices, vec2<i32>(pixel), 0).r;
     return vec4<f32>(textureLoad(palette, vec2<i32>(i32(index), 0), 0)) / 255.0;
 }
