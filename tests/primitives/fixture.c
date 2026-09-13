@@ -15,6 +15,8 @@ static void require(int condition, const char *message)
 
 unsigned short RendererGetDrawFlags(void) { return flags; }
 
+int kfx_wgpu_native_cpu_barrier(void) { return 1; }
+
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
     const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
     const struct KfxWgpuNativeResource *table, KfxWgpuNativeOracle oracle, void *context)
