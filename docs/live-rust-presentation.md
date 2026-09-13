@@ -53,6 +53,9 @@ through a bounded UTF-8 buffer and marks a failed presenter terminal. Foreign
 pointers must still satisfy the C contract; Rust cannot validate arbitrary addresses.
 
 SDL continues to process focus, mouse capture, fullscreen and resize events.
+When the cursor is uncaptured, absolute SDL event coordinates map from logical
+window size to framebuffer size, including button events after a pointer warp.
+Captured mouse movement retains its existing relative-input path.
 Every frame queries physical window dimensions; the surface is reconfigured when
 size or VSync changes. Minimized or zero-size windows skip presentation. Acquisition
 Timeout/Occluded also skips a frame; outdated surfaces reconfigure and lost

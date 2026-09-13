@@ -288,6 +288,15 @@ static TbKeyCode mousebutton_to_keycode(const Uint8 *button)
     return (KC_MOUSE1 + 1 - *button);
 }
 
+static void sync_ungrabbed_mouse_position(float x, float y)
+{
+    int width = 0, height = 0;
+    GetSDLWindowSystem()->GetWindowSize(&width, &height);
+    if (width > 0 && height > 0)
+        pointerHandler.SetMousePosition(static_cast<long>(x * LbScreenWidth() / width),
+            static_cast<long>(y * LbScreenHeight() / height));
+}
+
 static void process_event(const SDL_Event *ev)
 {
     struct TbPoint mouseDelta;
@@ -354,6 +363,15 @@ static void process_event(const SDL_Event *ev)
                 s_recenter_pending = true;
             }
         }
+        else if (!lbMouseGrabbed)
+        {
+            sync_ungrabbed_mouse_position(ev->motion.x, ev->motion.y);
+            mouseDelta.x = 0;
+            mouseDelta.y = 0;
+            isMouseActivated = false;
+            frac_x = 0;
+            frac_y = 0;
+        }
         else
         {
             mouseDelta.x = ev->motion.xrel;
@@ -381,6 +399,8 @@ static void process_event(const SDL_Event *ev)
             {
             return;
             }
+            if (!lbMouseGrabbed)
+                sync_ungrabbed_mouse_position(ev->button.x, ev->button.y);
             mouseDelta.x = 0;
             mouseDelta.y = 0;
             mouseControl(mouse_button_actions_mapping(ev->type, &ev->button), &mouseDelta);
