@@ -22,6 +22,11 @@ extern "C" {
  * Scaling ranges are target-relative; table uses the ordinary blend axes. */
 #define KFX_WGPU_DRAW_RAW_IMAGE 7u
 #define KFX_WGPU_DRAW_TILED_IMAGE 8u
+#define KFX_WGPU_DRAW_TRIG 9u
+#define KFX_WGPU_DRAW_LENS_EFFECT 10u
+/* TRIG source begins with three x/y/u/v/shade little-endian i32 vertices,
+ * then source_y texture bytes. source_x is the native mode, source_width is
+ * the native long width (64). Table is 64 fade rows followed by 256 ghost rows. */
 /* RAW_IMAGE covers the target; start is signed image origin and step is destination size. */
 /* Circle radius is source_width; bounds are the inclusive diameter square. */
 #define KFX_WGPU_DRAW_REPLACE 0u

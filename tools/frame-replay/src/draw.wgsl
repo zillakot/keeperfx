@@ -99,6 +99,10 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
             let shade = low & 0xff00u;
             source = assets[c.assets.y + shade + assets[c.assets.x + uv]];
         }
+        if c.operation.x == 9u {
+            destination = trig_sample(c, pixel, destination);
+            continue;
+        }
         if c.operation.x == 6u { source = sprite_sample(c, id.xy); }
         if c.operation.x == 7u || c.operation.x == 8u { source = raw_sample(c, id.xy); }
         if source == c.options.x { continue; }

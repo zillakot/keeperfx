@@ -1,3 +1,9 @@
+#[path = "draw_effects.rs"]
+mod effects;
+#[path = "draw_trig.rs"]
+mod trig;
+pub const LENS_EFFECT: u32 = 10;
+pub const TRIG: u32 = 9;
 #[path = "draw_sprites.rs"]
 mod sprites;
 #[path = "draw_triangles.rs"]
@@ -109,6 +115,9 @@ pub struct DrawRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     compute: wgpu::ComputePipeline,
+    compute_sprite_ordered: wgpu::ComputePipeline,
+    effects: Option<wgpu::ComputePipeline>,
+    trig_validate: Option<wgpu::ComputePipeline>,
     triangles: Option<triangles::TrianglePipelines>,
     present: wgpu::RenderPipeline,
     targets: HashMap<u64, Target>,
@@ -134,7 +143,9 @@ impl DrawRenderer {
                     "\n",
                     include_str!("draw_sprites.wgsl"),
                     "\n",
-                    include_str!("draw_raw.wgsl")
+                    include_str!("draw_raw.wgsl"),
+                    "\n",
+                    include_str!("draw_trig.wgsl")
                 )
                 .into(),
             ),
@@ -147,6 +158,15 @@ impl DrawRenderer {
             compilation_options: Default::default(),
             cache: None,
         });
+        let compute_sprite_ordered =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("ordered sprite traversal"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("sprite_ordered"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("GPU-owned palette presentation"),
             source: wgpu::ShaderSource::Wgsl(include_str!("draw_palette.wgsl").into()),
@@ -181,6 +201,9 @@ impl DrawRenderer {
             device,
             queue,
             compute,
+            compute_sprite_ordered,
+            effects: None,
+            trig_validate: None,
             triangles: None,
             present,
             targets: HashMap::new(),
@@ -280,14 +303,25 @@ impl DrawRenderer {
 
     pub fn submit(&mut self, target: u64, commands: &[Command]) -> Result<()> {
         self.check_status()?;
-        let target = self.targets.get(&target).context("unknown target")?;
+        if commands.len() == 1 && commands[0].kind == LENS_EFFECT {
+            return self.submit_effect(target, &commands[0]);
+        }
+        if commands.iter().any(sprites::ordered) {
+            self.preflight_ordered_commands(target, commands)?;
+            return self.submit_ordered_sprites(target, commands);
+        }
+        if commands.iter().any(|c| c.kind == TRIG) {
+            self.prepare_trig();
+        }
+        let (target_width, target_height) = self.target_dimensions(target)?;
         let (words, assets) = pack_commands(
             commands,
             &self.resources,
-            target.width,
-            target.height,
+            target_width,
+            target_height,
             self.storage_limit() as usize,
         )?;
+        let target = self.targets.get(&target).context("unknown target")?;
         if commands.is_empty() {
             return Ok(());
         }
@@ -332,6 +366,23 @@ impl DrawRenderer {
             ],
             wgpu::BufferUsages::UNIFORM,
         );
+        self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+        self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4;
+        if commands.iter().any(|c| c.kind == TRIG) {
+            let valid = self.validate_trig_batch(
+                &command_buffer,
+                &asset_buffer,
+                &parameters,
+                target.width,
+                target.height,
+            )?;
+            self.counters.readback_bytes += 4;
+            self.counters.command_upload_bytes += 4;
+            ensure!(
+                valid,
+                "triangle has an invalid lookup or undefined native horizontal step"
+            );
+        }
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered drawing batch"),
             layout: &self.compute.get_bind_group_layout(0),
@@ -357,8 +408,7 @@ impl DrawRenderer {
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
-        self.counters.asset_upload_bytes += assets.len() as u64 * 4;
-        self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4;
+
         Ok(())
     }
 
@@ -532,7 +582,7 @@ fn pack_commands(
             "invalid command ABI"
         );
         ensure!(
-            c.kind <= TILED_IMAGE && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
+            c.kind <= TRIG && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
             "invalid drawing operation"
         );
         let rectangle = if c.kind == CLEAR {
@@ -553,7 +603,7 @@ fn pack_commands(
         let mut source_pitch = 0;
         if matches!(
             c.kind,
-            IMAGE | GPOLY_SPAN | SPRITE | RAW_IMAGE | TILED_IMAGE
+            IMAGE | GPOLY_SPAN | SPRITE | RAW_IMAGE | TILED_IMAGE | TRIG
         ) {
             let source = resources.get(&c.source).context("unknown source version")?;
             source_pitch = source.pitch;
@@ -591,6 +641,8 @@ fn pack_commands(
                         "invalid raw image scaling"
                     );
                 }
+            } else if c.kind == TRIG {
+                trig::validate(c, source, width, height)?;
             } else if c.kind == SPRITE {
                 sprites::validate(c, source)?;
             } else {
@@ -604,12 +656,18 @@ fn pack_commands(
                 );
             }
         }
-        if c.blend != 0 || c.kind == GPOLY_SPAN {
+        if c.blend != 0 || c.kind == GPOLY_SPAN || c.kind == TRIG {
             let table = resources.get(&c.table).context("unknown table version")?;
             ensure!(
                 table.width == 256 && table.pitch == 256,
                 "invalid lookup table layout"
             );
+            if c.kind == TRIG {
+                ensure!(
+                    table.height == 320,
+                    "triangle requires fade and ghost tables"
+                );
+            }
             if c.blend != 0 {
                 ensure!(table.height >= 256, "blend table requires 256 rows");
             }

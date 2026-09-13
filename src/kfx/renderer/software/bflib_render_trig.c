@@ -4444,14 +4444,11 @@ void trig_render_md26(struct TrigLocalRend *tlr)
     }
 }
 
-/** Triangle rendering function.
- *
- * @param point_a
- * @param point_b
- * @param point_c
- */
+#include "kfx/renderer/software/WgpuTrig.h"
+
 void trig(struct PolyPoint *point_a, struct PolyPoint *point_b, struct PolyPoint *point_c)
 {
+    if (wgpu_trig(point_a, point_b, point_c)) return;
     struct PolyPoint *opt_a;
     struct PolyPoint *opt_b;
     struct PolyPoint *opt_c;
