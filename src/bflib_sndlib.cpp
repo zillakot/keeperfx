@@ -602,6 +602,12 @@ extern "C" void FreeAudio() {
 	SYNCDBG(6, "Audio cleanup complete");
 }
 
+extern "C" void custom_sound_bank_truncate(size_t size) {
+    if (size < g_custom_bank.size()) {
+        g_custom_bank.erase(g_custom_bank.begin() + static_cast<ptrdiff_t>(size), g_custom_bank.end());
+    }
+}
+
 extern "C" void custom_sound_bank_clear() {
 	g_custom_bank.clear();
 	g_id_redirects.clear();

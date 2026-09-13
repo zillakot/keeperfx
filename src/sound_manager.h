@@ -243,14 +243,13 @@ private:
         int count = 1;
     };
     
-    // Named sound registry entry (for built-in sounds)
     struct SoundEntry {
         SoundSmplTblID sample_id;
         int count;  // For random selection from consecutive IDs
     };
     
     std::unordered_map<std::string, CustomSoundEntry> custom_sounds_;
-    std::unordered_map<std::string, SoundEntry> sound_registry_;  // Named sound registry
+    std::unordered_map<std::string, SoundEntry> sound_registry_;
     std::vector<CreatureSoundOverride> creature_sound_overrides_;
     SoundSmplTblID next_custom_sample_id_;
     bool initialized_;

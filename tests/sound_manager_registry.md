@@ -6,7 +6,7 @@ up the loaded custom asset separately. A reused source republishes its named
 mapping, so loading that declaration after a numeric override takes effect.
 
 Filesystem reuse compares the resolved path; editing bytes at the same path is
-not a hot-reload contract. ZIP reuse compares the compressed source bytes exactly;
+not a hot-reload contract. ZIP reuse compares the source audio bytes exactly;
 the manager retains those bytes to distinguish same-name assets from different
 map bundles without relying on a hash collision assumption.
 
@@ -14,9 +14,9 @@ A sequential family reuses its buffers only when the resulting IDs are contiguou
 Otherwise it allocates a contiguous range. Every requested variant must load, and
 the supported maximum is 32. Missing, invalid or oversized families return failure
 and preserve previous registry/cache mappings. This also keeps the existing raw-ID
-redirect caller from installing an incomplete range. Successfully decoded buffers
-from a failed attempt remain unreferenced until the bank's normal map rollback or
-reset; this change does not add a second bank truncation owner.
+redirect caller from installing an incomplete range. The family transaction
+rolls back newly decoded, unpublished buffers on failure, so repeated invalid
+attempts cannot grow the bank. Existing published IDs remain unchanged.
 
 Campaign snapshots restore the active named mappings, variant counts and custom
 source cache. The existing caller still restores the bank watermark and raw-ID
@@ -43,7 +43,7 @@ Coverage includes numeric/custom layering, identical and different sources,
 filesystem/ZIP replacement, corrupt overrides, reused/scattered family variants,
 single/family/count changes, atomic failed-family publication, oversized families,
 campaign restoration and bank reset. The test simulates the separate bank truncation;
-it does not execute OpenAL, decode real WAV files, parse a complete campaign config,
+it does not execute OpenAL or its buffer truncation, decode real WAV files, parse a complete campaign config,
 or establish listening quality or device behavior.
 
 At parent commit `66443002b`, the same regression fixture compiled against the

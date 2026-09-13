@@ -15,6 +15,7 @@
 // Bridge functions from bflib_sndlib.cpp
 extern "C" {
     int custom_sound_bank_size();
+    void custom_sound_bank_truncate(size_t size);
     TbBool custom_sound_load_wav(const char* filepath, int sample_id);
     TbBool custom_sound_load_wav_mem(const unsigned char* data, size_t size, const char* logical_name, int sample_id);
     SoundSmplTblID get_custom_offset(void);
@@ -27,17 +28,26 @@ struct SoundLoadTransaction {
     decltype(SoundManager::custom_sounds_) custom_sounds;
     decltype(SoundManager::sound_registry_) registry;
     size_t total_custom_sounds;
+    size_t bank_size;
     bool committed = false;
 
     explicit SoundLoadTransaction(SoundManager& sm)
         : manager(sm), custom_sounds(sm.custom_sounds_), registry(sm.sound_registry_),
-          total_custom_sounds(sm.total_custom_sounds_) {}
+          total_custom_sounds(sm.total_custom_sounds_), bank_size(custom_sound_bank_size()) {}
+
+    void rewind() {
+        manager.custom_sounds_ = custom_sounds;
+        manager.sound_registry_ = registry;
+        manager.total_custom_sounds_ = total_custom_sounds;
+        custom_sound_bank_truncate(bank_size);
+    }
 
     ~SoundLoadTransaction() {
         if (!committed) {
             manager.custom_sounds_ = std::move(custom_sounds);
             manager.sound_registry_ = std::move(registry);
             manager.total_custom_sounds_ = total_custom_sounds;
+            custom_sound_bank_truncate(bank_size);
         }
     }
 };
@@ -865,6 +875,7 @@ SoundSmplTblID sound_manager_load_named_sound(const char* name, const char* path
     SoundLoadTransaction transaction(sm);
     SoundSmplTblID first_id = 0;
     for (int attempt = 0; attempt < 2; ++attempt) {
+        if (attempt > 0) transaction.rewind();
         bool contiguous = true;
         for (int i = 0; i < count; i++) {
             char variant_name[256];

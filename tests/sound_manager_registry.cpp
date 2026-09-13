@@ -22,6 +22,7 @@ extern "C" {
 int custom_sound_bank_size() { return static_cast<int>(bank.size()); }
 SoundSmplTblID get_custom_offset() { return 1000; }
 void custom_sound_bank_clear() { bank.clear(); }
+void custom_sound_bank_truncate(size_t size) { bank.resize(size); }
 TbBool custom_sound_load_wav(const char* filepath, int sample_id) {
     auto found = files.find(filepath);
     if (found == files.end() || found->second == "invalid") return false;
@@ -160,7 +161,9 @@ int main() {
           "identical contiguous family reuses buffers");
     files["replacement.wav"] = "replacement";
     sm.loadCustomSound("HIT_1", "replacement.wav");
+    const auto before_reload = bank.size();
     const auto reloaded = sound_manager_load_named_sound("HIT", "hit01.wav", 3);
+    check(bank.size() == before_reload + 3, "scattered family allocates only one new range");
     expect("HIT", reloaded, 3);
     check(bank[reloaded - 1000] == "one" && bank[reloaded - 999] == "two" && bank[reloaded - 998] == "three", "cached variants cannot scatter family");
     sound_manager_save_snapshot();
@@ -171,6 +174,7 @@ int main() {
     disk("map03.wav", "map-three");
     check(sound_manager_load_named_sound("HIT", "map01.wav", 3) == 0, "incomplete family rejected");
     expect("HIT", reloaded, 3);
+    check(bank.size() == family_watermark, "failed family rolls back decoded buffers");
     check(sm.getCustomSoundId("HIT_0") == variant0, "failed family rolls back variant registry and cache");
     expect("HIT_0", variant0, 1);
     sound_manager_register("HIT", 8, 2);
@@ -187,6 +191,11 @@ int main() {
     check(bank.size() == before_failure, "oversized family adds no buffers");
     check(sound_manager_load_named_sound("RAW_ALIAS", "map01.wav", 3) == 0,
           "failed raw alias family returns failure to redirect caller");
+    check(bank.size() == before_failure, "failed new family retains no buffers");
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        check(sound_manager_load_named_sound("RAW_ALIAS", "map01.wav", 3) == 0, "repeated invalid family fails");
+        check(bank.size() == before_failure, "repeated invalid family cannot grow bank");
+    }
     check(!sound_manager_is_registered("RAW_ALIAS") && !sound_manager_is_registered("RAW_ALIAS_0"),
           "failed new family publishes no registry entries");
     std::puts("SoundManager production registry and named loader tests passed");
