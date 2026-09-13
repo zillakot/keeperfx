@@ -33,9 +33,11 @@ test oracle work from error recovery. `KFX_WGPU_DRAW_FAIL_INIT=1` injects startu
 failure; `KFX_WGPU_DRAW_FAIL_AFTER=N` fails the batch after N successful batches.
 These validation modes are unsuitable for performance measurement.
 
-`kfx_wgpu_native_draw` provides the synchronous extension seam for new primitive
-families. It flushes earlier terrain, snapshots optional source/table resources,
-and returns 1 only after GPU indices have been committed to the native target.
+`kfx_wgpu_native_draw` provides the extension seam for new primitive families. It
+orders against earlier terrain, snapshots optional source/table resources, and
+returns 1 once the command is committed to the GPU stream. Outside a resident
+lease that still means committed to the native target; inside a resident frame
+the batch reaches it at the next barrier, readback or frame end.
 On 0 the caller runs its existing CPU drawing once. Its optional oracle callback
 receives a separate output buffer and pitch; it must redirect all destination
 aliases and guard recursive submission. Verification mode declines commands
