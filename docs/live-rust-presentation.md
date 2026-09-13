@@ -129,6 +129,13 @@ software drawing. The [canonical coverage ledger](product/rust-port-plan.md#exec
 records exactly which paths are implemented and validated. Full GPU drawing and
 a speedup are not established.
 
+This path merges to `master` as an opt-in partial foundation; software drawing
+and SDL presentation stay default. At 1920×1080 it currently costs about 68–70 ms
+per drawn frame against 3.3–3.5 ms software, dominated by waiting rather than
+computation. The [status section](product/rust-port-plan.md#status-2026-09-14)
+records the measurement, the diagnosis and the single-stream restructure that
+follows.
+
 The [indexed backend](../tools/frame-replay/src/draw.rs) stores one `u32` palette
 index per pixel. CPU binning preserves command order within 16×16 tiles; each GPU
 invocation owns one destination pixel and evaluates its ordered commands. Exact
@@ -179,12 +186,13 @@ cursor composition and existing screenshot/recording behavior. It also incurs
 full-target transfers and waits. Resource versions are repacked/uploaded per
 batch; the path has no measured performance benefit.
 
-The shadow slice at `3add2d680` preserves the native partial clear and retained scratch
-bytes. Its generated mask feeds both triangles before a counted 64 KiB compatibility
-mirror commit; subsequent shadows still upload the prior scratch checkpoint. The
-cursor slice at `95c4ec603` keeps native scale/hotspot and begin/end-swap timing. Its
-SDL wrappers synchronize the screen for backup/draw/restore and retain native recovery
-checkpoints. The borrowed-context target methods queue GPU copies without those
+The shadow slice at `feat/wgpu-drawing` commit `3add2d680` preserves the native
+partial clear and retained scratch bytes. Its generated mask feeds both triangles
+before a counted 64 KiB compatibility mirror commit; subsequent shadows still
+upload the prior scratch checkpoint. The cursor slice at `feat/wgpu-drawing`
+commit `95c4ec603` keeps native scale/hotspot and begin/end-swap timing. Its SDL
+wrappers synchronize the screen for backup/draw/restore and retain native
+recovery checkpoints. The borrowed-context target methods queue GPU copies without those
 transfers, but their owner must outlive the cursor and supply recovery history. These
 seams do not establish complete frame residency, visible presentation or speedup.
 
