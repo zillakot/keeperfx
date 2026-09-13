@@ -243,17 +243,17 @@ ownership, synchronization, counters and failure behavior.
 | Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Original unsorted vertices → GPU setup, clipping, scan conversion and ordered texture/shade stores for `QK_PolygonStandard`, `QK_PolyMode5`, near-FP textured subtypes 0–11; immutable texture/fade snapshots | Other polygon modes and near-FP solid subtypes 12–23; broader scene/resource coverage |
 | Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` original-vertex terrain batching is wired | Independent front-view runtime proof; sprites and interleaved overlays |
 | General triangles and creature shadows: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | CPU reference | All modes, destination-dependent blending and GPU shadow-mask generation |
-| World sprites, creatures, objects and effects: [sprite rasterizers](../../src/kfx/renderer/software/bflib_vidraw_spr_norm.c) | CPU reference | Scaling, flips, water clipping, remap/fade/ghost/alpha, custom assets; preserve CPU picking side effects once |
+| World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores | Solid scaled-up horizontal flips with duplicated rows remain native (588 fixture cases); creature shadow masks, custom-asset/gameplay coverage and direct cursor kernels remain open |
 | Pixels, boxes, HV lines and circles: [bflib_vidraw.c](../../src/kfx/renderer/software/bflib_vidraw.c) | Native GPU hooks; circles use original center/radius and preserve repeated blend hits | Independent review and combined-head native checks; circle radii above 8,191 and other unsupported inputs decline to CPU |
-| General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level pixel hooks only | General-line coverage/color selection and sprite commands; retain interleaving with world drawing |
-| Text, including Asian fonts: [bflib_sprfnt.c](../../src/bflib_sprfnt.c) | CPU reference | Glyph/mask draws, scaling, clipping, underline/shadow and direct DBC writes; CPU layout may remain |
-| Raw/tiled images, frontend backgrounds, landview/torture/zoom: [gui_draw.c](../../src/gui_draw.c), [front_landview.c](../../src/front_landview.c), [front_simple.c](../../src/front_simple.c), [front_torture.c](../../src/front_torture.c) | Generic GPU image command tested; these callers remain CPU | Source-asset image/huge-sprite commands and exact scaling/clipping |
-| Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | CPU reference | Semantic map commands, rotation/masks and framebuffer-derived minimap background state |
+| General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level primitives; scaled normal/remap/one-colour/alpha and immediate normal/one-colour sprites | General-line coverage/color selection, unsupported sprite modes and full interleaving validation |
+| Text, including Asian fonts: [bflib_sprfnt.c](../../src/bflib_sprfnt.c) | Ordinary sprite-based glyphs reach GPU sprite wrappers; CPU layout retained | Direct DBC bitmap glyphs, unsupported sprite modes and complete underline/shadow/font validation |
+| Raw/tiled images, frontend backgrounds, landview/torture/zoom: [raw adapter](../../src/kfx/renderer/software/WgpuRawImage.c), [raw helper](../../src/front_simple.c), [slab helper](../../src/gui_draw.c) | Original raw8 assets with exact floor-endpoint scaling, clipping and black letterbox; 64×64 tiled slabs with native clipped phase; shared static frontend/loading/landview/torture/parchment backgrounds | Huge compressed sprites, landview/parchment zoom and surrounding transforms; aliased source/destination inputs remain native |
+| Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | Static raw parchment background uses GPU image helper; map generation/transforms remain CPU | Semantic map commands, rotation/masks and framebuffer-derived minimap background state |
 | Built-in possession lenses: [lens implementations](../../src/kfx/lense/) | CPU reference | GPU target views and indexed displacement, flyeye, mist, overlay and palette effects; preserve alias/order behavior |
 | Custom Lua lenses: [LuaLensEffect.cpp](../../src/kfx/lense/LuaLensEffect.cpp), [lua_api_lens.c](../../src/lua_api_lens.c) | CPU reference | Ordered GPU writes/copies and exact read-after-write compatibility for arbitrary pixel-dependent Lua control flow; CPU-script readback is explicit, never hidden CPU-rendered lens upload |
 | Smoothing and map fades/transitions: [engine_redraw.c](../../src/engine_redraw.c) | CPU reference | GPU target snapshots and exact indexed effects, including traversal/truncation quirks |
 | Movies: [bflib_fmvids.cpp](../../src/bflib_fmvids.cpp) | CPU decode and screen drawing | Upload decoded source assets; GPU centering/scaling/interlace and palette timing |
-| Cursor, clears, screenshots and recording: [bflib_mspointer.cpp](../../src/bflib_mspointer.cpp), [RendererSoftware.cpp](../../src/kfx/renderer/RendererSoftware.cpp), [scrcapt.c](../../src/scrcapt.c) | CPU composition/capture of the synchronized native image | Final GPU cursor/clear; authoritative GPU capture with matching frame/palette/cursor semantics |
+| Cursor, clears, screenshots and recording: [bflib_mspointer.cpp](../../src/bflib_mspointer.cpp), [RendererSoftware.cpp](../../src/kfx/renderer/RendererSoftware.cpp), [scrcapt.c](../../src/scrcapt.c) | GPU indexed clear for full SDL surface clips, preserving row padding; CPU cursor composition/capture of the synchronized native image | Nonfull SDL clip clears, direct cursor kernel and backup/restore; authoritative GPU capture with matching frame/palette/cursor semantics |
 | Cross-family palette, transparency, clipping and scaling | Bounded command and offscreen palette-output fixtures pass | Full-family index/RGBA comparisons; table versions, target aliases and strict CPU-writer/readback audit |
 
 The reviewed original-vertex [GPU preparation test](../../tools/frame-replay/tests/gpoly_gpu.rs)
@@ -272,6 +272,22 @@ reconstruction with ASan/Metal. None establishes whole-frame GPU ownership or sp
 The 2D [native fixture generator](../../tests/primitives/fixture.c) compares actual
 legacy output for the supported primitives; it does not establish full HUD/text
 coverage.
+
+The sprite slice through `a7be8ce6b` has 10,789 exact native-reference Metal cases
+from the [ASan native fixture](../../tests/sprites/fixture.c), covering RLE transparency
+versus opaque indices 0/255, scale/flip/table combinations, clipping and source-frame
+offsets. Its 588 scaled solid horizontal-flip declines preserve a native duplicated-row
+copy quirk; they are outstanding GPU work, not passing GPU coverage. The cursor's
+direct scaling kernel and creature-shadow mask loop bypass the sprite wrappers.
+The raw slice through `8a38178ef` has 270 exact native-reference Metal cases from
+the [raw fixture](../../tests/raw-images/fixture.c), including tile clipping/phase and
+padded clears. Both suites check isolated recursive oracles and source snapshots.
+Independent source review found no additional defect; these bounded fixtures do
+not replace combined-head gameplay, complete asset coverage or performance evidence.
+The native build at `8a38178ef` passed with binary SHA-256
+`63a0c73186aae4ef5b53470bdb0e9de7f6cf7e043689b295aae7e0c302e58228`;
+that is compilation/linking evidence only. Sprite/raw commands still use the
+synchronous full-target upload/readback bridge, including clears and backgrounds.
 
 The original-vertex native smoke used original campaign level 1, a 640×480 indexed
 target, isolated assets/settings/saves, SDL presentation and drawing verification:

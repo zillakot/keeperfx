@@ -149,9 +149,17 @@ validation flag is read back before target writes. Other bucket entries flush
 terrain first; switching between original triangles and the retained span path
 also flushes pending work. Pixel, box, HV-line and circle hooks in
 [bflib_vidraw.c](../src/kfx/renderer/software/bflib_vidraw.c) use the same bridge.
-Circles execute their integer coverage recurrence on GPU; general-line coverage,
-sprites, text and direct image/effect writers remain unfinished. Circle radii
-above 8,191 and other unsupported input ranges decline to CPU.
+Circles execute their integer coverage recurrence on GPU. The
+[sprite adapter](../src/kfx/renderer/software/WgpuSprite.c) decodes RLE into immutable
+index/coverage assets and copies native scale ranges and tables; GPU source selection
+performs supported scaling, flips, remap and blending. Scaled solid horizontal flips
+with duplicated rows retain native fallback, as do the cursor's direct kernel and
+separate creature-shadow masks. Ordinary sprite glyphs reach these wrappers; direct
+DBC glyph writes remain CPU. The [raw adapter](../src/kfx/renderer/software/WgpuRawImage.c)
+submits source images for exact native scaling/letterbox and clipped slab tiling.
+Full SDL clip clears run on GPU and preserve row padding; nonfull clips remain native.
+General lines, circle radii above 8,191, image/effect transforms and the other ledger
+gaps remain unfinished. Enabled adapters flush terrain before unsupported fallback.
 
 At each CPU composition boundary, the bridge supplies the current CPU target as
 an initial indexed image, executes owned GPU commands, reads the complete result
@@ -185,7 +193,7 @@ native evidence and its source/binary limits are in the coverage ledger.
 `KFX_WGPU_DRAW_STATS` accepts an output JSON path for cumulative counts:
 
 - `gpu_triangles`: committed original-vertex terrain; `cpu_triangles`: declined triangle calls; `replayed_triangles` / `rejected_triangles`: recovery outcomes.
-- `gpu_spans` / `gpu_pixels`: retained span-path work only; `native_commands`: generic primitive submissions.
+- `gpu_spans` / `gpu_pixels`: retained span-path work only; `native_commands`: committed generic drawing commands, including primitives, sprites, raw images and clears; `gpu_sprite_commands`: committed sprite subset.
 - `cpu_gpoly_spans`: declined span sink calls only; `cpu_replayed_spans`: span recovery.
 - `verified_triangles` / `verified_batches`: successfully compared triangles/batches; `verification_cpu_spans` and `verification_cpu_commands`: explicitly enabled CPU oracle work.
 - `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers, including four-byte triangle validation flags.
