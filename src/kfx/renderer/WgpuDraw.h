@@ -15,6 +15,10 @@ extern "C" {
 #define KFX_WGPU_DRAW_CIRCLE_FILLED 4u
 #define KFX_WGPU_DRAW_CIRCLE_OUTLINE 5u
 #define KFX_WGPU_DRAW_SPRITE 6u
+/* SPRITE source: index/coverage byte pairs, x then y little-endian u32
+ * start/count pairs, and a 256-byte remap. source_width/height give decoded size;
+ * source_x bits select horizontal flip, vertical flip, and one-colour.
+ * Scaling ranges are target-relative; table uses the ordinary blend axes. */
 #define KFX_WGPU_DRAW_RAW_IMAGE 7u
 #define KFX_WGPU_DRAW_TILED_IMAGE 8u
 /* RAW_IMAGE covers the target; start is signed image origin and step is destination size. */

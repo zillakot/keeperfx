@@ -291,6 +291,12 @@ impl DrawRenderer {
         if commands.is_empty() {
             return Ok(());
         }
+        let dispatch_limit = self.device.limits().max_compute_workgroups_per_dimension;
+        ensure!(
+            target.width.div_ceil(8) <= dispatch_limit
+                && target.height.div_ceil(8) <= dispatch_limit,
+            "drawing dispatch exceeds device limit"
+        );
         let tiles = bin_commands(
             &words,
             target.width,

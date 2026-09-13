@@ -83,3 +83,47 @@ fn rejected_allocations_preserve_target_and_device() {
     assert_eq!(drawing.readback(target).unwrap(), vec![29; 128 * 128]);
     renderer.check_status().unwrap();
 }
+
+#[test]
+#[ignore = "requires GPU adapter"]
+fn rejected_dispatch_preserves_target_and_device() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let limits = wgpu::Limits {
+        max_compute_workgroups_per_dimension: 1,
+        ..Default::default()
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: limits,
+        ..Default::default()
+    }))
+    .unwrap();
+    let renderer = keeperfx_frame_replay::gpu::Renderer::new(device, queue).unwrap();
+    let mut drawing = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let target = drawing.create_target(9, 8).unwrap();
+    let error = drawing
+        .submit(
+            target,
+            &[Command {
+                kind: CLEAR,
+                colour: 167,
+                ..Default::default()
+            }],
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("dispatch exceeds device limit"));
+    assert_eq!(drawing.readback(target).unwrap(), vec![0; 9 * 8]);
+    let small = drawing.create_target(8, 8).unwrap();
+    drawing
+        .submit(
+            small,
+            &[Command {
+                kind: CLEAR,
+                colour: 29,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+    assert_eq!(drawing.readback(small).unwrap(), vec![29; 8 * 8]);
+    renderer.check_status().unwrap();
+}

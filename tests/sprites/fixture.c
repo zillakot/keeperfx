@@ -15,6 +15,7 @@ static void require(int condition, const char *message)
 }
 unsigned short RendererGetDrawFlags(void) { return flags; }
 int kfx_wgpu_native_enabled(void) { return enabled; }
+void kfx_wgpu_terrain_boundary(int allow) { require(!allow, "sprite left terrain batching enabled"); }
 
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
     const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
@@ -78,7 +79,7 @@ int main(int argc, char **argv)
     fwrite(header, sizeof(header), 1, fixture);
     const int scales[][2] = {{7,5}, {3,2}, {14,15}, {19,3}, {4,13}, {1,1}, {35,25}};
     const int positions[][2] = {{13,11}, {-4,-3}, {69,46}, {-8,10}, {8,-6}, {75,51}, {0,0}};
-    unsigned fallback = 0;
+    unsigned fallback = 0, scaled_fallback = 0;
     for (unsigned mode = 0; mode < 6; mode++)
     for (unsigned flip = 0; flip < 4; flip++)
     for (unsigned blend = 0; blend < 4; blend++)
@@ -104,7 +105,7 @@ int main(int argc, char **argv)
         case 4: LbSpriteDrawImmediate(positions[position][0],positions[position][1],&sprite); break;
         case 5: LbSpriteDrawOneColourImmediate(positions[position][0],positions[position][1],&sprite,mapped ? 0 : 211); break;
         }
-        if (submissions == before) fallback++;
+        if (submissions == before) { fallback++; if (mode < 4) scaled_fallback++; }
         else require(!memcmp(target_pixels,initial,SIZE), "accepted sprite modified native target");
     }
     for (unsigned mode = 0; mode < 4; mode++)
@@ -125,7 +126,7 @@ int main(int argc, char **argv)
         case 2: LbSpriteDrawOneColourUsingScalingData(2,3,&sprite,211); break;
         case 3: DrawAlphaSpriteUsingScalingData(2,3,&buffer); break;
         }
-        if (submissions == before) fallback++;
+        if (submissions == before) { fallback++; if (mode < 4) scaled_fallback++; }
     }
     flags = 0;
     buffer.height = 5;
@@ -155,6 +156,7 @@ int main(int argc, char **argv)
     rewind(fixture);
     fwrite(header, sizeof(header), 1, fixture);
     fclose(fixture);
-    printf("%u sprite commands; %u explicit native fallback cases\n", count, fallback);
+    printf("%u sprite commands; %u explicit scaled fallbacks; %u immediate clipped no-ops\n",
+        count, scaled_fallback, fallback - scaled_fallback);
     return 0;
 }

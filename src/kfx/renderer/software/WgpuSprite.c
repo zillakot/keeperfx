@@ -48,6 +48,7 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
     const struct TbSprite *sprite, const TbPixel *remap, TbPixel colour, unsigned mode)
 {
     if (oracle_active || !kfx_wgpu_native_enabled()) return 0;
+    kfx_wgpu_terrain_boundary(0);
     struct TbSourceBuffer converted;
     if (sprite) {
         converted = (struct TbSourceBuffer){sprite->Data, sprite->SWidth, sprite->SHeight, sprite->SWidth};
