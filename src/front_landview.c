@@ -892,7 +892,6 @@ void frontzoom_to_point(long map_x, long map_y, long zoom)
             (256-zoom)*16/units_per_pixel_landview,map_screen,LANDVIEW_MAP_WIDTH,
             LANDVIEW_MAP_HEIGHT,frontzoom_oracle,&o)) return;
     if (!kfx_wgpu_native_cpu_barrier()) return;
-    if (!kfx_wgpu_native_cpu_barrier()) return;
     frontzoom_to_point_native(map_x,map_y,zoom);
 }
 

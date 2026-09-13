@@ -448,14 +448,8 @@ int draw_overhead_call_to_arms(const struct TbRect *map_area, long block_size, P
 }
 
 struct OverheadMarker { long x, y; int count, spread, cross; TbPixel colour; };
-static void overhead_marker_native(uint8_t *pixels, uint32_t pitch, void *context)
+static void overhead_marker_draw(const struct OverheadMarker *o)
 {
-    const struct OverheadMarker *o = context;
-    unsigned char *saved = lbDisplay.WScreen, *window = lbDisplay.GraphicsWindowPtr;
-    long saved_pitch = lbDisplay.GraphicsScreenWidth;
-    lbDisplay.WScreen = pixels;
-    lbDisplay.GraphicsWindowPtr = pixels + SwTargetWindowY()*pitch + SwTargetWindowX();
-    lbDisplay.GraphicsScreenWidth = pitch;
     for (int p=0;p<o->count;p++) {
         long x=o->x+draw_square[p].delta_x, y=o->y+draw_square[p].delta_y;
         LbDrawPixel(x,y,o->colour);
@@ -466,6 +460,15 @@ static void overhead_marker_native(uint8_t *pixels, uint32_t pitch, void *contex
             LbDrawPixel(x,y-o->spread,o->colour);
         }
     }
+}
+static void overhead_marker_native(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    unsigned char *saved = lbDisplay.WScreen, *window = lbDisplay.GraphicsWindowPtr;
+    long saved_pitch = lbDisplay.GraphicsScreenWidth;
+    lbDisplay.WScreen = pixels;
+    lbDisplay.GraphicsWindowPtr = pixels + SwTargetWindowY()*pitch + SwTargetWindowX();
+    lbDisplay.GraphicsScreenWidth = pitch;
+    overhead_marker_draw(context);
     lbDisplay.WScreen = saved; lbDisplay.GraphicsWindowPtr = window;
     lbDisplay.GraphicsScreenWidth = saved_pitch;
 }
@@ -485,7 +488,7 @@ static void overhead_marker(long x, long y, int count, int spread, int cross, Tb
                 overhead_marker_native,&o)) return;
     }
     if (!kfx_wgpu_native_cpu_barrier()) return;
-    overhead_marker_native(SwTargetWScreen(),SwTargetScanline(),&o);
+    overhead_marker_draw(&o);
 }
 
 int draw_overhead_creatures(const struct TbRect *map_area, long block_size, PlayerNumber plyr_idx)
