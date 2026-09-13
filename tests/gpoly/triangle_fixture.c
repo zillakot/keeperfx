@@ -10,11 +10,18 @@ static void emit_triangle(struct PolyPoint a, struct PolyPoint b, struct PolyPoi
     struct KfxGpolyCapture capture;
     require(kfx_gpoly_capture_init(&capture, 200, 1), "triangle capture allocation");
     memset(native, 0xa7, TOTAL);
+    memcpy(captured, native, TOTAL);
     vec_screen = native + PREFIX;
+    kfx_gpoly_set_sink(NULL, NULL);
+    draw_gpoly(&a, &b, &c);
+    vec_screen = captured + PREFIX;
     kfx_gpoly_set_sink(kfx_gpoly_capture_sink, &capture);
     draw_gpoly(&a, &b, &c);
     kfx_gpoly_set_sink(NULL, NULL);
     require(!capture.failed, "triangle capture failed");
+    require(memcmp(native, captured, TOTAL) == 0, "triangle observation changed native output");
+    for (unsigned i = 0; i < PREFIX; i++)
+        require(native[i] == 0xa7 && native[TOTAL - i - 1] == 0xa7, "triangle changed target guards");
     const struct PolyPoint vertices[] = {a, b, c};
     for (unsigned i = 0; i < 3; i++) {
         const struct PolyPoint *p = &vertices[i];
@@ -78,6 +85,16 @@ int main(int argc, char **argv)
     emit_triangle(point(0, 0, 0, 0, 31), point(1, 0, 1, 1, 31), point(0, 16384, 31, 31, 31));
     emit_triangle(point(4, 2, 0, 0, 31), point(4, 2, 31, 31, 31), point(75, 58, -31, -31, 31));
     emit_triangle(point(5, 5, 0, 0, 31), point(15, 15, 31, -31, 31), point(25, 25, -31, 31, 31));
+    emit_triangle(point(0, 0, 0, 0, 31), point(-16384, 10, 31, 0, 31), point(0, 60, 0, 31, 31));
+    emit_triangle(point(0, 0, 0, 0, 31), point(-16385, 10, 31, 0, 31), point(0, 60, 0, 31, 31));
+    struct PolyPoint wide_a = point(-9, -3, 0, 0, 31);
+    struct PolyPoint wide_b = point(70, 10, 0, 0, 31);
+    struct PolyPoint wide_c = point(35, 60, 0, 0, 31);
+    wide_a.U = INT64_MIN; wide_a.V = INT64_MAX;
+    wide_b.U = INT64_MAX; wide_b.V = INT64_MIN;
+    wide_c.U = INT64_C(0x7654321089abcdef); wide_c.V = -INT64_C(0x123456789abcdef);
+    emit_triangle(wide_a, wide_b, wide_c);
+    emit_triangle(wide_c, wide_b, wide_a);
     for (unsigned i = 0; i < 1200; i++) {
         struct PolyPoint p[3];
         for (unsigned j = 0; j < 3; j++) {

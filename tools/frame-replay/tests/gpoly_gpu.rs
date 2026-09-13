@@ -18,8 +18,10 @@ fn readback(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Result<Vec<u32>> {
     rx.recv()??;
     let range = buffer.slice(..).get_mapped_range()?;
     let words = range
-        .chunks_exact(4)
-        .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| u32::from_le_bytes(*bytes))
         .collect();
     drop(range);
     buffer.unmap();
@@ -75,6 +77,37 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     let adapter = pollster::block_on(instance.request_adapter(&Default::default()))?;
     eprintln!("GPU triangle validation: {:?}", adapter.get_info());
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
+    let (limited_device, _limited_queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits {
+                max_buffer_size: 1024,
+                max_storage_buffer_binding_size: 512,
+                max_compute_workgroups_per_dimension: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        }))?;
+    let limited_preparer = GpolyPreparer::new(&limited_device);
+    let mut limited_encoder = limited_device.create_command_encoder(&Default::default());
+    for (count, rows, message) in [
+        (1, 33, "allocation limit"),
+        (11, 1, "allocation limit"),
+        (1, 17, "storage limit"),
+        (6, 1, "storage limit"),
+        (65, 1, "dispatch"),
+    ] {
+        let error = limited_preparer
+            .encode(
+                &limited_device,
+                &mut limited_encoder,
+                &triangles[..count],
+                width,
+                rows,
+            )
+            .err()
+            .context("oversized triangle batch was accepted")?;
+        ensure!(error.to_string().contains(message), "{error}");
+    }
     let preparer = GpolyPreparer::new(&device);
     let mut encoder = device.create_command_encoder(&Default::default());
     assert!(
@@ -171,6 +204,7 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     encoder.copy_buffer_to_buffer(&pixels, 0, &pixels_readback, 0, pixels.size());
     queue.submit([encoder.finish()]);
     let actual_spans = readback(&device, &rows_readback).context("read GPU triangle setup")?;
+    assert_eq!(actual_spans.len(), expected_spans.len());
     let mut mismatches = 0;
     for (i, (actual, expected)) in actual_spans.iter().zip(&expected_spans).enumerate() {
         if actual != expected {
@@ -187,6 +221,7 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     }
     ensure!(mismatches == 0, "{mismatches} GPU setup word mismatches");
     let actual_pixels = readback(&device, &pixels_readback).context("read GPU triangle pixels")?;
+    assert_eq!(actual_pixels.len(), expected_pixels.len());
     for (i, (actual, expected)) in actual_pixels.iter().zip(&expected_pixels).enumerate() {
         ensure!(
             actual == expected,

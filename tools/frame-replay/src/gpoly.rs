@@ -71,6 +71,11 @@ impl GpolyPreparer {
         );
         let size = u64::from(count) * u64::from(height) * 32;
         ensure!(
+            size <= device.limits().max_buffer_size
+                && u64::from(count) * 96 <= device.limits().max_buffer_size,
+            "triangle buffers exceed device allocation limit"
+        );
+        ensure!(
             size <= device.limits().max_storage_buffer_binding_size,
             "triangle rows exceed device storage limit"
         );
