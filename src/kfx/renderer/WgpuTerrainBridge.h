@@ -113,6 +113,11 @@ private:
         const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
         size_t limit);
     int Fail(const char* reason);
+    bool PendingTargetChanged(const KfxGpolyTarget& target) const;
+    void AppendCommand(const KfxWgpuDrawCommand& command, uint64_t source);
+    void AppendTriangle(const KfxWgpuTriangle& triangle);
+    // Releases owned per-command sources, then drops every pending record.
+    void ClearPending();
     void ReplayPending();
     bool RasterizePending(uint8_t* pixels, uint32_t pitch) const;
     bool PrepareNativeTarget();
@@ -140,8 +145,13 @@ private:
     uint64_t m_fail_after;
     bool m_allow_terrain = false;
     KfxGpolyTarget m_native_target = {};
+    // One run per contiguous same-source stretch; the three vectors are read in run order.
+    struct PendingRun { bool triangles; uint32_t count; };
     std::vector<KfxWgpuDrawCommand> m_pending;
+    std::vector<uint64_t> m_pending_sources;
     std::vector<KfxWgpuTriangle> m_triangles;
+    std::vector<PendingRun> m_order;
+    static constexpr size_t kPendingSpanLimit = 32768;
     KfxGpolyRasterizer m_rasterizer = nullptr;
     bool m_fail_init, m_verify, m_failed = false;
     std::array<char, 1024> m_error = {};
