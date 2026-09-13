@@ -181,6 +181,8 @@ int main()
         oracle(expected, target.pitch, a, texture, fade);
         for (auto& value : texture) value ^= 0xff;
         for (auto& value : fade) value ^= 0x5a;
+        // Rewriting asset bytes behind a stable pointer requires a generation bump.
+        kfx_render_assets_changed();
         assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &b, texture.data(), fade.data()) == 1);
         oracle(expected, target.pitch, b, texture, fade);
         assert(pixels != expected);
@@ -200,6 +202,7 @@ int main()
         kfx_wgpu_terrain_boundary(1);
         for (unsigned i = 0; i < 70; ++i) {
             texture[0] = static_cast<uint8_t>(i);
+            kfx_render_assets_changed();
             assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &a, texture.data(), fade.data()) == 1);
             oracle(expected, target.pitch, a, texture, fade);
         }

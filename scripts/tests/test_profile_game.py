@@ -52,6 +52,16 @@ def engine_output(output, args=None):
     return metadata
 
 
+def drawing_metadata(output, frames, backend="wgpu", available=True):
+    metadata = json.loads((output / "raw.csv.json").read_text())
+    per_frame = [[index + position for position in range(len(profile.DRAWING_COUNTERS))]
+                 for index in range(frames)]
+    metadata["drawing"] = {"available": available, "backend": backend, "frames": len(per_frame),
+                           "counters": list(profile.DRAWING_COUNTERS), "per_frame": per_frame}
+    (output / "raw.csv.json").write_text(json.dumps(metadata))
+    return metadata
+
+
 class ProfileTests(unittest.TestCase):
     def test_statistics_and_raw_preservation(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -130,6 +140,66 @@ class ProfileTests(unittest.TestCase):
             engine_output(output)
             with self.assertRaisesRegex(RuntimeError, "does not match"):
                 profile.summarize(output, arguments(draw_breakdown=True))
+
+    def test_drawing_counters_cover_the_measured_window_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            engine_output(output)
+            drawing_metadata(output, 19)
+            report = profile.summarize(output, arguments())
+            drawing = report["drawing"]
+            self.assertEqual(drawing["backend"], "wgpu")
+            self.assertEqual(drawing["frames"], 19)
+            self.assertEqual(set(drawing["per_frame"]), set(profile.DRAWING_COUNTERS))
+            submits = drawing["per_frame"]["submits"]
+            self.assertEqual((submits["min"], submits["max"], submits["total"]), (0, 18, 171))
+            self.assertEqual(submits["mean"], 9)
+            self.assertAlmostEqual(submits["p95"], 17.1)
+            self.assertEqual(drawing["per_frame"]["gpu_spans"]["min"], 16)
+            self.assertTrue(any("not GPU execution time" in item for item in report["limitations"]))
+            self.assertTrue(any("distinct from every host wall-clock column" in item
+                                for item in report["limitations"]))
+
+    def test_drawing_counters_reject_window_and_metadata_mismatches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            engine_output(output)
+            path = output / "raw.csv.json"
+            cases = {
+                "must cover every measured presentation": lambda d: d.update(
+                    frames=18, per_frame=d["per_frame"][:18]),
+                "do not match this profiler": lambda d: d.update(
+                    counters=list(profile.DRAWING_COUNTERS)[:-1]),
+                "does not match the recorded rows": lambda d: d.update(frames=20),
+                "invalid drawing counter row": lambda d: d["per_frame"].__setitem__(0, [-1] * 17),
+                "invalid drawing counter availability": lambda d: d.update(backend=""),
+                "unavailable but rows were recorded": lambda d: d.update(available=False),
+                "backend changed during the measured window": lambda d: d.update(
+                    backend="wgpu+wgpu-fallback"),
+            }
+            for message, mutate in cases.items():
+                with self.subTest(message=message):
+                    metadata = drawing_metadata(output, 19)
+                    mutate(metadata["drawing"])
+                    path.write_text(json.dumps(metadata))
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        profile.summarize(output, arguments())
+
+    def test_software_drawing_backend_is_reported_without_counters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            engine_output(output)
+            metadata = drawing_metadata(output, 0, backend="software", available=False)
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            report = profile.summarize(output, arguments())
+            self.assertEqual(report["drawing"]["backend"], "software")
+            self.assertIsNone(report["drawing"]["per_frame"])
+            self.assertTrue(any("active drawing backend was software" in item
+                                for item in report["limitations"]))
+            request = dict(vars(arguments()), campaign="keeporig", level=1)
+            profile.write_report(output, dict(report, request=request,
+                                              engine_sha256="0", assets={"sha256": "0"}))
+            self.assertIn("Active drawing backend: software.", (output / "report.md").read_text())
 
     def test_legacy_wall_report_does_not_invent_cpu_or_allocation_data(self):
         with tempfile.TemporaryDirectory() as temporary:
