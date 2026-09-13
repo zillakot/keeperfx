@@ -1,6 +1,7 @@
 use anyhow::{Result, ensure};
 use wgpu::util::DeviceExt;
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex {
     pub x: i32,

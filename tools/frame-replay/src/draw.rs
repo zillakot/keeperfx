@@ -1,5 +1,8 @@
 #[path = "draw_sprites.rs"]
 mod sprites;
+#[path = "draw_triangles.rs"]
+mod triangles;
+pub use triangles::TriangleCommand;
 
 use anyhow::{Context, Result, ensure};
 use std::collections::HashMap;
@@ -104,6 +107,7 @@ pub struct DrawRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     compute: wgpu::ComputePipeline,
+    triangles: Option<triangles::TrianglePipelines>,
     present: wgpu::RenderPipeline,
     targets: HashMap<u64, Target>,
     resources: HashMap<u64, Resource>,
@@ -173,6 +177,7 @@ impl DrawRenderer {
             device,
             queue,
             compute,
+            triangles: None,
             present,
             targets: HashMap::new(),
             resources: HashMap::new(),

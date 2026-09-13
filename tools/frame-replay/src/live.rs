@@ -830,6 +830,36 @@ pub unsafe extern "C" fn kfx_wgpu_draw_submit(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_submit_triangles(
+    handle: *mut c_void,
+    target: u64,
+    commands: *const crate::draw::TriangleCommand,
+    count: usize,
+    error: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    unsafe {
+        let result: Option<i32> = boundary(error, capacity, || {
+            ensure!(
+                !handle.is_null() && (!commands.is_null() || count == 0),
+                "null presenter or commands"
+            );
+            ensure!(count <= 262_144, "command count exceeds limit");
+            let commands = if count == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(commands, count)
+            };
+            let drawing = &mut *handle.cast::<crate::draw::DrawRenderer>();
+            drawing.submit_triangles(target, commands)?;
+            drawing.check_status()?;
+            Ok(Some(1))
+        });
+        result.unwrap_or(-1)
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn kfx_wgpu_draw_readback(
     handle: *mut c_void,
     target: u64,

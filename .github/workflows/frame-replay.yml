@@ -45,6 +45,8 @@ jobs:
           test -s "$KFX_GPOLY_TRIANGLE_FIXTURE"
       - name: Compare GPU triangle setup with native drawing
         run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test gpoly_gpu -- --ignored --nocapture --test-threads=1
+      - name: Compare production GPU triangles with native drawing
+        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_triangles_gpu -- --ignored --nocapture --test-threads=1
       - name: Generate native primitive drawing oracle
         run: |
           cmake -S tests/primitives -B out/primitive-tests -DKFX_PRIMITIVE_ASAN=ON \

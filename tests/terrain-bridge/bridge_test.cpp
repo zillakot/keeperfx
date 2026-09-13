@@ -13,6 +13,8 @@ struct FakeContext {
     std::map<uint64_t, FakeResource> resources, targets;
 };
 static bool fail_readback = false;
+extern "C" int32_t kfx_wgpu_draw_submit_triangles(void*, uint64_t, const KfxWgpuTriangle*, size_t, char*, size_t)
+{ return -1; }
 extern "C" int32_t kfx_wgpu_draw_counters(void*, KfxWgpuDrawCounters* counters, char*, size_t)
 { *counters = {}; return 1; }
 extern "C" void* kfx_wgpu_draw_create(char*, size_t) { return new FakeContext; }

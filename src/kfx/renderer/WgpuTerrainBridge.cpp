@@ -8,6 +8,9 @@
 
 static WgpuTerrainBridge* active_bridge = nullptr;
 
+extern "C" int kfx_wgpu_native_enabled(void)
+{ return active_bridge != nullptr && !active_bridge->Failed(); }
+
 extern "C" void kfx_wgpu_terrain_boundary(int allow_terrain)
 {
     if (active_bridge != nullptr) active_bridge->Boundary(allow_terrain != 0);
@@ -26,6 +29,8 @@ WgpuTerrainBridge::WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool v
 {
     active_bridge = this;
     kfx_gpoly_set_sink(Sink, this);
+    kfx_gpoly_triangle_sink = TriangleSink;
+    kfx_gpoly_triangle_context = this;
 }
 
 WgpuTerrainBridge::~WgpuTerrainBridge()
@@ -33,6 +38,10 @@ WgpuTerrainBridge::~WgpuTerrainBridge()
     Flush();
     if (active_bridge == this) active_bridge = nullptr;
     if (kfx_gpoly_sink_context == this) kfx_gpoly_set_sink(nullptr, nullptr);
+    if (kfx_gpoly_triangle_context == this) {
+        kfx_gpoly_triangle_sink = nullptr;
+        kfx_gpoly_triangle_context = nullptr;
+    }
     if (m_context != nullptr) kfx_wgpu_draw_destroy(m_context);
 }
 
@@ -54,7 +63,15 @@ int WgpuTerrainBridge::Fail(const char* reason)
 {
     if (m_failed) return KFX_GPOLY_DECLINED;
     if (reason != nullptr) std::snprintf(m_error.data(), m_error.size(), "%s", reason);
-    if (!m_pending.empty()) ReplayPending();
+    if (!m_pending.empty() || !m_triangles.empty()) {
+        try { ReplayPending(); }
+        catch (...) {
+            m_counts.rejected_triangles += m_triangles.size();
+            m_triangles.clear();
+            m_pending.clear();
+            std::snprintf(m_error.data(), m_error.size(), "immutable terrain recovery failed; target unchanged");
+        }
+    }
     m_failed = true;
     ++m_counts.failures;
     return KFX_GPOLY_DECLINED;
@@ -103,6 +120,8 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
     const uint8_t* texture, const uint8_t* fade)
 {
     if (m_failed || !m_allow_terrain) return KFX_GPOLY_DECLINED;
+    if (!m_triangles.empty()) Flush();
+    if (m_failed) return KFX_GPOLY_DECLINED;
     if (target.pixels == nullptr || texture == nullptr || fade == nullptr || span.x < 0 ||
         span.y < 0 || span.count == 0 || target.pitch < target.width ||
         static_cast<uint32_t>(span.y) >= target.height ||
@@ -153,8 +172,70 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
     return KFX_GPOLY_CONSUMED;
 }
 
-void WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
+int WgpuTerrainBridge::TriangleSink(void* context, const KfxGpolyTarget* target,
+    const KfxWgpuTriangle* triangle, const uint8_t* texture, const uint8_t* fade,
+    KfxGpolyRasterizer rasterizer)
 {
+    auto& bridge = *static_cast<WgpuTerrainBridge*>(context);
+    int result;
+    try { result = bridge.DrawTriangle(*target, *triangle, texture, fade, rasterizer); }
+    catch (const std::exception& error) { result = bridge.Fail(error.what()); }
+    catch (...) { result = bridge.Fail("native triangle bridge exception"); }
+    if (result != KFX_GPOLY_CONSUMED) {
+        bridge.Flush();
+        ++bridge.m_counts.cpu_triangles;
+    }
+    return result;
+}
+
+int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
+    const KfxWgpuTriangle& triangle, const uint8_t* texture, const uint8_t* fade,
+    KfxGpolyRasterizer rasterizer)
+{
+    if (m_failed || !m_allow_terrain) return KFX_GPOLY_DECLINED;
+    if (!target.pixels || !texture || !fade || !rasterizer || !target.width || !target.height ||
+        target.width > 32767 || target.height > 32767 || target.pitch < target.width ||
+        static_cast<uint64_t>(target.pitch) * target.height > std::numeric_limits<size_t>::max())
+        return KFX_GPOLY_DECLINED;
+    for (const auto& vertex : triangle.vertices)
+        if (vertex.x < -32768 || vertex.x > 32767 || vertex.y < -32768 || vertex.y > 32767)
+            return KFX_GPOLY_DECLINED;
+    if (!m_pending.empty() || m_triangles.size() == 128 ||
+        m_native_target.pixels != target.pixels || m_native_target.width != target.width ||
+        m_native_target.height != target.height || m_native_target.pitch != target.pitch ||
+        (m_rasterizer && m_rasterizer != rasterizer)) Flush();
+    if (m_failed) return KFX_GPOLY_DECLINED;
+    if (m_context == nullptr) {
+        if (m_fail_init) return Fail("injected GPU drawing initialization failure");
+        m_context = kfx_wgpu_draw_create(m_error.data(), m_error.size());
+        if (m_context == nullptr) return Fail(nullptr);
+    }
+    m_native_target = target;
+    m_rasterizer = rasterizer;
+    std::array<uint8_t, KFX_GPOLY_TEXTURE_BYTES> texture_bytes = {};
+    for (size_t row = 0; row < 32; ++row)
+        std::memcpy(texture_bytes.data() + row * 256, texture + row * 256, 32);
+    KfxWgpuTriangle owned = triangle;
+    owned.source = ResourceFor(m_textures, texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
+    if (!owned.source) return Fail(nullptr);
+    owned.table = ResourceFor(m_fades, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
+    if (!owned.table) return Fail(nullptr);
+    m_triangles.push_back(owned);
+    return KFX_GPOLY_CONSUMED;
+}
+
+bool WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
+{
+    for (const auto& triangle : m_triangles) {
+        const uint8_t* texture = nullptr;
+        const uint8_t* fade = nullptr;
+        for (const auto& resource : m_textures)
+            if (resource.handle == triangle.source) texture = resource.bytes.data();
+        for (const auto& resource : m_fades)
+            if (resource.handle == triangle.table) fade = resource.bytes.data();
+        KfxGpolyTarget target = {pixels, m_native_target.width, m_native_target.height, pitch};
+        if (!m_rasterizer(&target, &triangle, texture, fade)) return false;
+    }
     for (const auto& command : m_pending) {
         const uint8_t* texture = nullptr;
         const uint8_t* fade = nullptr;
@@ -171,12 +252,26 @@ void WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
             destination[pixel] = fade[texture[uv] | (position & 0xff00)];
         }
     }
+    return true;
 }
 
 void WgpuTerrainBridge::ReplayPending()
 {
-    RasterizePending(m_native_target.pixels, m_native_target.pitch);
-    m_counts.cpu_replayed_spans += m_pending.size();
+    std::vector<uint8_t> recovered(static_cast<size_t>(m_native_target.width) * m_native_target.height);
+    for (uint32_t row = 0; row < m_native_target.height; ++row)
+        std::memcpy(recovered.data() + static_cast<size_t>(row) * m_native_target.width,
+            m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch, m_native_target.width);
+    if (RasterizePending(recovered.data(), m_native_target.width)) {
+        for (uint32_t row = 0; row < m_native_target.height; ++row)
+            std::memcpy(m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch,
+                recovered.data() + static_cast<size_t>(row) * m_native_target.width, m_native_target.width);
+        m_counts.cpu_replayed_spans += m_pending.size();
+        m_counts.replayed_triangles += m_triangles.size();
+    } else {
+        m_counts.rejected_triangles += m_triangles.size();
+        std::snprintf(m_error.data(), m_error.size(), "invalid triangle shade; immutable fallback batch rejected without target writes");
+    }
+    m_triangles.clear();
     m_pending.clear();
 }
 
@@ -216,6 +311,8 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
     if (kfx_wgpu_draw_resource_release(m_context, initial, release_error, sizeof(release_error)) != 1)
         success = false;
     if (!success) return false;
+    if (!m_triangles.empty() && kfx_wgpu_draw_submit_triangles(m_context, m_target, m_triangles.data(),
+            m_triangles.size(), m_error.data(), m_error.size()) != 1) return false;
     if (kfx_wgpu_draw_submit(m_context, m_target, m_pending.data(), m_pending.size(),
             m_error.data(), m_error.size()) != 1) return false;
     if (kfx_wgpu_draw_readback(m_context, m_target, m_readback.data(), m_readback.size(),
@@ -229,8 +326,12 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
             oracle(expected.data(), m_width, oracle_context);
             m_counts.verification_cpu_commands += m_pending.size();
         } else {
-            RasterizePending(expected.data(), m_width);
+            if (!RasterizePending(expected.data(), m_width)) {
+                std::snprintf(m_error.data(), m_error.size(), "invalid triangle shade in native oracle");
+                return false;
+            }
             m_counts.verification_cpu_spans += m_pending.size();
+            m_counts.verified_triangles += m_triangles.size();
         }
         if (expected != m_readback) {
             std::snprintf(m_error.data(), m_error.size(), "GPU terrain index comparison failed");
@@ -249,6 +350,8 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
             ++m_counts.native_commands;
         }
     }
+    m_counts.gpu_triangles += m_triangles.size();
+    m_triangles.clear();
     ++m_counts.gpu_batches;
     ++m_counts.bridge_readbacks;
     m_counts.gpu_readback_bytes += static_cast<uint64_t>(m_width) * m_height * sizeof(uint32_t);
@@ -312,7 +415,7 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
 
 void WgpuTerrainBridge::Flush()
 {
-    if (m_pending.empty()) return;
+    if (m_pending.empty() && m_triangles.empty()) return;
     try {
         if (!ExecutePending()) Fail(nullptr);
     } catch (const std::exception& error) {
@@ -322,6 +425,7 @@ void WgpuTerrainBridge::Flush()
     }
 }
 #else
+extern "C" int kfx_wgpu_native_enabled(void) { return 0; }
 extern "C" void kfx_wgpu_terrain_boundary(int) {}
 extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
     const KfxWgpuNativeResource*, const KfxWgpuNativeResource*, KfxWgpuNativeOracle, void*) { return 0; }

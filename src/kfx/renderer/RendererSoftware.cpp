@@ -234,7 +234,7 @@ void RendererSoftware::report_drawing()
     const auto& counts = m_drawing->GetCounters();
     const auto gpu = m_drawing->GetGpuCounters();
     if (m_drawing->Failed() && !m_drawing_failure_reported) {
-        WARNLOG("GPU terrain drawing failed: %s; pending spans reconstructed in software", m_drawing->GetError());
+        WARNLOG("GPU terrain drawing failed: %s", m_drawing->GetError());
         m_drawing_failure_reported = true;
     }
     const char* path = SDL_getenv("KFX_WGPU_DRAW_STATS");
@@ -246,7 +246,7 @@ void RendererSoftware::report_drawing()
                 "\"cpu_gpoly_spans\":%llu,\"cpu_replayed_spans\":%llu,"
                 "\"bridge_readbacks\":%llu,\"gpu_readback_bytes\":%llu,\"native_copy_bytes\":%llu,"
                 "\"bridge_initial_index_bytes\":%llu,\"resource_snapshot_bytes\":%llu,"
-                "\"target_creations\":%llu,\"failures\":%llu,\"verified_batches\":%llu,\"verification_cpu_spans\":%llu,\"gpu_api_batches\":%llu,\"gpu_api_commands\":%llu,\"gpu_asset_upload_bytes\":%llu,\"gpu_command_upload_bytes\":%llu,\"gpu_api_readback_bytes\":%llu,\"native_commands\":%llu,\"verification_cpu_commands\":%llu}\n",
+                "\"target_creations\":%llu,\"failures\":%llu,\"verified_batches\":%llu,\"verification_cpu_spans\":%llu,\"gpu_api_batches\":%llu,\"gpu_api_commands\":%llu,\"gpu_asset_upload_bytes\":%llu,\"gpu_command_upload_bytes\":%llu,\"gpu_api_readback_bytes\":%llu,\"native_commands\":%llu,\"verification_cpu_commands\":%llu,\"gpu_triangles\":%llu,\"cpu_triangles\":%llu,\"replayed_triangles\":%llu,\"verified_triangles\":%llu,\"rejected_triangles\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
                 static_cast<unsigned long long>(counts.cpu_gpoly_spans), static_cast<unsigned long long>(counts.cpu_replayed_spans),
@@ -257,7 +257,9 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(counts.verification_cpu_spans), static_cast<unsigned long long>(gpu.batches),
                 static_cast<unsigned long long>(gpu.commands), static_cast<unsigned long long>(gpu.asset_upload_bytes),
                 static_cast<unsigned long long>(gpu.command_upload_bytes), static_cast<unsigned long long>(gpu.readback_bytes),
-                static_cast<unsigned long long>(counts.native_commands), static_cast<unsigned long long>(counts.verification_cpu_commands));
+                static_cast<unsigned long long>(counts.native_commands), static_cast<unsigned long long>(counts.verification_cpu_commands),
+                static_cast<unsigned long long>(counts.gpu_triangles), static_cast<unsigned long long>(counts.cpu_triangles),
+                static_cast<unsigned long long>(counts.replayed_triangles), static_cast<unsigned long long>(counts.verified_triangles), static_cast<unsigned long long>(counts.rejected_triangles));
             fclose(output);
         }
     }

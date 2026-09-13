@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "kfx/renderer/WgpuTriangle.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +21,14 @@ struct KfxGpolyTarget {
     uint8_t *pixels;
     uint32_t width, height, pitch;
 };
+
+/* Rasterizers may write scratch pixels before reporting an invalid shade. */
+typedef int (*KfxGpolyRasterizer)(const struct KfxGpolyTarget*,
+    const struct KfxWgpuTriangle*, const uint8_t*, const uint8_t*);
+typedef int (*KfxGpolyTriangleSink)(void*, const struct KfxGpolyTarget*,
+    const struct KfxWgpuTriangle*, const uint8_t*, const uint8_t*, KfxGpolyRasterizer);
+extern KfxGpolyTriangleSink kfx_gpoly_triangle_sink;
+extern void* kfx_gpoly_triangle_context;
 
 /* A consumed sink owns copied inputs before returning; every other result uses the legacy loop. */
 typedef int (*KfxGpolySink)(void *context, const struct KfxGpolyTarget *target,

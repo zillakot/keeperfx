@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+KfxGpolyTriangleSink kfx_gpoly_triangle_sink;
+void* kfx_gpoly_triangle_context;
 KfxGpolySink kfx_gpoly_sink;
 void *kfx_gpoly_sink_context;
 

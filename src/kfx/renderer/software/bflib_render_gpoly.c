@@ -679,6 +679,8 @@ static void pack_texcoords(void)
     texcoord_delta_y = texcoord_delta_y_top;
 }
 
+static int gpoly_checked_replay, gpoly_replay_invalid;
+
 static void draw_gpoly_line(uint8_t *restrict pixel_dst, int32_t length, TexCoord texcoord,
     int32_t x, int32_t y)
 {
@@ -703,7 +705,10 @@ static void draw_gpoly_line(uint8_t *restrict pixel_dst, int32_t length, TexCoor
         const uint16_t uv = rol32(texture_position >> 32, 8) & TEXTURE_UV_WRAP_MASK;
         const uint16_t shade = texture_position & 0xFF00;
         const uint8_t texel = texture[uv];
-        pixel_dst[i] = fade_table[texel | shade];
+        if (gpoly_checked_replay && shade >= KFX_GPOLY_FADE_BYTES)
+            gpoly_replay_invalid = 1;
+        else
+            pixel_dst[i] = fade_table[texel | shade];
         texture_position += texture_step;
     }
 }
@@ -827,7 +832,7 @@ static void draw_gpoly_whole(void)
     draw_gpoly_whole_half(&state);
 }
 
-void draw_gpoly(struct PolyPoint *point_a, struct PolyPoint *point_b, struct PolyPoint *point_c)
+static void draw_gpoly_software(struct PolyPoint *point_a, struct PolyPoint *point_b, struct PolyPoint *point_c)
 {
     if (vec_mode != VM_QuadTextured)
     {
@@ -891,3 +896,71 @@ void draw_gpoly(struct PolyPoint *point_a, struct PolyPoint *point_b, struct Pol
 }
 
 /******************************************************************************/
+
+static int rasterize_original_triangle(const struct KfxGpolyTarget* target,
+    const struct KfxWgpuTriangle* triangle, const uint8_t* texture, const uint8_t* fade)
+{
+    struct PolyPoint points[3];
+    for (int i = 0; i < 3; ++i) {
+        points[i].X = triangle->vertices[i].x;
+        points[i].Y = triangle->vertices[i].y;
+        points[i].U = triangle->vertices[i].u;
+        points[i].V = triangle->vertices[i].v;
+        points[i].S = triangle->vertices[i].shade;
+    }
+    unsigned char* screen = vec_screen;
+    unsigned char* map = vec_map;
+    unsigned char* tables = render_fade_tables;
+    unsigned long pitch = vec_screen_width;
+    long width = vec_window_width, height = vec_window_height;
+    unsigned char mode = vec_mode;
+    KfxGpolySink sink = kfx_gpoly_sink;
+    vec_screen = target->pixels;
+    vec_screen_width = target->pitch;
+    vec_window_width = target->width;
+    vec_window_height = target->height;
+    vec_map = (unsigned char*)texture;
+    render_fade_tables = (unsigned char*)fade;
+    vec_mode = VM_QuadTextured;
+    kfx_gpoly_sink = NULL;
+    const int checked = gpoly_checked_replay, invalid = gpoly_replay_invalid;
+    gpoly_checked_replay = 1;
+    gpoly_replay_invalid = 0;
+    draw_gpoly_software(&points[0], &points[1], &points[2]);
+    vec_screen = screen;
+    vec_map = map;
+    render_fade_tables = tables;
+    vec_screen_width = pitch;
+    vec_window_width = width;
+    vec_window_height = height;
+    vec_mode = mode;
+    kfx_gpoly_sink = sink;
+    const int success = !gpoly_replay_invalid;
+    gpoly_checked_replay = checked;
+    gpoly_replay_invalid = invalid;
+    return success;
+}
+
+void draw_gpoly(struct PolyPoint* a, struct PolyPoint* b, struct PolyPoint* c)
+{
+    if (kfx_gpoly_triangle_sink && vec_mode == VM_QuadTextured) {
+        const struct KfxGpolyTarget target = {vec_screen, vec_window_width,
+            vec_window_height, vec_screen_width};
+        const struct KfxWgpuTriangle triangle = {1, 0, 0, 0, {
+            {(a->X >= -32768 && a->X <= 32767) ? a->X : 32768,
+             (a->Y >= -32768 && a->Y <= 32767) ? a->Y : 32768, a->U, a->V, a->S},
+            {(b->X >= -32768 && b->X <= 32767) ? b->X : 32768,
+             (b->Y >= -32768 && b->Y <= 32767) ? b->Y : 32768, b->U, b->V, b->S},
+            {(c->X >= -32768 && c->X <= 32767) ? c->X : 32768,
+             (c->Y >= -32768 && c->Y <= 32767) ? c->Y : 32768, c->U, c->V, c->S}}};
+        if (kfx_gpoly_triangle_sink(kfx_gpoly_triangle_context, &target, &triangle,
+                vec_map, render_fade_tables, rasterize_original_triangle) == KFX_GPOLY_CONSUMED)
+            return;
+        KfxGpolySink sink = kfx_gpoly_sink;
+        kfx_gpoly_sink = NULL;
+        draw_gpoly_software(a, b, c);
+        kfx_gpoly_sink = sink;
+        return;
+    }
+    draw_gpoly_software(a, b, c);
+}
