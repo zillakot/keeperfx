@@ -20,6 +20,7 @@
 /******************************************************************************/
 #include "pre_inc.h"
 #include "front_torture.h"
+#include "kfx/renderer/GpolyCapture.h"
 #include "net_lobby.h"
 #include "globals.h"
 #include "bflib_basics.h"
@@ -135,6 +136,7 @@ void fronttorture_load(void)
     frontend_load_data_from_cd();
     memcpy(frontend_backup_palette, &frontend_palette, PALETTE_SIZE);
     // Texture blocks memory isn't used here, so reuse it instead of allocating
+    kfx_render_assets_changed();
     unsigned char* ptr = block_mem;
     // Load RAW/PAL background
     char* fname = prepare_file_path(FGrp_LoData, "torture.raw");

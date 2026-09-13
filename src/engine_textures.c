@@ -18,6 +18,7 @@
 /******************************************************************************/
 #include "pre_inc.h"
 #include "engine_textures.h"
+#include "kfx/renderer/GpolyCapture.h"
 
 #include "globals.h"
 #include "bflib_basics.h"
@@ -244,6 +245,7 @@ TbBool load_texture_map_file(unsigned long tmapidx, LevelNumber lvnum, short fgr
         dst += (TEXTURE_BLOCKS_STAT_COUNT_B * 32 * 32);
 
     }
+    kfx_render_assets_changed();
     return true;
 }
 /******************************************************************************/

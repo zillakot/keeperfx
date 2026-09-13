@@ -446,14 +446,18 @@ int WgpuTerrainBridge::Sink(void* context, const KfxGpolyTarget* target,
     return result;
 }
 
-uint64_t WgpuTerrainBridge::ResourceFor(std::vector<Resource>& cache,
-    const uint8_t* bytes, size_t length, uint32_t width, uint32_t height,
+uint64_t WgpuTerrainBridge::ResourceFor(std::vector<Resource>& cache, const void* key,
+    uint64_t generation, const uint8_t* bytes, size_t length, uint32_t width, uint32_t height,
     uint32_t pitch, size_t limit)
 {
-    for (const auto& resource : cache)
-        if (resource.width == width && resource.height == height && resource.pitch == pitch &&
-            resource.bytes.size() == length && std::memcmp(resource.bytes.data(), bytes, length) == 0)
+    for (const auto& resource : cache) {
+        if (resource.width != width || resource.height != height || resource.pitch != pitch ||
+            resource.bytes.size() != length) continue;
+        if (key != nullptr ? resource.key == key && resource.generation == generation
+                           : resource.key == nullptr &&
+                             std::memcmp(resource.bytes.data(), bytes, length) == 0)
             return resource.handle;
+    }
     if (cache.size() >= limit) {
         Flush();
         if (m_failed) return 0;
@@ -461,7 +465,8 @@ uint64_t WgpuTerrainBridge::ResourceFor(std::vector<Resource>& cache,
                 m_error.data(), m_error.size()) != 1) return 0;
         cache.erase(cache.begin());
     }
-    Resource resource = {0, std::vector<uint8_t>(bytes, bytes + length), width, height, pitch};
+    Resource resource = {0, std::vector<uint8_t>(bytes, bytes + length), width, height, pitch,
+        key, generation};
     resource.handle = kfx_wgpu_draw_resource_create(m_context, resource.bytes.data(), length,
         width, height, pitch, m_error.data(), m_error.size());
     if (resource.handle == 0) return 0;
@@ -511,10 +516,11 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
     std::array<uint8_t, KFX_GPOLY_TEXTURE_BYTES> texture_bytes = {};
     for (size_t row = 0; row < 32; ++row)
         std::memcpy(texture_bytes.data() + row * 256, texture + row * 256, 32);
-    const uint64_t texture_handle = ResourceFor(m_textures, texture_bytes.data(),
-        texture_bytes.size(), 32, 32, 256, 64);
+    const uint64_t texture_handle = ResourceFor(m_textures, texture, kfx_render_asset_generation,
+        texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
     if (texture_handle == 0) return Fail(nullptr);
-    const uint64_t fade_handle = ResourceFor(m_fades, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
+    const uint64_t fade_handle = ResourceFor(m_fades, fade, kfx_render_asset_generation,
+        fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
     if (fade_handle == 0) return Fail(nullptr);
     KfxWgpuDrawCommand command = {};
     command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
@@ -590,9 +596,11 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
     for (size_t row = 0; row < 32; ++row)
         std::memcpy(texture_bytes.data() + row * 256, texture + row * 256, 32);
     KfxWgpuTriangle owned = triangle;
-    owned.source = ResourceFor(m_textures, texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
+    owned.source = ResourceFor(m_textures, texture, kfx_render_asset_generation,
+        texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
     if (!owned.source) return Fail(nullptr);
-    owned.table = ResourceFor(m_fades, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
+    owned.table = ResourceFor(m_fades, fade, kfx_render_asset_generation,
+        fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
     if (!owned.table) return Fail(nullptr);
     m_triangles.push_back(owned);
     return KFX_GPOLY_CONSUMED;
@@ -854,8 +862,8 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
             m_counts.resource_snapshot_bytes += source->length;
         }
         if (table != nullptr) {
-            table_handle = ResourceFor(m_fades, table->bytes, table->length,
-                table->width, table->height, table->pitch, 8);
+            table_handle = ResourceFor(m_fades, nullptr, 0, table->bytes,
+                table->length, table->width, table->height, table->pitch, 8);
         }
         const bool resources_ready = table == nullptr || table_handle != 0;
         owned.source = command.kind == KFX_WGPU_DRAW_TRANSITION ? command.source : source_handle;

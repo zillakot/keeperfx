@@ -20,6 +20,7 @@
 #include "kfx/renderer/software/WgpuMapView.h"
 #include "kfx/renderer/RendererManager.h"
 #include "front_landview.h"
+#include "kfx/renderer/GpolyCapture.h"
 
 #include "globals.h"
 #include "bflib_basics.h"
@@ -974,6 +975,7 @@ TbBool load_map_and_window(LevelNumber lvnum)
     }
     map_screen = &game.land_map_start;
     // Texture blocks memory isn't used here, so reuse it instead of allocating
+    kfx_render_assets_changed();
     unsigned char* ptr = block_mem;
     memcpy(frontend_backup_palette, &frontend_palette, PALETTE_SIZE);
     // Now prepare window sprite file name and load the file

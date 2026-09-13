@@ -97,6 +97,8 @@ private:
         uint64_t handle;
         std::vector<uint8_t> bytes;
         uint32_t width, height, pitch;
+        const void* key = nullptr;
+        uint64_t generation = 0;
     };
     static int Sink(void* context, const KfxGpolyTarget* target,
         const KfxGpolySpan* span, const uint8_t* texture, const uint8_t* fade);
@@ -106,8 +108,9 @@ private:
         const uint8_t*, const uint8_t*, KfxGpolyRasterizer);
     int Draw(const KfxGpolyTarget& target, const KfxGpolySpan& span,
         const uint8_t* texture, const uint8_t* fade);
-    uint64_t ResourceFor(std::vector<Resource>& cache, const uint8_t* bytes,
-        size_t length, uint32_t width, uint32_t height, uint32_t pitch, size_t limit);
+    uint64_t ResourceFor(std::vector<Resource>& cache, const void* key, uint64_t generation,
+        const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
+        size_t limit);
     int Fail(const char* reason);
     void ReplayPending();
     bool RasterizePending(uint8_t* pixels, uint32_t pitch) const;

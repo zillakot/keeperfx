@@ -8,6 +8,13 @@ void* kfx_gpoly_triangle_context;
 KfxGpolySink kfx_gpoly_sink;
 void *kfx_gpoly_sink_context;
 
+uint64_t kfx_render_asset_generation = 1;
+
+void kfx_render_assets_changed(void)
+{
+    ++kfx_render_asset_generation;
+}
+
 void kfx_gpoly_set_sink(KfxGpolySink sink, void *context)
 {
     kfx_gpoly_sink = sink;

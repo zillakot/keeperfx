@@ -34,6 +34,12 @@ extern void* kfx_gpoly_triangle_context;
 typedef int (*KfxGpolySink)(void *context, const struct KfxGpolyTarget *target,
     const struct KfxGpolySpan *span, const uint8_t *texture, const uint8_t *fade);
 
+/* Identity generation for immutable drawing assets (texture pages, fade and ghost
+ * tables). Bump it whenever the bytes behind a stable pointer are rewritten;
+ * resource caches key on pointer plus this value instead of comparing content. */
+extern uint64_t kfx_render_asset_generation;
+void kfx_render_assets_changed(void);
+
 void kfx_gpoly_set_sink(KfxGpolySink sink, void *context);
 extern KfxGpolySink kfx_gpoly_sink;
 extern void *kfx_gpoly_sink_context;

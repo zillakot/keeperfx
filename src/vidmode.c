@@ -19,6 +19,7 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
 #include "vidmode.h"
+#include "kfx/renderer/GpolyCapture.h"
 
 #include "globals.h"
 #include "bflib_basics.h"
@@ -518,6 +519,7 @@ TbBool init_fades_table(void)
     for (int i = 0; i < 256; i++) {
         pixmap.map_abyss[i] = abyss_colours[pixmap.ghost[i] * 3 >> 8];
     }
+    kfx_render_assets_changed();
     return true;
 }
 
