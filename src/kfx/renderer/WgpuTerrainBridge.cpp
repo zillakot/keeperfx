@@ -800,7 +800,11 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
         } else {
             ++m_counts.native_commands;
             if (command.kind == KFX_WGPU_DRAW_TRANSITION) ++m_counts.transition_commands;
-            if (command.kind == KFX_WGPU_DRAW_SPRITE) ++m_counts.gpu_sprite_commands;
+            if (command.kind == KFX_WGPU_DRAW_SPRITE) {
+                ++m_counts.gpu_sprite_commands;
+                /* Bit 3 of source_x marks the serial row-copy ordered sprite path. */
+                if (command.source_x & 8u) ++m_counts.gpu_ordered_sprites;
+            }
         }
     }
     m_counts.gpu_triangles += m_triangles.size();

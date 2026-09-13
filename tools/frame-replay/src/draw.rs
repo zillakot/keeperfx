@@ -299,6 +299,11 @@ impl DrawRenderer {
         self.counters
     }
 
+    /// Live asset bytes the drawing context holds, not a window delta.
+    pub fn resident_resource_bytes(&self) -> u64 {
+        self.resource_bytes as u64
+    }
+
     pub(super) fn submit_encoder(&mut self, encoder: wgpu::CommandEncoder) {
         self.counters.submits += 1;
         self.queue.submit([encoder.finish()]);

@@ -57,7 +57,8 @@ def drawing_metadata(output, frames, backend="wgpu", available=True):
     per_frame = [[index + position for position in range(len(profile.DRAWING_COUNTERS))]
                  for index in range(frames)]
     metadata["drawing"] = {"available": available, "backend": backend, "frames": len(per_frame),
-                           "counters": list(profile.DRAWING_COUNTERS), "per_frame": per_frame}
+                           "counters": list(profile.DRAWING_COUNTERS),
+                           "gauges": list(profile.DRAWING_GAUGES), "per_frame": per_frame}
     (output / "raw.csv.json").write_text(json.dumps(metadata))
     return metadata
 
@@ -155,7 +156,9 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual((submits["min"], submits["max"], submits["total"]), (0, 18, 171))
             self.assertEqual(submits["mean"], 9)
             self.assertAlmostEqual(submits["p95"], 17.1)
-            self.assertEqual(drawing["per_frame"]["gpu_spans"]["min"], 16)
+            self.assertEqual(drawing["per_frame"]["gpu_spans"]["min"], 17)
+            self.assertIsNone(drawing["per_frame"]["arena_bytes_resident"]["total"])
+            self.assertEqual(drawing["per_frame"]["ordered_sprites"]["min"], 15)
             self.assertTrue(any("not GPU execution time" in item for item in report["limitations"]))
             self.assertTrue(any("distinct from every host wall-clock column" in item
                                 for item in report["limitations"]))
@@ -171,7 +174,9 @@ class ProfileTests(unittest.TestCase):
                 "do not match this profiler": lambda d: d.update(
                     counters=list(profile.DRAWING_COUNTERS)[:-1]),
                 "does not match the recorded rows": lambda d: d.update(frames=20),
-                "invalid drawing counter row": lambda d: d["per_frame"].__setitem__(0, [-1] * 17),
+                "invalid drawing counter row": lambda d: d["per_frame"].__setitem__(
+                    0, [-1] * len(profile.DRAWING_COUNTERS)),
+                "gauge names do not match": lambda d: d.update(gauges=[]),
                 "invalid drawing counter availability": lambda d: d.update(backend=""),
                 "unavailable but rows were recorded": lambda d: d.update(available=False),
                 "backend changed during the measured window": lambda d: d.update(

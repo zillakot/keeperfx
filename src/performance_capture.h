@@ -22,8 +22,10 @@ struct PerformanceDrawingCounters {
     unsigned long long submits, dispatches, waits, wait_ns;
     unsigned long long checkpoints, checkpoint_copy_bytes, validation_waits;
     unsigned long long upload_bytes, readback_bytes, full_readbacks, full_readback_bytes;
-    unsigned long long buffers, buffer_bytes, batches, commands;
+    unsigned long long buffers, buffer_bytes, batches, commands, ordered_sprites;
     unsigned long long gpu_span_ns, gpu_spans;
+    /* Trailing gauges are stored as observed, not differenced. */
+    unsigned long long arena_bytes_resident;
 };
 void performance_drawing_backend(const char* backend);
 void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulative);

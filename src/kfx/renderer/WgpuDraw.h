@@ -67,6 +67,8 @@ struct KfxWgpuDrawCounters {
      * execution time, zero unless timestamp queries were enabled and supported. */
     uint64_t submits, dispatches, waits, wait_ns, buffers, buffer_bytes;
     uint64_t gpu_span_ns, gpu_spans;
+    /* Live asset bytes the context holds; a gauge, not a cumulative counter. */
+    uint64_t arena_bytes_resident;
 };
 #pragma pack(pop)
 

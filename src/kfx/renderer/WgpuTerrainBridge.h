@@ -49,6 +49,7 @@ public:
         uint64_t barrier_readbacks = 0, verification_readbacks = 0, invalid_frames = 0, missing_cpu_barriers = 0;
         uint64_t transition_checkpoint_bytes = 0, transition_snapshot_copy_bytes = 0, transition_commands = 0;
         uint64_t native_commands = 0, verification_cpu_commands = 0, gpu_sprite_commands = 0;
+        uint64_t gpu_ordered_sprites = 0;
         uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
     };

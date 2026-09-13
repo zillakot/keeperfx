@@ -24,7 +24,9 @@ DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "checkpoint_copy_bytes", "validation_waits", "upload_bytes", "readback_bytes",
                     "full_readbacks", "full_readback_bytes", "buffers", "buffer_bytes",
-                    "batches", "commands", "gpu_span_ns", "gpu_spans")
+                    "batches", "commands", "ordered_sprites", "gpu_span_ns", "gpu_spans",
+                    "arena_bytes_resident")
+DRAWING_GAUGES = ("arena_bytes_resident",)
 SETTINGS = {
     "DELTA_TIME": "ON", "TURNS_PER_SECOND": "20", "FRAMES_PER_SECOND": "60", "VSYNC": "OFF",
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
@@ -44,6 +46,7 @@ DRAWING_LIMITATIONS = [
     "wait_ns is host time blocked inside device polls, not GPU execution time; it is already included in the enclosing draw and presentation wall-clock scopes.",
     "gpu_span_ns is GPU execution time reported by timestamp queries and is distinct from every host wall-clock column; zero spans mean no timestamped pass was recorded, not zero GPU work.",
     "Counters cover the drawing context the bridge owns. Presenter surface acquisition and any drawing done outside that context are not counted.",
+    "arena_bytes_resident is a gauge sampled at frame end, not a per-frame delta, so its window total is meaningless.",
 ]
 
 
@@ -217,14 +220,14 @@ def summarize(output, args):
             "limitations": limitations + (["HEADLESS SOFTWARE SMOKE TEST: not a native presentation baseline."] if args.headless else [])}
 
 
-def drawing_distribution(values):
+def drawing_distribution(values, gauge=False):
     ordered = sorted(values)
     def percentile(percent):
         index = (len(ordered) - 1) * percent / 100
         low, high = math.floor(index), math.ceil(index)
         return ordered[low] + (ordered[high] - ordered[low]) * (index - low)
     return {"min": ordered[0], "mean": statistics.fmean(ordered), "p95": percentile(95),
-            "max": ordered[-1], "total": sum(ordered)}
+            "max": ordered[-1], "total": None if gauge else sum(ordered)}
 
 
 def summarize_drawing(drawing, presentations):
@@ -251,7 +254,10 @@ def summarize_drawing(drawing, presentations):
         return result
     if len(rows) != presentations - 1:
         raise RuntimeError("drawing counter frames must cover every measured presentation but the first")
-    result["per_frame"] = {name: drawing_distribution([row[index] for row in rows])
+    if tuple(drawing.get("gauges", ())) != DRAWING_GAUGES:
+        raise RuntimeError("drawing gauge names do not match this profiler")
+    result["per_frame"] = {name: drawing_distribution([row[index] for row in rows],
+                                                      name in DRAWING_GAUGES)
                            for index, name in enumerate(DRAWING_COUNTERS)}
     return result
 
@@ -330,8 +336,9 @@ def write_report(output, report):
                       "| Counter | Min | Mean | p95 | Max | Window total |",
                       "| --- | ---: | ---: | ---: | ---: | ---: |"]
             for name, stats in drawing["per_frame"].items():
+                total = "gauge" if stats["total"] is None else stats["total"]
                 lines.append(f"| {name} | {stats['min']} | {stats['mean']:.2f} | {stats['p95']:.2f} | "
-                             f"{stats['max']} | {stats['total']} |")
+                             f"{stats['max']} | {total} |")
             waits = drawing["per_frame"]["wait_ns"]
             spans = drawing["per_frame"]["gpu_span_ns"]
             lines += ["", f"Blocking host wait: {waits['mean'] / 1_000_000:.3f} ms mean, "

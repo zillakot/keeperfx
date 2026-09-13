@@ -77,10 +77,12 @@ std::string json_quote(const std::string& value)
 }
 
 constexpr int DrawingCounterCount = sizeof(PerformanceDrawingCounters) / sizeof(unsigned long long);
+constexpr int DrawingGaugeCount = 1;
 const char* const drawing_counter_names[DrawingCounterCount] = {
     "submits", "dispatches", "waits", "wait_ns", "checkpoints", "checkpoint_copy_bytes",
     "validation_waits", "upload_bytes", "readback_bytes", "full_readbacks", "full_readback_bytes",
-    "buffers", "buffer_bytes", "batches", "commands", "gpu_span_ns", "gpu_spans"};
+    "buffers", "buffer_bytes", "batches", "commands", "ordered_sprites", "gpu_span_ns",
+    "gpu_spans", "arena_bytes_resident"};
 
 struct Profile {
     const char* output = std::getenv("KFX_PERF_OUTPUT");
@@ -200,6 +202,10 @@ void finish(Profile& p)
         p.drawing_frames.size());
     for (int i = 0; i < DrawingCounterCount; ++i)
         std::fprintf(info, "%s%s", i ? "," : "", json_quote(drawing_counter_names[i]).c_str());
+    std::fprintf(info, "],\"gauges\":[");
+    for (int i = DrawingCounterCount - DrawingGaugeCount; i < DrawingCounterCount; ++i)
+        std::fprintf(info, "%s%s", i > DrawingCounterCount - DrawingGaugeCount ? "," : "",
+            json_quote(drawing_counter_names[i]).c_str());
     std::fprintf(info, "],\"per_frame\":[");
     for (size_t frame = 0; frame < p.drawing_frames.size(); ++frame) {
         std::fprintf(info, "%s[", frame ? "," : "");
@@ -379,10 +385,12 @@ void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulati
     if (p.drawing_seen) {
         if (p.drawing_frames.size() >= 100000) { fail(p, "drawing sample limit reached"); return; }
         std::array<unsigned long long, DrawingCounterCount> delta;
-        for (int i = 0; i < DrawingCounterCount; ++i) {
+        for (int i = 0; i < DrawingCounterCount - DrawingGaugeCount; ++i) {
             if (current[i] < previous[i]) { fail(p, "drawing counter went backwards"); return; }
             delta[i] = current[i] - previous[i];
         }
+        for (int i = DrawingCounterCount - DrawingGaugeCount; i < DrawingCounterCount; ++i)
+            delta[i] = current[i];
         p.drawing_frames.push_back(delta);
     }
     p.drawing_previous = *cumulative;
