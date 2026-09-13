@@ -4,6 +4,7 @@
 #include <cstdlib>
 extern "C" void native_trig_case(unsigned, int, uint8_t*);
 extern "C" void native_trig_extent_case(unsigned, int, uint8_t*);
+extern "C" void native_trig_thin_case(unsigned, int, uint8_t*);
 extern "C" void native_trig_scratch_case(uint8_t*);
 int main() {
     std::array<uint8_t,83*63> cpu{}, gpu{};
@@ -14,6 +15,11 @@ int main() {
         native_trig_case(mode, 0, gpu.data());
         if (cpu != gpu || bridge.Failed()) { std::fprintf(stderr,"mode%u: %s\n",mode,bridge.GetError()); return 1; }
     }
+    for (unsigned mode: modes) {
+        native_trig_thin_case(mode, 1, cpu.data());
+        native_trig_thin_case(mode, 0, gpu.data());
+        if (cpu != gpu || bridge.Failed()) { std::fprintf(stderr,"thin mode%u: %s\n",mode,bridge.GetError()); return 1; }
+    }
     native_trig_case(7, 1, cpu.data());
     native_trig_scratch_case(gpu.data());
     if (cpu != gpu || bridge.Failed()) return 1;
@@ -22,7 +28,7 @@ int main() {
         native_trig_extent_case(variant, 0, gpu.data());
         if (cpu != gpu || bridge.Failed()) return 1;
     }
-    if (bridge.GetCounters().native_commands != 56 || bridge.GetCounters().verified_batches != 56) return 1;
-    std::puts("56 native general triangles consumed before CPU setup; exact Metal verification");
+    if (bridge.GetCounters().native_commands != 628 || bridge.GetCounters().verified_batches != 628) return 1;
+    std::puts("628 native general triangles consumed before CPU setup; exact Metal verification");
     return 0;
 }

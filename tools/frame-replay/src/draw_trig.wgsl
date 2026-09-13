@@ -96,8 +96,9 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
                 let ratio = (ab_height << 16u) / ac_height;
                 let extent = trig_fixed(ratio, a.xy.x - c.xy.x) + b.xy.x - a.xy.x;
                 if extent < 0 { return destination; }
-                if extent == 0 { return 257u; }
-                step = (b.attr + trig_weight(ratio, a.attr - c.attr) - a.attr) / vec3(extent + 1);
+                if extent != 0 {
+                    step = (b.attr + trig_weight(ratio, a.attr - c.attr) - a.attr) / vec3(extent + 1);
+                }
             }
         } else {
             if pixel.y >= c.xy.y {
@@ -110,8 +111,11 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
                 let ratio = (ac_height << 16u) / ab_height;
                 let extent = trig_fixed(ratio, b.xy.x - a.xy.x) + a.xy.x - c.xy.x;
                 if extent < 0 { return destination; }
-                if extent == 0 { return 257u; }
-                step = (a.attr + trig_weight(ratio, b.attr - a.attr) - c.attr) / vec3(extent + 1);
+                if extent != 0 {
+                    step = (a.attr + trig_weight(ratio, b.attr - a.attr) - c.attr) / vec3(extent + 1);
+                } else if mode == 5u || mode == 6u || mode == 20u || mode == 21u || mode >= 24u {
+                    step.z = trig_fixed(ratio, b.xy.x - a.xy.x);
+                }
             }
         }
     } else if kind == 3u {

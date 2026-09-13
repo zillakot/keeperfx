@@ -111,10 +111,7 @@ impl DrawRenderer {
                 height,
             )?;
             self.counters.readback_bytes += 4;
-            ensure!(
-                valid,
-                "triangle has an invalid lookup or undefined native horizontal step"
-            );
+            ensure!(valid, "triangle has an invalid lookup");
         }
         Ok(())
     }

@@ -136,5 +136,24 @@ int main(int argc, char **argv) {
         };
         emit(f,v,mode,17); count++;
     }
+    const int thin_xy[][6] = {{1,0,2,1,3,3}, {3,0,1,4,1,3}};
+    const int thin_offsets[][2] = {{0,0}, {-2,0}, {77,0}, {0,-1}, {0,59}};
+    const unsigned thin_order[][3] = {{0,1,2},{1,2,0},{2,0,1},{0,2,1},{2,1,0},{1,0,2}};
+    for (unsigned mode = 0; mode < 27; mode++) for (unsigned kind = 0; kind < 2; kind++)
+        for (unsigned offset = 0; offset < 5; offset++) for (unsigned prior = 0; prior < 2; prior++)
+            for (unsigned permutation = 0; permutation < 6; permutation++) {
+                struct PolyPoint previous[3] = {
+                    {0,0,0,0,17*65536}, {79,0,20*65536,12*65536,19*65536},
+                    {0,61,8*65536,7*65536,18*65536}
+                };
+                emit(f, previous, prior ? 26 : 5, prior ? 32 : 17); count++;
+                struct PolyPoint v[3], original[3];
+                for (unsigned i = 0; i < 3; i++) original[i] = (struct PolyPoint){
+                    thin_xy[kind][i*2] + thin_offsets[offset][0],
+                    thin_xy[kind][i*2+1] + thin_offsets[offset][1],
+                    (7 + i)*65536 + 123, (8 - i)*65536 + 456, (17 + i)*65536 + 789};
+                for (unsigned i = 0; i < 3; i++) v[i] = original[thin_order[permutation][i]];
+                emit(f, v, mode, 17); count++;
+            }
     fseek(f,16,SEEK_SET); word(f,count); fclose(f); printf("%u original C triangle fixtures\n", count); return 0;
 }

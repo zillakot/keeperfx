@@ -273,27 +273,26 @@ fn native_general_triangles() -> Result<()> {
         );
         draw.release_resource(source)?;
     }
-    let mut undefined = Vec::new();
+    let mut thin = Vec::new();
     for (x, y) in [(1_i32, 0_i32), (2, 1), (3, 3)] {
         for n in [x, y, 0, 0, 65536] {
-            undefined.extend_from_slice(&n.to_le_bytes());
+            thin.extend_from_slice(&n.to_le_bytes());
         }
     }
-    let resource = draw.create_resource(&undefined, 1, 1, 1)?;
+    let resource = draw.create_resource(&thin, 1, 1, 1)?;
+    draw.submit(
+        target,
+        &[Command {
+            source: resource,
+            source_x: 1,
+            ..invalid_command
+        }],
+    )?;
+    let mut expected = original;
+    expected[width as usize + 1] = 1;
     ensure!(
-        draw.submit(
-            target,
-            &[Command {
-                source: resource,
-                ..invalid_command
-            }]
-        )
-        .is_err(),
-        "GPU accepted an undefined native horizontal step"
-    );
-    ensure!(
-        draw.readback(target)? == original,
-        "undefined triangle changed target"
+        draw.readback(target)? == expected,
+        "thin triangle did not use deterministic horizontal shade"
     );
     ensure!(data.is_empty(), "trailing fixture bytes");
     println!("{count} native original-vertex general triangles matched exactly");
