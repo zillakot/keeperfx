@@ -2,7 +2,7 @@
 #include <stdarg.h>
 
 unsigned char vec_mode, vec_colour;
-unsigned char *vec_screen, *vec_map, *poly_screen;
+unsigned char *vec_screen, *vec_map, *poly_screen, *big_scratch;
 unsigned long vec_screen_width = 83;
 long vec_window_width = 79, vec_window_height = 61;
 struct PolyPoint scans[1024];

@@ -1,5 +1,6 @@
 #pragma once
 #include "kfx/renderer/WgpuTerrainBridge.h"
+#include "front_simple.h"
 
 static int wgpu_trig_oracle_active;
 
@@ -26,6 +27,7 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
     const int textured = vec_mode == 2 || vec_mode == 3 || vec_mode == 7 || vec_mode == 8 ||
         vec_mode == 11 || vec_mode == 12 || vec_mode == 13 || vec_mode == 18 || vec_mode == 19 ||
         vec_mode == 22 || vec_mode == 23;
+    if (textured && vec_map == big_scratch) return 0;
     const int shaded = vec_mode == 1 || vec_mode == 4 || vec_mode == 16 || vec_mode == 17;
     if (!(textured || shaded || vec_mode == 0 || vec_mode == 14 || vec_mode == 15)) return 0;
     if (vec_window_width <= 0 || vec_window_height <= 0 || vec_window_width > 8192 ||

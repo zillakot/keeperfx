@@ -19,3 +19,10 @@ void native_trig_case(unsigned mode, int cpu, uint8_t *output)
     wgpu_trig_oracle_active = 0;
     memcpy(output, pixels, sizeof(pixels));
 }
+
+void native_trig_scratch_case(uint8_t *output)
+{
+    big_scratch = texture;
+    native_trig_case(7, 0, output);
+    big_scratch = NULL;
+}
