@@ -22,6 +22,8 @@
 #include <math.h>
 #include <map>
 #include "bflib_inputctrl.h"
+#include "game_control.h"
+#include "api.h"
 #include "bflib_basics.h"
 #include "bflib_keybrd.h"
 #include "bflib_mouse.h"
@@ -297,7 +299,7 @@ static void sync_ungrabbed_mouse_position(float x, float y)
             static_cast<long>(y * LbScreenHeight() / height));
 }
 
-static void process_event(const SDL_Event *ev)
+static void process_event(const SDL_Event *ev, bool controlled = false)
 {
     struct TbPoint mouseDelta;
     int x;
@@ -324,6 +326,12 @@ static void process_event(const SDL_Event *ev)
         break;
 
     case SDL_EVENT_MOUSE_MOTION:
+        if (controlled) {
+            sync_ungrabbed_mouse_position(ev->motion.x, ev->motion.y);
+            mouseDelta.x = mouseDelta.y = 0;
+            mouseControl(MActn_MOUSEMOVE, &mouseDelta);
+            break;
+        }
         if (!isMouseActive)
         {
           return;
@@ -395,11 +403,11 @@ static void process_event(const SDL_Event *ev)
 
         if(ev->button.button == SDL_BUTTON_LEFT || ev->button.button == SDL_BUTTON_RIGHT || ev->button.button == SDL_BUTTON_MIDDLE)
         {
-            if (!isMouseActive)
+            if (!isMouseActive && !controlled)
             {
             return;
             }
-            if (!lbMouseGrabbed)
+            if (!lbMouseGrabbed || controlled)
                 sync_ungrabbed_mouse_position(ev->button.x, ev->button.y);
             mouseDelta.x = 0;
             mouseDelta.y = 0;
@@ -537,7 +545,14 @@ TbBool LbPollInputs(void)
     SDL_Event ev;
     //process events until event queue is empty
     while (SDL_PollEvent(&ev)) {
+        if (game_control_enabled() && ((ev.type >= SDL_EVENT_KEY_DOWN && ev.type <= SDL_EVENT_TEXT_EDITING_CANDIDATES) ||
+            (ev.type >= SDL_EVENT_MOUSE_MOTION && ev.type <= SDL_EVENT_MOUSE_WHEEL)))
+            continue;
         process_event(&ev);
+    }
+    if (game_control_enabled()) {
+        api_update_server();
+        game_control_tick(process_event);
     }
 
     return (lbUserQuit < 1);
@@ -609,6 +624,11 @@ void LbSetMouseGrab(TbBool grab_mouse)
     IWindowSystem* ws = GetSDLWindowSystem();
     if (!ws->HasOSCursor()) // consoles will have no OS cursor to grab or hide
         return;
+    if (game_control_enabled()) {
+        lbMouseGrabbed = false;
+        ws->SetCursorGrab(false);
+        return;
+    }
     TbBool previousGrabState = lbMouseGrabbed;
     lbMouseGrabbed = grab_mouse;
     ws->SetUseRelativeMouse(use_relative_mouse_mode());

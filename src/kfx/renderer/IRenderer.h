@@ -15,6 +15,7 @@ public:
 
     virtual bool Init() = 0;
     virtual void Shutdown() = 0;
+    virtual const char* GetPresenterName() const { return "unknown"; }
     virtual const char* GetName() const = 0;
     
     virtual void SetDisplayPalette(const unsigned char* rgb8) { (void)rgb8; }

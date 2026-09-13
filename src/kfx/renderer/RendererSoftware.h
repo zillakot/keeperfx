@@ -13,6 +13,12 @@ struct SDL_Surface;
 // Software backend. it's small for now, it's gonna grow the more I bring things into it.
 class RendererSoftware : public IRenderer {
 public:
+    const char* GetPresenterName() const override {
+#ifdef KFX_RUST_PRESENTER
+        if (m_rust != nullptr) return "wgpu";
+#endif
+        return m_renderer != nullptr ? "sdl" : "uninitialized";
+    }
     bool Init() override;
     void Shutdown() override;
     const char* GetName() const override { return "software"; }

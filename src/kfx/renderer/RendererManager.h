@@ -22,6 +22,7 @@ extern "C" {
 int          RendererInit(RendererType type);
 void         RendererShutdown(void);
 RendererType RendererGetActiveType(void);
+const char* RendererGetPresenterName(void);
 
 // The currently-active 6-bit VGA palette (768 bytes) that indexed drawing samples.
 const unsigned char* RendererGetActivePalette(void);
