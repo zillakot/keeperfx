@@ -299,7 +299,8 @@ void RendererSoftware::report_drawing()
                 "\"target_creations\":%llu,\"failures\":%llu,\"verified_batches\":%llu,\"verification_cpu_spans\":%llu,\"gpu_api_batches\":%llu,\"gpu_api_commands\":%llu,\"gpu_asset_upload_bytes\":%llu,\"gpu_command_upload_bytes\":%llu,\"gpu_api_readback_bytes\":%llu,\"native_commands\":%llu,\"verification_cpu_commands\":%llu,\"gpu_triangles\":%llu,\"cpu_triangles\":%llu,\"replayed_triangles\":%llu,\"verified_triangles\":%llu,\"rejected_triangles\":%llu,\"gpu_sprite_commands\":%llu,\"gpu_shadow_commands\":%llu,\"shadow_scratch_upload_bytes\":%llu,\"shadow_scratch_readback_bytes\":%llu,\"shadow_scratch_copy_bytes\":%llu,\"resident_sequences\":%llu,\"resident_batches\":%llu,\"cpu_barriers\":%llu,\"target_alias_barriers\":%llu,\"barrier_readbacks\":%llu,\"verification_readbacks\":%llu,\"invalid_frames\":%llu,\"missing_cpu_barriers\":%llu,\"transition_checkpoint_bytes\":%llu,\"transition_snapshot_copy_bytes\":%llu,\"transition_commands\":%llu,\"frame_queued_commands\":%llu,\"frame_checkpoints\":%llu,\"frame_validation_waits\":%llu,\"frame_validation_bytes\":%llu,\"frame_gpu_checkpoint_copy_bytes\":%llu,\"frame_rejected_checkpoints\":%llu,"
                 "\"gpu_submits\":%llu,\"gpu_dispatches\":%llu,\"gpu_waits\":%llu,\"gpu_wait_ns\":%llu,"
                 "\"gpu_buffers\":%llu,\"gpu_buffer_bytes\":%llu,\"gpu_span_ns\":%llu,\"gpu_spans\":%llu,"
-                "\"gpu_ordered_sprites\":%llu,\"gpu_arena_bytes_resident\":%llu}\n",
+                "\"gpu_ordered_sprites\":%llu,\"gpu_arena_bytes_resident\":%llu,"
+                "\"bridge_solo_batches\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
                 static_cast<unsigned long long>(counts.cpu_gpoly_spans), static_cast<unsigned long long>(counts.cpu_replayed_spans),
@@ -337,7 +338,8 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.gpu_span_ns),
                 static_cast<unsigned long long>(gpu.gpu_spans),
                 static_cast<unsigned long long>(counts.gpu_ordered_sprites),
-                static_cast<unsigned long long>(gpu.arena_bytes_resident));
+                static_cast<unsigned long long>(gpu.arena_bytes_resident),
+                static_cast<unsigned long long>(counts.bridge_solo_batches));
             fclose(output);
         }
     }

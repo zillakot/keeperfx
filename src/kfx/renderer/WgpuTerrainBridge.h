@@ -52,6 +52,7 @@ public:
         uint64_t gpu_ordered_sprites = 0;
         uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
+        uint64_t bridge_solo_batches = 0;
     };
     WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify = false, bool resident = false);
     ~WgpuTerrainBridge();
@@ -59,6 +60,8 @@ public:
     WgpuTerrainBridge& operator=(const WgpuTerrainBridge&) = delete;
     void Boundary(bool allow_terrain);
     void Flush();
+    // Ordering boundary at an emitter head; the pending record list already orders a live frame.
+    void EmitterBoundary();
     // CPU pixels are unavailable inside a resident lease until this succeeds.
     bool CpuBarrier();
     bool ReadBarrier(const void* bytes, size_t length);
@@ -113,6 +116,9 @@ private:
         const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
         size_t limit);
     int Fail(const char* reason);
+    // Kinds the Rust packer whitelist and submit routing accept only as a single-command batch.
+    static bool NeedsSoloBatch(const KfxWgpuDrawCommand& command);
+    static bool OrderedSprite(const KfxWgpuDrawCommand& command);
     bool PendingTargetChanged(const KfxGpolyTarget& target) const;
     void AppendCommand(const KfxWgpuDrawCommand& command, uint64_t source);
     void AppendTriangle(const KfxWgpuTriangle& triangle);
@@ -151,6 +157,7 @@ private:
     std::vector<uint64_t> m_pending_sources;
     std::vector<KfxWgpuTriangle> m_triangles;
     std::vector<PendingRun> m_order;
+    static constexpr size_t kPendingLimit = 4096;
     static constexpr size_t kPendingSpanLimit = 32768;
     KfxGpolyRasterizer m_rasterizer = nullptr;
     bool m_fail_init, m_verify, m_failed = false;

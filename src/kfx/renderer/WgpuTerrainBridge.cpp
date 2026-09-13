@@ -40,7 +40,7 @@ extern "C" void kfx_wgpu_native_invalidate_frame(void)
 { if (active_bridge && !active_bridge->IsOracleActive()) active_bridge->InvalidateFrame(); }
 
 extern "C" void kfx_wgpu_native_flush(void)
-{ if (active_bridge != nullptr && !active_bridge->IsOracleActive()) active_bridge->Flush(); }
+{ if (active_bridge != nullptr && !active_bridge->IsOracleActive()) active_bridge->EmitterBoundary(); }
 
 extern "C" void* kfx_wgpu_native_context(void)
 { return active_bridge && !active_bridge->Failed() ? active_bridge->CursorContext() : nullptr; }
@@ -490,7 +490,7 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
     const uint8_t* texture, const uint8_t* fade)
 {
     if (m_failed || !m_allow_terrain) return KFX_GPOLY_DECLINED;
-    if (!m_triangles.empty()) Flush();
+    if (m_verify && !m_triangles.empty()) Flush();
     if (m_failed) return KFX_GPOLY_DECLINED;
     if (target.pixels == nullptr || texture == nullptr || fade == nullptr || span.x < 0 ||
         span.y < 0 || span.count == 0 || target.pitch < target.width ||
@@ -579,7 +579,7 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
     for (const auto& vertex : triangle.vertices)
         if (vertex.x < -32768 || vertex.x > 32767 || vertex.y < -32768 || vertex.y > 32767)
             return KFX_GPOLY_DECLINED;
-    if (!m_pending.empty() || m_triangles.size() >= 128 ||
+    if ((m_verify && !m_pending.empty()) || m_triangles.size() >= 128 ||
         PendingTargetChanged(target) || (m_rasterizer && m_rasterizer != rasterizer)) Flush();
     if (m_failed) return KFX_GPOLY_DECLINED;
     if (m_context == nullptr) {
@@ -797,6 +797,8 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
             ++routes;
         }
     }
+    if (m_shadow_scratch != nullptr ||
+        (m_pending.size() == 1 && NeedsSoloBatch(m_pending[0]))) ++m_counts.bridge_solo_batches;
     if (!m_resident_lease || m_verify) {
         if (kfx_wgpu_draw_readback(m_context, m_target, m_readback.data(), m_readback.size(),
                 m_width, m_error.data(), m_error.size()) != 1) return false;
@@ -871,10 +873,28 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
     return true;
 }
 
+bool WgpuTerrainBridge::NeedsSoloBatch(const KfxWgpuDrawCommand& command)
+{
+    return !(command.kind <= KFX_WGPU_DRAW_TRIG || command.kind == KFX_WGPU_DRAW_MOVIE ||
+        command.kind == KFX_WGPU_DRAW_MAP_VIEW || command.kind == KFX_WGPU_DRAW_BITMAP);
+}
+
+bool WgpuTerrainBridge::OrderedSprite(const KfxWgpuDrawCommand& command)
+{
+    /* Bit 3 of source_x marks the serial row-copy ordered sprite path. */
+    return command.kind == KFX_WGPU_DRAW_SPRITE && (command.source_x & 8u) != 0;
+}
+
 bool WgpuTerrainBridge::PendingTargetChanged(const KfxGpolyTarget& target) const
 {
     return m_native_target.pixels != target.pixels || m_native_target.width != target.width ||
         m_native_target.height != target.height || m_native_target.pitch != target.pitch;
+}
+
+void WgpuTerrainBridge::EmitterBoundary()
+{
+    if (m_resident_lease && !m_verify && !m_failed) return;
+    Flush();
 }
 
 int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
@@ -882,7 +902,10 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
     const KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context)
 {
     if (m_oracle_active) return 0;
-    Flush();
+    if (!m_pending.empty() || !m_triangles.empty()) {
+        if (m_verify || !m_resident_lease || NeedsSoloBatch(command) || OrderedSprite(command) ||
+            m_pending.size() >= kPendingLimit || PendingTargetChanged(target)) Flush();
+    }
     m_allow_terrain = false;
     if (m_failed) return 0;
     if (m_verify && oracle == nullptr) {
@@ -940,7 +963,9 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
         bool success = false;
         if (resources_ready) {
             AppendCommand(owned, guard.Take());
-            success = ExecutePending(oracle, oracle_context);
+            success = !NeedsSoloBatch(command) && !OrderedSprite(command) && !m_verify &&
+                m_resident_lease && m_pending.size() < kPendingLimit;
+            if (!success) success = ExecutePending(oracle, oracle_context);
         }
         if (!success) {
             ClearPending();
