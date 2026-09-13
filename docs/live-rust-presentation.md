@@ -157,8 +157,9 @@ triangles and generic commands share one ordered record list, so the span and
 triangle paths no longer flush each other. Inside a resident frame a batch closes
 only at a kind the GPU packer accepts alone (shadow, transition, minimap, lens
 effect), an ordered sprite, a target or view change, a snapshot, readback or
-barrier, a bucket boundary, the 4,096 command cap or verification mode; outside a
-resident lease every command still flushes, so a command accepted inside a frame
+barrier, the 4,096 command cap or verification mode. A world-bucket boundary and
+an emitter head only stop terrain from continuing; outside a resident lease every
+command still flushes, so a command accepted inside a frame
 reaches the native target at the next barrier, readback or frame end rather than
 before it returns. A batch the GPU rejects loses its whole pending run, and the
 frame recovers through a full CPU redraw. Pixel, box, HV-line and circle hooks in

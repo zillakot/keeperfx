@@ -569,6 +569,7 @@ int main()
             const unsigned pick = next() % 12u;
             const uint8_t colour = static_cast<uint8_t>(next() & 0x7fu);
             if (pick < 3) {
+                if (step % 5u == 0) bridge.Boundary(false);
                 bridge.Boundary(true);
                 if (pick < 2) {
                     assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &frame, &a, texture.data(), fade.data()) == 1);

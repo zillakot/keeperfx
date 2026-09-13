@@ -131,6 +131,8 @@ int WgpuTerrainBridge::SubmitShadow(const KfxGpolyTarget& target, const KfxWgpuD
     KfxWgpuNativeOracle oracle, void* oracle_context)
 {
     Boundary(false);
+    // The shadow route accepts only its own command, so close any pending run first.
+    Flush();
     m_shadow_scratch = scratch;
     int accepted = SubmitNative(target, command, source, table, oracle, oracle_context);
     m_shadow_scratch = nullptr;
@@ -408,8 +410,9 @@ uint64_t WgpuTerrainBridge::BorrowTarget(const KfxGpolyTarget& target)
 void WgpuTerrainBridge::Boundary(bool allow_terrain)
 {
     if (!allow_terrain) {
-        if (m_frame_active) Flush();
-        else CpuBarrier();
+        // The pending record list keeps issue order, so a live frame needs no flush here.
+        if (!m_frame_active) CpuBarrier();
+        else if (!m_resident_lease || m_verify) Flush();
     } else BeginResident();
     m_allow_terrain = allow_terrain;
 }
@@ -768,7 +771,10 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
     size_t routes = 0;
     if (m_shadow_scratch != nullptr) {
         if (m_pending.size() != 1 || !m_triangles.empty() ||
-            m_pending[0].kind != KFX_WGPU_DRAW_SHADOW) return false;
+            m_pending[0].kind != KFX_WGPU_DRAW_SHADOW) {
+            std::snprintf(m_error.data(), m_error.size(), "shadow submission requires a solo batch");
+            return false;
+        }
         shadow_mirror.resize(65536);
         if (kfx_wgpu_draw_submit_shadow(m_context, destination, m_pending.data(), shadow_mirror.data(),
                 shadow_mirror.size(), m_error.data(), m_error.size()) != 1) return false;
