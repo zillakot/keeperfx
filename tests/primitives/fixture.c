@@ -4,7 +4,7 @@ struct DisplayStruct lbDisplay;
 static unsigned short flags;
 static FILE *fixture;
 static unsigned count, submissions;
-static int decline;
+static int decline, disabled;
 enum { WIDTH = 83, HEIGHT = 61, SIZE = WIDTH * HEIGHT };
 static uint8_t target_pixels[SIZE], expected[SIZE], initial[SIZE], glass[65536];
 
@@ -16,6 +16,8 @@ static void require(int condition, const char *message)
 unsigned short RendererGetDrawFlags(void) { return flags; }
 
 int kfx_wgpu_native_cpu_barrier(void) { return 1; }
+
+int kfx_wgpu_native_enabled(void) { return !disabled; }
 
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
     const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
@@ -74,6 +76,13 @@ static void routing_checks(void)
     require(submissions == before + 1 && !memcmp(target_pixels, initial, SIZE)
         && expected[5 * WIDTH + 4] == 143,
         "valid linear pixel should normalize before GPU coordinate limits");
+    memcpy(target_pixels, initial, SIZE);
+    disabled = 1;
+    before = submissions;
+    LbDrawCircleFilled(23, 19, 8, 109);
+    require(submissions == before, "disabled presenter submitted a native command");
+    require(!memcmp(target_pixels, fallback, SIZE), "disabled presenter changed legacy output");
+    disabled = 0;
     memcpy(target_pixels, initial, SIZE);
 }
 
