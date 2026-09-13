@@ -10,6 +10,11 @@ if(NOT KFX_SDL3_INCLUDE_DIR)
 endif()
 get_filename_component(KFX_ROOT "../.." ABSOLUTE)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ver_defs.h" "#define VER_STRING \"raw-image-test\"\n")
+file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/ver_defs.h"
+    "#define VER_MAJOR 0\n#define VER_MINOR 0\n#define VER_RELEASE 0\n#define VER_BUILD 0\n")
+# These drawing fixtures include sounds.h but use no SDL_mixer declarations.
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/SDL3_mixer")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/SDL3_mixer/SDL_mixer.h" "#pragma once\n")
 add_executable(raw_image_fixture fixture.c "${KFX_ROOT}/src/front_simple.c"
     "${KFX_ROOT}/src/gui_draw.c" "${KFX_ROOT}/src/kfx/renderer/software/WgpuRawImage.c")
 target_include_directories(raw_image_fixture PRIVATE "${KFX_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}" ${KFX_SDL3_INCLUDE_DIR})

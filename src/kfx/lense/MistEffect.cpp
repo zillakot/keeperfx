@@ -20,6 +20,7 @@
 /******************************************************************************/
 #include "../../pre_inc.h"
 #include "MistEffect.h"
+#include "WgpuLens.h"
 
 #include <string.h>
 #include "../../config_lenses.h"
@@ -46,7 +47,7 @@ public:
     
     void Setup(unsigned char *lens_mem, unsigned char *fade, unsigned char *ghost,
                unsigned char pos_x_step, unsigned char pos_y_step,
-               unsigned char sec_x_step, unsigned char sec_y_step);
+               unsigned char sec_x_step, unsigned char sec_y_step, unsigned fade_rows = 33);
     void SetAnimation(long counter, long speed);
     void Render(unsigned char *dstbuf, long dstpitch, 
                unsigned char *srcbuf, long srcpitch,
@@ -58,6 +59,7 @@ private:
     unsigned int lens_dim;
     unsigned char *lens_data;
     unsigned char *fade_data;
+    unsigned fade_rows;
     unsigned char *ghost_data;
     unsigned char position_offset_x;
     unsigned char position_offset_y;
@@ -82,10 +84,11 @@ CMistFade::~CMistFade()
 
 void CMistFade::Setup(unsigned char *lens_mem, unsigned char *fade, unsigned char *ghost,
                      unsigned char pos_x_step, unsigned char pos_y_step,
-                     unsigned char sec_x_step, unsigned char sec_y_step)
+                     unsigned char sec_x_step, unsigned char sec_y_step, unsigned fade_rows)
 {
     this->lens_data = lens_mem;
     this->fade_data = fade;
+    this->fade_rows = fade_rows;
     this->ghost_data = ghost;
     this->lens_dim = 256;
     this->position_offset_x = 0;
@@ -125,68 +128,8 @@ void CMistFade::Render(unsigned char *dstbuf, long dstpitch,
         return;
     }
     
-    // Reference dimensions for resolution-independent scaling
-    // The mist pattern will appear identical to 640x480 at any resolution
-    static const int REF_WIDTH = 640;
-    static const int REF_HEIGHT = 480;
-    
-    // Fixed-point scale factors (16.16 format)
-    // Maps screen coordinates to virtual 640x480 space
-    const unsigned int scale_x = (REF_WIDTH << 16) / width;
-    const unsigned int scale_y = (REF_HEIGHT << 16) / height;
-    
-    // Animation offsets (copied to local for performance)
-    const int pos_x = this->position_offset_x;
-    const int pos_y = this->position_offset_y;
-    const int sec_x = this->secondary_offset_x;
-    const int sec_y = this->secondary_offset_y;
-    
-    unsigned char *src = srcbuf;
-    unsigned char *dst = dstbuf;
-    
-    for (long y = 0; y < height; y++)
-    {
-        // Virtual Y coordinate in 640x480 space
-        int virtual_y = (y * scale_y) >> 16;
-        
-        // Pre-calculate row-constant texture coordinates
-        int c2_base = (pos_y + virtual_y) & 0xFF;
-        int p1_base = (sec_x + 0x10000 - virtual_y) & 0xFF;
-        
-        for (long x = 0; x < width; x++)
-        {
-            // Virtual X coordinate in 640x480 space
-            int virtual_x = (x * scale_x) >> 16;
-            
-            // Primary layer texture coords: (row=c2, col=p2)
-            // p2 increments with x, c2 increments with y
-            int p2 = (pos_x + virtual_x) & 0xFF;
-            int c2 = c2_base;
-            
-            // Secondary layer texture coords: (row=c1, col=p1)
-            // c1 decrements with x, p1 decrements with y
-            int c1 = (sec_y + 0x10000 - virtual_x) & 0xFF;
-            int p1 = p1_base;
-            
-            // Sample both layers from 256x256 texture
-            long k = lens_data[(c2 << 8) + p2];  // primary
-            long i = lens_data[(c1 << 8) + p1];  // secondary
-            
-            // Combine layers and clamp
-            long n = (k + i) >> 3;
-            if (n > 32) n = 32;
-            else if (n < 0) n = 0;
-            
-            // Apply fade table and write result
-            *dst = this->fade_data[(n << 8) + *src];
-            src++;
-            dst++;
-        }
-        
-        // Move to next row
-        dst += (dstpitch - width);
-        src += (srcpitch - width);
-    }
+    KfxLensMist(dstbuf, dstpitch, srcbuf, srcpitch, width, height, lens_data, fade_data,
+        position_offset_x, position_offset_y, secondary_offset_x, secondary_offset_y, fade_rows);
 }
 
 /******************************************************************************/
@@ -233,7 +176,8 @@ TbBool MistEffect::Setup(long lens_idx)
                    (unsigned char)cfg->mist_pos_x_step,
                    (unsigned char)cfg->mist_pos_y_step,
                    (unsigned char)cfg->mist_sec_x_step,
-                   (unsigned char)cfg->mist_sec_y_step);
+                   (unsigned char)cfg->mist_sec_y_step,
+                   64 - cfg->mist_lightness);
     renderer->SetAnimation(0, 1024);
     
     // Store renderer in user data (we'll manage it through the base class)

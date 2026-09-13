@@ -19,6 +19,7 @@
 /******************************************************************************/
 #include "../../pre_inc.h"
 #include "FlyeyeEffect.h"
+#include "WgpuLens.h"
 
 #include <cmath>
 #include <stdlib.h>
@@ -388,21 +389,9 @@ TbBool FlyeyeEffect::Draw(LensRenderContext* ctx)
         }
     }
     
-    // Fast lookup-based rendering
-    unsigned char* viewport_src = ctx->srcbuf + ctx->viewport_x;
-    unsigned char* dst = ctx->dstbuf;
-    FlyeyeLookupEntry* entry = m_lookup_table;
-    
-    for (long y = 0; y < ctx->height; y++)
-    {
-        for (long x = 0; x < ctx->width; x++)
-        {
-            dst[x] = viewport_src[entry->src_y * ctx->srcpitch + entry->src_x];
-            entry++;
-        }
-        dst += ctx->dstpitch;
-    }
-    
+    KfxLensRemap(ctx->dstbuf, ctx->dstpitch, ctx->srcbuf + ctx->viewport_x,
+        ctx->srcpitch, ctx->width, ctx->height, m_lookup_table);
+
     ctx->buffer_copied = true;
     return true;
 }

@@ -18,6 +18,7 @@
 /******************************************************************************/
 #include "../../pre_inc.h"
 #include "OverlayEffect.h"
+#include "WgpuLens.h"
 
 #include <string.h>
 #include "../../bflib_basics.h"
@@ -165,61 +166,8 @@ void COverlayRenderer::Render(unsigned char *dstbuf, long dstpitch, unsigned cha
         return;
     }
     
-    const unsigned char* overlay_src = m_overlay_data;
-    const short alpha = m_alpha;
-    
-    // Overlay dimensions
-    const int overlay_w = m_width;
-    const int overlay_h = m_height;
-    
-    // Stretch-to-fit: use fixed-point scaling (16.16 format) for precision
-    // Scale factors map viewport coordinates to overlay texture coordinates
-    const unsigned int scale_x = (overlay_w << 16) / width;
-    const unsigned int scale_y = (overlay_h << 16) / height;
-    
-    // Clamp alpha to valid range (0-256, where 256 = opaque)
-    int alpha_clamped = (alpha < 0) ? 0 : ((alpha > 256) ? 256 : alpha);
-    int inv_alpha = 256 - alpha_clamped;
-    
-    // Composite overlay onto destination buffer with stretch-to-fit
-    for (int y = 0; y < height; y++)
-    {
-        // Calculate overlay Y coordinate using fixed-point
-        int overlay_y = (y * scale_y) >> 16;
-        if (overlay_y >= overlay_h) overlay_y = overlay_h - 1;
-        
-        const unsigned char* overlay_row = overlay_src + (overlay_y * overlay_w);
-        unsigned char* dst_row = dstbuf + (y * dstpitch);
-        const unsigned char* src_row = srcbuf + (y * srcpitch);
-        
-        for (int x = 0; x < width; x++)
-        {
-            // Get source pixel (the 3D view)
-            unsigned char src_pixel = src_row[x];
-            
-            // Calculate overlay X coordinate using fixed-point (nearest-neighbor sampling)
-            int overlay_x = (x * scale_x) >> 16;
-            if (overlay_x >= overlay_w) overlay_x = overlay_w - 1;
-            
-            // Get overlay pixel
-            unsigned char overlay_pixel = overlay_row[overlay_x];
-            
-            // Palette index 255 is transparent - skip blending
-            if (overlay_pixel == 255)
-            {
-                dst_row[x] = src_pixel;
-                continue;
-            }
-            
-            // Alpha blend: result = (overlay * alpha + src * (1 - alpha)) / 256
-            unsigned char result = (unsigned char)(
-                (overlay_pixel * alpha_clamped + src_pixel * inv_alpha) >> 8
-            );
-            
-            // Write to destination
-            dst_row[x] = result;
-        }
-    }
+    KfxLensOverlay(dstbuf, dstpitch, srcbuf, srcpitch, width, height,
+        m_overlay_data, m_width, m_height, m_alpha);
 }
 
 /******************************************************************************/

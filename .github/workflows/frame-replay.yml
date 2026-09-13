@@ -18,6 +18,7 @@ jobs:
       KFX_GPOLY_TRIANGLE_FIXTURE: ${{ github.workspace }}/out/gpoly-tests/triangles.bin
       KFX_RAW_IMAGE_FIXTURE: ${{ github.workspace }}/out/raw-image-tests/raw-images.bin
       KFX_SPRITE_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprites.bin
+      KFX_LENS_FIXTURE: ${{ github.workspace }}/out/lens-tests/lenses.bin
       KFX_PRIMITIVE_FIXTURE: ${{ github.workspace }}/out/primitive-tests/primitives.bin
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +69,12 @@ jobs:
           cmake --build out/raw-image-tests --parallel 2
           ctest --test-dir out/raw-image-tests --output-on-failure
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_raw_gpu -- --ignored --nocapture --test-threads=1
+      - name: Compare built-in lenses with native drawing
+        run: |
+          cmake -S tests/lens -B out/lens-tests
+          cmake --build out/lens-tests --parallel 2
+          ctest --test-dir out/lens-tests --output-on-failure
+          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_lenses_gpu -- --ignored --nocapture --test-threads=1
       - name: Replay synthetic frames and sequences
         run: |
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --lib -- --ignored --test-threads=1
