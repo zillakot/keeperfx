@@ -13,8 +13,18 @@ struct FakeContext {
     std::map<uint64_t, FakeResource> resources, targets;
 };
 static bool fail_readback = false;
-extern "C" int32_t kfx_wgpu_draw_submit_triangles(void*, uint64_t, const KfxWgpuTriangle*, size_t, char*, size_t)
-{ return -1; }
+static bool mock_triangles = false, mismatch_triangles = false;
+extern "C" int32_t kfx_wgpu_draw_submit_triangles(void* handle, uint64_t target, const KfxWgpuTriangle*, size_t, char*, size_t)
+{
+    if (!mock_triangles) return -1;
+    static_cast<FakeContext*>(handle)->targets.at(target).bytes[0] = mismatch_triangles ? 122 : 123;
+    return 1;
+}
+static int triangle_oracle(const KfxGpolyTarget* target, const KfxWgpuTriangle*, const uint8_t*, const uint8_t*)
+{
+    target->pixels[0] = 123;
+    return 1;
+}
 extern "C" int32_t kfx_wgpu_draw_counters(void*, KfxWgpuDrawCounters* counters, char*, size_t)
 { *counters = {}; return 1; }
 extern "C" void* kfx_wgpu_draw_create(char*, size_t) { return new FakeContext; }
@@ -195,6 +205,28 @@ int main()
         assert(bridge.GetCounters().cpu_replayed_spans == 1);
     }
 #ifndef KFX_BRIDGE_REAL_GPU
+    for (const bool mismatch : {false, true}) {
+        std::vector<uint8_t> triangle_pixels(20 * 10, 106);
+        KfxGpolyTarget triangle_target = {triangle_pixels.data(), 20, 10, 20};
+        KfxWgpuTriangle triangle = {};
+        triangle.abi_version = 1;
+        WgpuTerrainBridge bridge(0, false, true);
+        mock_triangles = true;
+        mismatch_triangles = mismatch;
+        kfx_wgpu_terrain_boundary(1);
+        assert(kfx_gpoly_triangle_sink(kfx_gpoly_triangle_context, &triangle_target,
+            &triangle, texture.data(), fade.data(), triangle_oracle) == 1);
+        kfx_wgpu_terrain_boundary(0);
+        assert(bridge.Failed() == mismatch);
+        assert(bridge.GetCounters().verified_triangles == (mismatch ? 0 : 1));
+        assert(bridge.GetCounters().verified_batches == (mismatch ? 0 : 1));
+        assert(bridge.GetCounters().gpu_triangles == (mismatch ? 0 : 1));
+        assert(bridge.GetCounters().replayed_triangles == (mismatch ? 1 : 0));
+        assert(triangle_pixels[0] == 123);
+        assert(std::all_of(triangle_pixels.begin() + 1, triangle_pixels.end(),
+            [](uint8_t pixel) { return pixel == 106; }));
+        mock_triangles = false;
+    }
     {
         WgpuTerrainBridge bridge(0, false, true);
         kfx_wgpu_terrain_boundary(1);

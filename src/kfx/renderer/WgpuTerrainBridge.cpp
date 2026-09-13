@@ -331,12 +331,12 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
                 return false;
             }
             m_counts.verification_cpu_spans += m_pending.size();
-            m_counts.verified_triangles += m_triangles.size();
         }
         if (expected != m_readback) {
             std::snprintf(m_error.data(), m_error.size(), "GPU terrain index comparison failed");
             return false;
         }
+        m_counts.verified_triangles += m_triangles.size();
         ++m_counts.verified_batches;
     }
     for (uint32_t row = 0; row < m_height; ++row)
