@@ -102,10 +102,12 @@ example, replacing `DIG_IMPACT` does not replace `DOOR_PLACE`, although both
 reference legacy IDs 72–74. Remove the mod entries and restart to compare
 Original; do not edit personal game settings or saves for this experiment.
 
-Before using the pack with arbitrary campaigns/maps, resolve the existing
-same-name override behavior below and verify fallback for missing variants.
-A failed full family must not accidentally borrow another family's custom
-buffer. After-map placement is deliberately not used by this pack.
+Before using the pack with arbitrary campaigns/maps, run the campaign-level
+checks below, including fallback for missing variants. The engine now preserves
+prior mappings when a family fails and publishes successful families as contiguous
+IDs. The registry regression covers those contracts with loader doubles; it does
+not replace full configuration and decoder tests. After-map placement is
+deliberately not used by this pack.
 
 ## Comparisons and evidence
 
@@ -137,10 +139,14 @@ bounds and preservation of existing output directories:
 python3 -m unittest discover -s scripts/tests -p test_audio_audition.py -v
 ```
 
-An isolated native OpenAL run loaded the mod through `[after_base]` without
-custom-load errors and shut down cleanly. Its idle scenario triggered none of
-the seven replacement families: this establishes loader/startup compatibility,
-not actual playback or listening evidence for the replacements.
+An isolated Apple Silicon run loaded byte-identical PR #13 assets through
+`[after_base]` using a dummy/software SDL display and a real OpenAL device.
+Native game-control tab events produced two `TAB_CLICK` starts; a scripted dig
+produced one `DIG_IMPACT` variant 3 start. The run exited cleanly with zero trace
+overflow. The [validation artifact](audio/audition-validation.json) records the
+asset/source revisions, executable hash and observed submissions. This proves
+representative replacement playback submission, not recorded output or listening
+quality; other replacement families and private restorations remain unverified.
 
 Listening acceptance is open. No headphone or speaker listening was performed
 by the producing agent, and passing signal/decoder tests does not establish
@@ -149,22 +155,30 @@ loop repetition and relative levels in quiet/crowded gameplay and possession.
 Water/room ambience, restored music, movie transitions and other languages are
 not produced here. The inspected local `music/` contained no playable tracks.
 
-## Override reproduction for the engine follow-up
+## Override behavior and remaining campaign checks
 
-Source inspection of the base revision found a blocker for general campaign
-activation. This is a concrete sequence for a runtime regression, not a claim
-that this pack has passed it:
+[PR #14](https://github.com/zillakot/keeperfx/pull/14) fixes the same-name cache
+and registry precedence defect found during this audition. The latest successful
+numeric, custom-file or ZIP declaration now supplies the active named mapping
+and variant count. Named and creature families publish contiguous IDs atomically;
+a missing/corrupt family retains the previous mapping and discards unpublished
+buffers. Campaign snapshots restore named mappings and source caches.
+
+The [production registry regression](../tests/sound_manager_registry.md)
+reproduces the old numeric-over-custom failure and covers source replacement,
+family rollback, creature binding, snapshots and reset with deterministic loader
+boundaries. It does not parse a complete campaign, decode real audio or exercise
+OpenAL rollback. Filesystem reuse compares resolved paths; editing bytes at the
+same path is outside the hot-reload contract.
+
+Run this sequence through complete campaign/map configuration and real decoding
+before promising general pack compatibility:
 
 1. Load base `TAB_CLICK = 60`.
 2. Load this after-base mod's `TAB_CLICK = audition_tab.wav`.
 3. Load a later campaign `TAB_CLICK = 61`. Expected: 61.
 4. Independently restart and replace step 3 with a different custom filepath.
    Expected: the later file. Repeat at map and after-map tiers and after reload.
-
-`SoundManager::getSoundId()` checks `custom_sounds_` before `sound_registry_`
-([source](../src/sound_manager.cpp)), while `registerSound()` only updates the
-latter. `loadCustomSound()` and its memory equivalent reuse an existing name
-without checking the new file. Single-file named loads use `custom_sounds_`,
-while multi-variant loads register the group separately. Consequently config
-load ordering alone cannot establish same-name replacement correctness.
-Resolve and test those paths before claiming campaign/map compatibility.
+5. Exercise missing/corrupt family variants and mixed campaign/base creature
+   sources. Verify the previous mapping survives failure, every successful family
+   remains contiguous, and repeated failed loads do not grow the custom bank.

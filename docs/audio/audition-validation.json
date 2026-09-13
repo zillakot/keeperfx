@@ -226,5 +226,77 @@
   ],
   "focused_tests": 9,
   "listening": "not performed; open acceptance gate",
-  "runtime": "Isolated native OpenAL after_base mod startup/shutdown completed without custom-load errors; idle scenario triggered none of the seven replaced families, so no replacement playback or listening claim"
+  "runtime": "Isolated after_base pack with byte-identical PR13 assets submitted two TAB_CLICK starts and one DIG_IMPACT variant 3 start to real OpenAL; clean exit and zero trace overflow. Other replacement families, private restorations and listening remain unverified.",
+  "runtime_evidence": {
+    "asset_head": "54c03d231e31aa8e021c407a442732fac1bf548d",
+    "engine_source": "e19305f9a9799dff9929edde93081175b62a4bae",
+    "engine_sha256": "83031df78e4d4fd2be105964eb34d41448ae1827f539c664e9b659a2e7b8193a",
+    "backend": "SDL dummy/software display; real OpenAL device",
+    "custom_offset": 1194,
+    "custom_starts": [
+      {
+        "event": "start",
+        "sequence": 1240,
+        "tick": 581,
+        "turn": 581,
+        "sound_seed": 425720376,
+        "emitter": 4004,
+        "requested": 1194,
+        "resolved": 1194,
+        "voice": 4,
+        "volume": 127,
+        "pan": 64,
+        "pitch": 100,
+        "repeats": 0,
+        "priority": 0
+      },
+      {
+        "event": "start",
+        "sequence": 3275,
+        "tick": 1790,
+        "turn": 1790,
+        "sound_seed": 425720376,
+        "emitter": 4004,
+        "requested": 1194,
+        "resolved": 1194,
+        "voice": 2,
+        "volume": 127,
+        "pan": 64,
+        "pitch": 100,
+        "repeats": 0,
+        "priority": 0
+      },
+      {
+        "event": "start",
+        "sequence": 3681,
+        "tick": 1965,
+        "turn": 1965,
+        "sound_seed": 3614839424,
+        "emitter": 4003,
+        "requested": 1201,
+        "resolved": 1201,
+        "voice": 3,
+        "volume": 85,
+        "pan": 80,
+        "pitch": 100,
+        "repeats": 0,
+        "priority": 0
+      }
+    ],
+    "trace_end": {
+      "event": "trace_end",
+      "records": 3967,
+      "overflow": 0
+    },
+    "exit": {
+      "returncode": 0,
+      "timed_out": false
+    },
+    "scope": "Named tab clicks via native game-control events, digging via script TAG_MAP_RECT on revealed adjacent gold; no listening, capture, mix or spatial quality conclusion",
+    "cue_mapping": {
+      "1194": "TAB_CLICK = audition_tab.wav (bank offset + 0)",
+      "1201": "DIG_IMPACT variant 3 = audition_dig3.wav (bank offset + 7)"
+    },
+    "runtime_pack_bytes_match_pr13": true
+  }
 }
