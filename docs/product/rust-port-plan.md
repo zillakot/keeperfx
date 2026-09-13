@@ -10,7 +10,9 @@ original pixel-art appearance and game behavior. The long-term target is a
 Rust-owned application and game implementation. Third-party libraries may still
 contain C/C++; rewriting those libraries is outside this plan.
 
-The phases below are proposals; the completed foundations are listed separately. Delivery scope, findings and validation belong in the
+The graphics migration below is authorized for execution; later language and
+gameplay phases remain proposals. Completed foundations are listed separately.
+Delivery scope, findings and validation belong in the
 [fork's pull requests](https://github.com/zillakot/keeperfx/pulls). Issues are
 currently disabled in the fork, so this plan uses PRs as delivery records.
 
@@ -45,9 +47,9 @@ track for sound remastering and replacement, audio compatibility fixtures and
 gradual Rust ownership. Its initial audition pack can use the existing engine;
 live audio and graphics integration share explicit lifecycle checks.
 
-The next graphics task is the investigation below. Utility and gameplay migration
-remain separate tracks; GPU world drawing does not require transferring simulation
-ownership to Rust. Later phases require their own scoped designs.
+The active graphics task is full wgpu drawing, delivered through the gates below.
+Utility and gameplay migration remain separate tracks; GPU world drawing does not
+require transferring simulation ownership to Rust. Later phases require their own scoped designs.
 
 ## Delivered milestone: optional live Rust presentation
 
@@ -146,13 +148,16 @@ order and pixel coverage. GPU world drawing needs scene or draw-command data
 presentation; it cannot remove CPU terrain or sprite drawing. No GPU world drawing
 has been implemented, and no new renderer architecture has been selected.
 
-### Next session: measure CPU drawing and define one extraction boundary
+### Active delivery: full wgpu drawing
 
-This is the first bounded follow-up task, deferred to the next session. Deliver
-one investigation PR with a rendering-cost report, a source-backed scene/command
-boundary sketch and a go/no-go recommendation for one small GPU experiment.
-Instrumentation and runner changes needed for that investigation belong in that
-PR; implementing a GPU world renderer does not.
+The user authorized the full drawing migration on 2026-09-13. Inventory and
+measurement are the first gate, followed by command extraction, GPU implementation,
+all drawing paths and native validation. A single family or framebuffer presenter
+does not complete this scope. Keep the delivery PR in draft while implementation
+or required validation remains incomplete; record exact source and evidence at each
+gate without marking untested paths complete.
+
+### Inventory and measurement
 
 Entry: start from the latest fork `master`, retain PR #9 as the presentation
 baseline, and record the exact source/binary/assets/settings used. Reuse the
@@ -198,12 +203,12 @@ Work and deliverables:
    scene representation. Compare extraction at that boundary with a narrower
    rasterizer input; choose only after measuring cost and compatibility needs.
 
-Exit/acceptance: the PR identifies which measured work limits each scene, includes
-absolute costs and distributions with workload/identity limits, and names one
-candidate's callers, required data, ownership, exclusions and expected removable
-CPU work. It proposes synthetic pixel fixtures and a local game comparison for that
-candidate. If the data do not justify GPU work, record that conclusion and the
-next measured question instead of promising an FPS improvement.
+Inventory acceptance: identify which measured work limits each scene, include
+absolute costs and distributions with workload/identity limits, and record every
+drawing family's callers, input, ownership and pixel rules. Choose the first
+extraction boundary and fixtures from this evidence, then continue through the
+remaining gates. A lack of measured speedup must be reported; it does not establish
+migration completion or justify an FPS claim.
 
 Validation for changed measurement code must cover sample completeness, nesting,
 metadata/config mismatch rejection and preservation of default capped behavior.
@@ -213,16 +218,35 @@ run builds/profilers concurrently with benchmark collection. Keep original artwo
 raw captures, session descriptors and private host details out of the PR; publish
 portable procedures, aggregate evidence and redistributable fixtures.
 
-### Gates after the investigation
+### Execution and coverage ledger
 
-| Gate | Small delivery and acceptance |
-| --- | --- |
-| Select a bounded slice | Measured cost and command-boundary feasibility justify one terrain or sprite family and one initial view. Define coverage, unsupported cases and numerical/pixel rules before choosing raster versus compute or a broader scene architecture. |
-| Extract and compare commands | Add a bounded read-only adapter and synthetic fixtures in a separate PR. Specify ownership, limits and errors; preserve C/C++ simulation authority. Capture input before rasterization and prove that the legacy path still produces the reference pixels. |
-| Prototype GPU world drawing | Implement only the selected family behind an opt-in path. Compare identical command input against CPU output, including clipping, ordering, transparency, palette/shade behavior and integer scaling. Explain CPU/GPU composition and synchronization costs; fall back for unsupported input. |
-| Integrate and measure | Run exact pixel and native lifecycle/gameplay checks, then matched end-to-end measurements with verification disabled. Account for command extraction, upload, synchronization, remaining CPU drawing and frame-time tails. Expand only when evidence supports the next slice. |
+All entries start open. Replace status with source-backed implementation and
+validation evidence as work lands; a fallback invocation remains uncovered GPU
+work. Record separate exact-pixel, native runtime and performance results.
 
-Keep exact presentation comparisons unchanged. Define the new slice's visual
+| Gate | Status | Required evidence |
+| --- | --- | --- |
+| Inventory and measurement | Open | Complete drawing call graph, coverage families, measured scene preparation/rasterization/UI costs and instrumentation overhead; preserve distinct simulation, process CPU and GPU measurements. |
+| Extract commands | Open | Immutable inputs before rasterization, bounded ABI/resource lifetimes and explicit ordering; synthetic fixtures and unchanged reference pixels; C/C++ retains simulation authority. |
+| Implement GPU drawing | Open | wgpu draws commands directly for each family, with exact clipping, coverage, transparency, palette/shade and integer-scaling comparisons; account for extraction, upload, composition and synchronization. |
+| Cover every drawing path | Open | Complete the family matrix below and audit framebuffer writes/callers for unlisted paths; no silent CPU drawing in the claimed full GPU mode. |
+| Native validation | Open | Same-input pixel comparisons plus isolated gameplay, save/reload, view transitions, menus, window lifecycle and recovery; verify final source/binary and distinguish native control from physical OS input. |
+| Performance and delivery | Open | Serial matched baseline/candidate runs, absolute costs and tails, settings and source identities; full uncapped matrix before FPS claims; exact-head CI and final merge verification after required work is complete. |
+
+| Drawing family | Inventory | GPU implementation | Exact-pixel/native validation |
+| --- | --- | --- | --- |
+| Dungeon terrain, walls and textured polygons | Open | Open | Open |
+| World sprites, creatures, objects, effects and shadows | Open | Open | Open |
+| Possession and front-view drawing | Open | Open | Open |
+| Menus, text, HUD, panels and overlays | Open | Open | Open |
+| Cursor, minimap, map and other direct framebuffer writes | Open | Open | Open |
+| Palette/shade changes, transparency, clipping and scaling across families | Open | Open | Open |
+
+The inventory must extend this matrix for additional discovered paths. Unsupported
+input may use the preserved reference fallback during migration, but each use must
+be visible in validation and cannot count as complete GPU coverage.
+
+Keep exact presentation comparisons unchanged. Define each drawing family's visual
 acceptance before implementation and investigate any rasterization differences;
 do not silently accept smoothing, filtering, changed palette behavior or new art.
 SDL remains default until comparable correctness, coverage and performance evidence
@@ -241,10 +265,9 @@ changed subsystem. Keep upstream synchronization separate from a Rust migration
 PR so regressions can be attributed to a bounded change.
 
 Complete the remaining drawing, menu, input, audio and resource orchestration
-before handing application ownership fully to Rust. If GPU world rendering has
-not been selected, port the CPU drawing routines to Rust while retaining their
-pixel rules. SDL, audio codecs and other external libraries can remain behind
-explicit bindings.
+before handing application ownership fully to Rust. Complete the authorized wgpu
+drawing track while retaining its pixel rules and reference fallback. SDL, audio
+codecs and other external libraries can remain behind explicit bindings.
 
 Retire a legacy component only after its callers have migrated and its agreed
 behavioral checks pass. Keep a pinned baseline build for comparison. A full port

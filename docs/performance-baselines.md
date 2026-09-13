@@ -205,12 +205,13 @@ load, temperature, visibility/occlusion and display placement were not continuou
 controlled or independently verified. Rust allocation counters do not cover the
 whole process or GPU. PR #9 retains the full tables and evidence boundaries.
 
-The [next graphics investigation](product/rust-port-plan.md#next-session-measure-cpu-drawing-and-define-one-extraction-boundary)
-will separate CPU scene preparation, rasterization and overlays, evaluate higher
-framebuffer resolution and decide whether a bounded pre-rasterization command
-adapter is worthwhile. The current scripts have no uncapped option; such a study
-needs a validated runner extension and a separate matched matrix. No further
-benchmark or GPU implementation is part of this planning update.
+The [active graphics migration](product/rust-port-plan.md#active-delivery-full-wgpu-drawing)
+starts by separating CPU scene preparation, rasterization and overlays, evaluating
+higher framebuffer resolution and choosing a pre-rasterization command boundary,
+then continues through GPU implementation and complete drawing coverage. The
+current scripts have no uncapped option; such a study needs a validated runner
+extension and a separate matched matrix. Existing presenter results do not validate
+the drawing migration.
 
 ## Asset-free checks and headless validation
 

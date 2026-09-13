@@ -12,7 +12,7 @@ practical guide for the work you want to do.
 | Read this | For |
 | --- | --- |
 | [Understanding KeeperFX](architecture/project-overview.md) | Engine structure, game loop, shared state, graphics, content and the role of Rust |
-| [Rust port plan](product/rust-port-plan.md) | Proposed migration phases, delivered live presentation, next graphics investigation and migration gates |
+| [Rust port plan](product/rust-port-plan.md) | Proposed migration phases, delivered live presentation, active graphics migration and migration gates |
 | [Audio modernization plan](product/audio-modernization-plan.md) | Sound remastering and replacement, Rust audio ownership, audition pack and compatibility criteria |
 | [Audio cue inventory](audio/inventory.md) | Reproducible definitions, playback references, override rules and unresolved source evidence |
 | [Audio command references](audio-reference.md) | Isolated audio-enabled scenes, bounded playback tracing and remaining baseline checks |
@@ -45,7 +45,7 @@ The shared Rust palette pipeline supports offline replay and optional live Metal
 presentation. CPU world drawing remains unchanged; use paired live measurements
 to assess presentation costs. The final comparison established no reliable overall
 performance win; SDL remains the default. Continue with the
-[next-session graphics task](product/rust-port-plan.md#next-session-measure-cpu-drawing-and-define-one-extraction-boundary).
+[active graphics migration](product/rust-port-plan.md#active-delivery-full-wgpu-drawing).
 
 The audio foundations are recorded in [PR #11](https://github.com/zillakot/keeperfx/pull/11)
 (command references), [PR #12](https://github.com/zillakot/keeperfx/pull/12)
