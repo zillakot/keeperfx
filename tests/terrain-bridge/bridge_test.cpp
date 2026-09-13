@@ -15,6 +15,9 @@ struct FakeContext {
 };
 extern "C" void* kfx_wgpu_draw_context(void* presenter, char*, size_t) { return presenter; }
 extern "C" int32_t kfx_wgpu_draw_submit_shadow(void*, uint64_t, const KfxWgpuDrawCommand*, uint8_t*, size_t, char*, size_t) { return -1; }
+extern "C" uint64_t kfx_wgpu_draw_target_snapshot(void*, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, char*, size_t) { return 0; }
+extern "C" int32_t kfx_wgpu_draw_target_snapshot_release(void*, uint64_t, char*, size_t) { return -1; }
+extern "C" int32_t kfx_wgpu_draw_submit_target_images(void*, uint64_t, const KfxWgpuDrawCommand*, size_t, char*, size_t) { return -1; }
 static bool fail_readback = false;
 static bool mock_triangles = false, mismatch_triangles = false;
 extern "C" int32_t kfx_wgpu_draw_submit_triangles(void* handle, uint64_t target, const KfxWgpuTriangle*, size_t, char*, size_t)
@@ -109,6 +112,34 @@ static void copy_oracle(uint8_t* pixels, uint32_t pitch, void* context)
         std::memcpy(pixels + row * pitch, source->bytes + row * source->pitch, source->width);
 }
 
+struct NestedOracle {
+    WgpuTerrainBridge* bridge;
+    KfxWgpuNativeResource* source;
+    unsigned calls = 0;
+};
+
+static void nested_primitive_oracle(uint8_t* pixels, uint32_t pitch, void* context)
+{
+    auto& nested = *static_cast<NestedOracle*>(context);
+    assert(nested.bridge->IsOracleActive());
+    assert(!kfx_wgpu_native_enabled());
+    KfxGpolyTarget target = {pixels, nested.source->width, nested.source->height, pitch};
+    KfxWgpuDrawCommand primitive = {};
+    primitive.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+    primitive.kind = KFX_WGPU_DRAW_RECT;
+    primitive.width = primitive.height = 1;
+    primitive.clip_width = target.width;
+    primitive.clip_height = target.height;
+    assert(kfx_wgpu_native_draw(&target, &primitive, nullptr, nullptr, nullptr, nullptr) == 0);
+    assert(nested.bridge->SubmitNative(target, primitive, nullptr, nullptr, nullptr, nullptr) == 0);
+    assert(kfx_wgpu_native_cpu_barrier());
+    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
+    assert(nested.bridge->IsOracleActive());
+    copy_oracle(pixels, pitch, nested.source);
+    ++nested.calls;
+}
+
 int main()
 {
     std::vector<uint8_t> texture(7968), fade(16384);
@@ -176,6 +207,27 @@ int main()
         assert(pixels == expected);
         assert(bridge.GetCounters().native_commands == 1 && bridge.GetCounters().gpu_spans == 1);
         assert(bridge.GetCounters().verification_cpu_commands == 1);
+    }
+    for (bool resident : {false, true}) {
+        WgpuTerrainBridge bridge(0, false, true, resident);
+        std::vector<uint8_t> image(200, 37);
+        KfxWgpuNativeResource source = {image.data(), image.size(), 20, 10, 20};
+        KfxWgpuDrawCommand command = {};
+        command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+        command.kind = KFX_WGPU_DRAW_IMAGE;
+        command.width = command.clip_width = command.source_width = 20;
+        command.height = command.clip_height = command.source_height = 10;
+        command.transparent = KFX_WGPU_DRAW_OPAQUE;
+        NestedOracle nested = {&bridge, &source};
+        if (resident) kfx_wgpu_terrain_boundary(1);
+        assert(kfx_wgpu_native_draw(&target, &command, &source, nullptr, nested_primitive_oracle, &nested) == 1);
+        assert(kfx_wgpu_native_cpu_barrier());
+        copy_oracle(expected.data(), target.pitch, &source);
+        assert(pixels == expected && nested.calls == 1);
+        assert(!bridge.IsOracleActive());
+        assert(bridge.GetCounters().native_commands == 1);
+        assert(bridge.GetCounters().verified_batches == 1);
+        assert(bridge.GetCounters().failures == 0);
     }
     for (bool verify : {false, true}) {
         std::vector<uint8_t> resident_pixels(24 * 10, 0x6a), independent = resident_pixels;
