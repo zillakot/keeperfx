@@ -191,6 +191,7 @@ impl DrawRenderer {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(h[5].div_ceil(8), h[5].div_ceil(8), 1);
         }
+        self.counters.dispatches += 1;
         self.submit_encoder(encoder);
         self.counters.batches += 1;
         self.counters.commands += 1;
