@@ -797,20 +797,47 @@ static SoundSmplTblID load_named_sound_fs_or_zip(KeeperFX::SoundManager& sm, con
 // Load a sound named in a creature cfg's [sounds] block under `sound_name`, trying the
 // filesystem first (via resolve_creature_sound_path()) and then the current level's map
 // zip. Returns the assigned sample ID, or <= 0 on failure.
-static SoundSmplTblID load_creature_sound_fs_or_zip(KeeperFX::SoundManager& sm, const char* sound_name, const char* path_in)
+static SoundSmplTblID load_creature_sound_fs_or_zip(KeeperFX::SoundManager& sm, const char* sound_name, const char* path_in, bool reuse = true)
 {
     char full_path[2048];
     if (resolve_creature_sound_path(path_in, full_path, sizeof(full_path))) {
-        return sm.loadCustomSound(sound_name, full_path);
+        return sm.loadCustomSound(sound_name, full_path, reuse);
     }
     unsigned char* data = nullptr;
     size_t size = 0;
     if (resolve_sound_path_in_map_zip(path_in, &data, &size)) {
-        SoundSmplTblID id = sm.loadCustomSoundFromMemory(sound_name, data, size);
+        SoundSmplTblID id = sm.loadCustomSoundFromMemory(sound_name, data, size, reuse);
         free(data);
         return id;
     }
     return 0;
+}
+
+using CustomSoundLoader = SoundSmplTblID (*)(KeeperFX::SoundManager&, const char*, const char*, bool);
+
+static SoundSmplTblID load_custom_sound_family(KeeperFX::SoundManager& sm,
+    KeeperFX::SoundLoadTransaction& transaction, const char* name,
+    const char paths[][512], int count, CustomSoundLoader loader)
+{
+    SoundSmplTblID first_id = 0;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (attempt > 0) transaction.rewind();
+        bool contiguous = true;
+        for (int i = 0; i < count; i++) {
+            char variant_name[256];
+            snprintf(variant_name, sizeof(variant_name), "%s_%d", name, i);
+            SoundSmplTblID id = loader(sm, variant_name, paths[i], attempt == 0);
+            if (id <= 0) {
+                WARNLOG("Custom sound variant %d failed to load: '%s' (name '%s')", i, paths[i], name);
+                return 0;
+            }
+            if (i == 0) first_id = id;
+            if (id != first_id + i) contiguous = false;
+        }
+        if (contiguous) break;
+        // Replaced or cached variants may need a fresh contiguous bank range.
+    }
+    return first_id;
 }
 
 // Config parser bridge: load and register a named custom sound from sounds.cfg.
@@ -873,24 +900,8 @@ SoundSmplTblID sound_manager_load_named_sound(const char* name, const char* path
         snprintf(expanded[i], 512, "%s%0*d%s", stem_prefix, width, base_num + i, ext_part);
 
     SoundLoadTransaction transaction(sm);
-    SoundSmplTblID first_id = 0;
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        if (attempt > 0) transaction.rewind();
-        bool contiguous = true;
-        for (int i = 0; i < count; i++) {
-            char variant_name[256];
-            snprintf(variant_name, sizeof(variant_name), "%s_%d", name, i);
-            SoundSmplTblID id = load_named_sound_fs_or_zip(sm, variant_name, expanded[i], attempt == 0);
-            if (id <= 0) {
-                WARNLOG("Named sound variant %d failed to load: '%s' (name '%s')", i, expanded[i], name);
-                return 0;
-            }
-            if (i == 0) first_id = id;
-            if (id != first_id + i) contiguous = false;
-        }
-        if (contiguous) break;
-        // Replaced or cached variants may need a fresh contiguous bank range.
-    }
+    SoundSmplTblID first_id = load_custom_sound_family(sm, transaction, name, expanded, count,
+        load_named_sound_fs_or_zip);
     if (first_id > 0) {
         sm.registerSound(name, first_id, count);
         transaction.committed = true;
@@ -921,6 +932,7 @@ int load_creature_custom_sound(long crtr_model, const char* sound_type, const ch
 
     // Resolve and load - filesystem first (FGrp_CmpgCrtrs, FGrp_CmpgMedia, etc.), then the
     // current level's map zip if not found on disk.
+    SoundLoadTransaction transaction(sm);
     SoundSmplTblID bank_index = load_creature_sound_fs_or_zip(sm, sound_name, wav_path);
 
     if (bank_index <= 0) {
@@ -932,6 +944,7 @@ int load_creature_custom_sound(long crtr_model, const char* sound_type, const ch
     bool success = sm.setCreatureSound(creature_name, sound_type, sound_name);
     
     if (success) {
+        transaction.committed = true;
         return 1;
     } else {
         WARNLOG("Failed to set creature sound override");
@@ -956,49 +969,28 @@ int load_creature_custom_sounds(long crtr_model, const char* sound_type, const c
 
     SYNCDBG(5, "Loading %d custom sound(s) for %s.%s from '%s'", count, creature_name, sound_type, wav_paths[0]);
 
-    int start_index = -1;
-    int loaded_count = 0;
-    
-    // Load each WAV file
-    for (int i = 0; i < count; i++) {
-        // Generate unique name
-        char sound_name[256];
-        snprintf(sound_name, sizeof(sound_name), "%s_%s_custom_%d", creature_name, sound_type, i);
-
-        // Resolve and load - filesystem first (FGrp_CmpgCrtrs, FGrp_CmpgMedia, etc.), then the
-        // current level's map zip if not found on disk.
-        SoundSmplTblID bank_index = load_creature_sound_fs_or_zip(sm, sound_name, wav_paths[i]);
-
-        if (bank_index <= 0) {
-            SYNCDBG(5, "Custom sound %d not found on disk or in map zip: %s (for %s.%s)", i, wav_paths[i], creature_name, sound_type);
-            continue;
-        }
-        SYNCDBG(6, "  Loaded sound[%d] bank_index=%d from '%s'", i, (int)bank_index, wav_paths[i]);
-        
-        if (start_index < 0) {
-            start_index = bank_index;  // Remember first index
-        }
-        loaded_count++;
-    }
-    
-    if (loaded_count == 0 || start_index < 0) {
-        WARNLOG("Failed to load any custom sounds for %s.%s", creature_name, sound_type);
+    if (count <= 0 || count > 32) {
+        WARNLOG("Invalid custom sound count %d for %s.%s", count, creature_name, sound_type);
         return 0;
     }
-    
-    // Set the creature sound with count
-    char first_sound_name[256];
-    snprintf(first_sound_name, sizeof(first_sound_name), "%s_%s_custom_0", creature_name, sound_type);
 
-    // Set with count for multiple sounds
-    if (sm.setCreatureSound(creature_name, sound_type, first_sound_name, loaded_count)) {
-        SYNCDBG(5, "Custom sound wired: %s.%s -> '%s' (%d variant(s))",
-            creature_name, sound_type, first_sound_name, loaded_count);
-        return 1;
-    } else {
+    char family_name[256];
+    snprintf(family_name, sizeof(family_name), "%s_%s_custom", creature_name, sound_type);
+    SoundLoadTransaction transaction(sm);
+    SoundSmplTblID first_id = load_custom_sound_family(sm, transaction, family_name, wav_paths, count,
+        load_creature_sound_fs_or_zip);
+    if (first_id <= 0) {
+        return 0;
+    }
+
+    char first_sound_name[256];
+    snprintf(first_sound_name, sizeof(first_sound_name), "%s_0", family_name);
+    if (!sm.setCreatureSound(creature_name, sound_type, first_sound_name, count)) {
         WARNLOG("Failed to set creature sound override");
         return 0;
     }
+    transaction.committed = true;
+    return 1;
 }
 
 } // extern "C"

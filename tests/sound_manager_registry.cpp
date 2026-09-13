@@ -19,6 +19,10 @@ static ModsConfig test_mods{};
 struct Game game{};
 
 extern "C" {
+struct NamedCommand creature_desc[] = {{"IMP", 1}, {nullptr, 0}};
+long get_rid(const struct NamedCommand*, const char*) { return 1; }
+const char* creature_code_name(ThingModel) { return "IMP"; }
+int load_creature_custom_sounds(long, const char*, const char*, int, const char*);
 int custom_sound_bank_size() { return static_cast<int>(bank.size()); }
 SoundSmplTblID get_custom_offset() { return 1000; }
 void custom_sound_bank_clear() { bank.clear(); }
@@ -198,5 +202,46 @@ int main() {
     }
     check(!sound_manager_is_registered("RAW_ALIAS") && !sound_manager_is_registered("RAW_ALIAS_0"),
           "failed new family publishes no registry entries");
+    reset();
+    game.conf.crtr_conf.model_count = 2;
+    disk("hit01.wav", "one");
+    disk("hit02.wav", "two");
+    char creature_paths[2][512] = {"hit01.wav", "hit02.wav"};
+    check(load_creature_custom_sounds(1, "Hit", reinterpret_cast<const char*>(creature_paths), 2, "base") == 1,
+          "base creature family loads");
+    const auto base_creature_slot = game.conf.crtr_conf.creature_sounds[1].hit;
+    sound_manager_save_snapshot();
+    const auto creature_watermark = bank.size();
+    files[std::to_string(FGrp_CmpgCrtrs) + "/hit01.wav"] = "campaign-one";
+    check(load_creature_custom_sounds(1, "Hit", reinterpret_cast<const char*>(creature_paths), 2, "campaign") == 1,
+          "mixed campaign and base creature family loads");
+    const auto creature_slot = game.conf.crtr_conf.creature_sounds[1].hit;
+    const auto creature_index = -creature_slot.index - 1;
+    check(creature_index + creature_slot.count <= bank.size(), "creature family stays within bank");
+    check(bank[creature_index] == "campaign-one" && bank[creature_index + 1] == "two", "creature family sources contiguous");
+    const auto creature_size = bank.size();
+    check(load_creature_custom_sounds(1, "Hit", reinterpret_cast<const char*>(creature_paths), 2, "campaign") == 1
+          && bank.size() == creature_size, "contiguous creature family reused");
+    char failed_creature_paths[2][512] = {"hit01.wav", "missing.wav"};
+    check(load_creature_custom_sounds(1, "Hit", reinterpret_cast<const char*>(failed_creature_paths), 2, "map") == 0,
+          "missing creature variant rejects whole family");
+    check(bank.size() == creature_size && game.conf.crtr_conf.creature_sounds[1].hit.index == creature_slot.index,
+          "failed creature family keeps bank and published slot");
+    check(load_creature_custom_sounds(1, "Unknown", reinterpret_cast<const char*>(creature_paths), 2, "map") == 0
+          && bank.size() == creature_size, "failed creature binding rolls back family buffers");
+    sound_manager_restore_snapshot();
+    bank.resize(creature_watermark);
+    sm.reapplyCreatureSounds();
+    check(game.conf.crtr_conf.creature_sounds[1].hit.index == base_creature_slot.index
+          && game.conf.crtr_conf.creature_sounds[1].hit.count == base_creature_slot.count,
+          "creature campaign snapshot restores slot and count on reapply");
+    zip_entries["sound/zip.wav"] = "zip-creature";
+    check(load_creature_custom_sound(1, "Hit", "zip.wav", "map") == 1, "single ZIP creature overrides family");
+    check(game.conf.crtr_conf.creature_sounds[1].hit.count == 1, "single creature count replaces family count");
+    sound_manager_restore_snapshot();
+    bank.resize(creature_watermark);
+    sm.reapplyCreatureSounds();
+    check(game.conf.crtr_conf.creature_sounds[1].hit.index == base_creature_slot.index
+          && game.conf.crtr_conf.creature_sounds[1].hit.count == 2, "single creature override removed on restore");
     std::puts("SoundManager production registry and named loader tests passed");
 }
