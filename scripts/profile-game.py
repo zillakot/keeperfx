@@ -21,6 +21,10 @@ capture = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(capture)
 KINDS = ("simulation", "draw", "presentation", "present_wait", "frame_interval")
 DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
+DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
+                    "checkpoint_copy_bytes", "validation_waits", "upload_bytes", "readback_bytes",
+                    "full_readbacks", "full_readback_bytes", "buffers", "buffer_bytes",
+                    "batches", "commands", "gpu_span_ns", "gpu_spans")
 SETTINGS = {
     "DELTA_TIME": "ON", "TURNS_PER_SECOND": "20", "FRAMES_PER_SECOND": "60", "VSYNC": "OFF",
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
@@ -34,6 +38,12 @@ LIMITATIONS = [
     "Seeds and population snapshots are observations, not a guarantee of deterministic replay.",
     "The 60 FPS cap limits observed frame rate; lower presentation duration is not an uncapped gameplay FPS speedup.",
     "Rust allocation counts cover successful Rust global-allocator alloc/realloc calls and requested bytes only; C/C++, SDL and driver/GPU allocations are excluded. SDL zeros do not establish a total-heap advantage.",
+]
+DRAWING_LIMITATIONS = [
+    "Drawing counters are deltas between consecutive presented frames inside the measured window; the first presentation only establishes the baseline, so there is one fewer counter frame than presentation sample.",
+    "wait_ns is host time blocked inside device polls, not GPU execution time; it is already included in the enclosing draw and presentation wall-clock scopes.",
+    "gpu_span_ns is GPU execution time reported by timestamp queries and is distinct from every host wall-clock column; zero spans mean no timestamped pass was recorded, not zero GPU work.",
+    "Counters cover the drawing context the bridge owns. Presenter surface acquisition and any drawing done outside that context are not counted.",
 ]
 
 
@@ -184,7 +194,15 @@ def summarize(output, args):
             raise RuntimeError("draw breakdown exceeds its enclosing draw duration")
         samples["draw_unaccounted"] = unaccounted
     resource_report = summarize_resources(metadata.get("resources"), args.turns, len(presentations))
+    drawing_report = summarize_drawing(metadata.get("drawing"), len(presentations))
     limitations = LIMITATIONS + ([] if resource_report["process_cpu"] is not None else ["Process CPU time is not available in this run."])
+    if drawing_report is None:
+        limitations += ["Drawing-backend counters are absent from this engine build."]
+    else:
+        if "+" in drawing_report["backend"]:
+            raise RuntimeError(f"drawing backend changed during the measured window: {drawing_report['backend']}")
+        limitations += DRAWING_LIMITATIONS if drawing_report["available"] else [
+            f"Drawing-backend counters are unavailable: the active drawing backend was {drawing_report['backend']}."]
     if breakdown:
         limitations += [
             "Draw includes scene preparation, raster dispatch, front-view raster dispatch and overlays; these nested series must not be added to draw.",
@@ -194,9 +212,48 @@ def summarize(output, args):
             "Compare matched runs with and without --draw-breakdown to measure instrumentation overhead; overhead is not assumed negligible.",
         ]
     return {"engine": metadata, "wall_ms": {kind: distribution(values) for kind, values in samples.items()},
-            "resources": resource_report,
+            "resources": resource_report, "drawing": drawing_report,
             "percentile_method": "linear interpolation at (sample_count - 1) * percentile / 100",
             "limitations": limitations + (["HEADLESS SOFTWARE SMOKE TEST: not a native presentation baseline."] if args.headless else [])}
+
+
+def drawing_distribution(values):
+    ordered = sorted(values)
+    def percentile(percent):
+        index = (len(ordered) - 1) * percent / 100
+        low, high = math.floor(index), math.ceil(index)
+        return ordered[low] + (ordered[high] - ordered[low]) * (index - low)
+    return {"min": ordered[0], "mean": statistics.fmean(ordered), "p95": percentile(95),
+            "max": ordered[-1], "total": sum(ordered)}
+
+
+def summarize_drawing(drawing, presentations):
+    if drawing is None:
+        return None
+    if type(drawing.get("available")) is not bool or not isinstance(drawing.get("backend"), str) \
+            or not drawing["backend"]:
+        raise RuntimeError("invalid drawing counter availability or backend")
+    if tuple(drawing.get("counters", ())) != DRAWING_COUNTERS:
+        raise RuntimeError("drawing counter names do not match this profiler")
+    rows = drawing.get("per_frame")
+    if not isinstance(rows, list) or drawing.get("frames") != len(rows):
+        raise RuntimeError("drawing counter frame count does not match the recorded rows")
+    for row in rows:
+        if not isinstance(row, list) or len(row) != len(DRAWING_COUNTERS) or any(
+                type(value) is not int or value < 0 for value in row):
+            raise RuntimeError("invalid drawing counter row")
+    result = {"backend": drawing["backend"], "available": drawing["available"],
+              "frames": len(rows), "scope": "per presented frame inside the measured window"}
+    if not drawing["available"]:
+        if rows:
+            raise RuntimeError("drawing counters are unavailable but rows were recorded")
+        result["per_frame"] = None
+        return result
+    if len(rows) != presentations - 1:
+        raise RuntimeError("drawing counter frames must cover every measured presentation but the first")
+    result["per_frame"] = {name: drawing_distribution([row[index] for row in rows])
+                           for index, name in enumerate(DRAWING_COUNTERS)}
+    return result
 
 
 def summarize_resources(resources, turns, presentations):
@@ -265,6 +322,23 @@ def write_report(output, report):
     if allocations:
         lines += ["", f"Rust global-allocator calls: {allocations['calls']}; requested bytes: {allocations['requested_bytes']}. "
                   "This excludes C/C++, SDL, driver/GPU allocations and does not measure retained memory."]
+    drawing = report.get("drawing")
+    if drawing:
+        lines += ["", f"Active drawing backend: {drawing['backend']}."]
+        if drawing["per_frame"]:
+            lines += ["", f"Drawing-backend counters over {drawing['frames']} measured frames.", "",
+                      "| Counter | Min | Mean | p95 | Max | Window total |",
+                      "| --- | ---: | ---: | ---: | ---: | ---: |"]
+            for name, stats in drawing["per_frame"].items():
+                lines.append(f"| {name} | {stats['min']} | {stats['mean']:.2f} | {stats['p95']:.2f} | "
+                             f"{stats['max']} | {stats['total']} |")
+            waits = drawing["per_frame"]["wait_ns"]
+            spans = drawing["per_frame"]["gpu_span_ns"]
+            lines += ["", f"Blocking host wait: {waits['mean'] / 1_000_000:.3f} ms mean, "
+                      f"{waits['p95'] / 1_000_000:.3f} ms p95 per frame. "
+                      + (f"GPU time from timestamp queries: {spans['mean'] / 1_000_000:.3f} ms mean per frame "
+                         f"over {drawing['per_frame']['gpu_spans']['total']} timestamped passes."
+                         if spans["total"] else "GPU timestamp queries recorded no pass; no GPU time is available.")]
     lines += ["", *[f"- {item}" for item in report["limitations"]], "",
               f"Engine SHA256: `{report['engine_sha256']}`", f"Asset content SHA256: `{report['assets']['sha256']}`", "",
               "Exact request, platform, content identities, seeds and actual settings: report.json. Samples: raw.csv."]
