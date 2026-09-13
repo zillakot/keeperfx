@@ -1,3 +1,5 @@
+#[path = "live_shadow.rs"]
+mod shadow;
 #[path = "live_target_resources.rs"]
 mod target_resources;
 

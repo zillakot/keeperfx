@@ -1,5 +1,10 @@
+#[path = "draw_shadow.rs"]
+mod shadow;
+pub use shadow::SHADOW;
 #[path = "draw_target_resources.rs"]
 mod target_resources;
+#[path = "draw_target_trig.rs"]
+mod target_trig;
 pub use target_resources::TargetResourceCounters;
 #[path = "draw_effects.rs"]
 mod effects;
@@ -121,6 +126,7 @@ pub struct DrawRenderer {
     compute_sprite_ordered: wgpu::ComputePipeline,
     effects: Option<wgpu::ComputePipeline>,
     trig_validate: Option<wgpu::ComputePipeline>,
+    shadow: Option<wgpu::ComputePipeline>,
     triangles: Option<triangles::TrianglePipelines>,
     present: wgpu::RenderPipeline,
     targets: HashMap<u64, Target>,
@@ -209,6 +215,7 @@ impl DrawRenderer {
             compute_sprite_ordered,
             effects: None,
             trig_validate: None,
+            shadow: None,
             triangles: None,
             present,
             targets: HashMap::new(),
@@ -385,10 +392,7 @@ impl DrawRenderer {
             )?;
             self.counters.readback_bytes += 4;
             self.counters.command_upload_bytes += 4;
-            ensure!(
-                valid,
-                "triangle has an invalid lookup or undefined native horizontal step"
-            );
+            ensure!(valid, "triangle has an invalid lookup");
         }
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered drawing batch"),

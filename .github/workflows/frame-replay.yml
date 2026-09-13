@@ -19,6 +19,7 @@ jobs:
       KFX_RAW_IMAGE_FIXTURE: ${{ github.workspace }}/out/raw-image-tests/raw-images.bin
       KFX_SPRITE_COPY_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprite-copies.bin
       KFX_SPRITE_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprites.bin
+      KFX_SHADOW_FIXTURE: ${{ github.workspace }}/out/shadow-tests/shadows.bin
       KFX_TRIG_FIXTURE: ${{ github.workspace }}/out/trig-tests/trig.bin
       KFX_LENS_FIXTURE: ${{ github.workspace }}/out/lens-tests/lenses.bin
       KFX_PRIMITIVE_FIXTURE: ${{ github.workspace }}/out/primitive-tests/primitives.bin
@@ -59,6 +60,13 @@ jobs:
           cmake --build out/trig-tests --parallel 2
           ctest --test-dir out/trig-tests --output-on-failure
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_trig_gpu -- --ignored --nocapture --test-threads=1
+      - name: Compare GPU creature shadows with native drawing
+        run: |
+          cmake -S tests/shadows -B out/shadow-tests \
+            -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
+          cmake --build out/shadow-tests --parallel 2
+          ctest --test-dir out/shadow-tests --output-on-failure
+          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_shadow_gpu -- --ignored --nocapture --test-threads=1
       - name: Generate native primitive drawing oracle
         run: |
           cmake -S tests/primitives -B out/primitive-tests -DKFX_PRIMITIVE_ASAN=ON \

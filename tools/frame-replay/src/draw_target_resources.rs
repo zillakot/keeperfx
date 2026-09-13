@@ -1,10 +1,10 @@
 use super::*;
 
 pub(super) struct TargetSnapshot {
-    width: u32,
-    height: u32,
-    pitch: u32,
-    indices: wgpu::Buffer,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) pitch: u32,
+    pub(super) indices: wgpu::Buffer,
 }
 
 #[repr(C)]

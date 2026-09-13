@@ -36,6 +36,7 @@ public:
         uint64_t gpu_batches = 0, bridge_initial_index_bytes = 0, cpu_replayed_spans = 0;
         uint64_t verified_batches = 0, verification_cpu_spans = 0;
         uint64_t native_commands = 0, verification_cpu_commands = 0, gpu_sprite_commands = 0;
+        uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
     };
     WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify = false);
@@ -47,10 +48,14 @@ public:
     int SubmitNative(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table,
         KfxWgpuNativeOracle oracle, void* oracle_context);
+    int SubmitShadow(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
+        const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table, uint8_t* scratch,
+        KfxWgpuNativeOracle oracle, void* oracle_context);
     const Counters& GetCounters() const { return m_counts; }
     KfxWgpuDrawCounters GetGpuCounters() const;
     const char* GetError() const { return m_error.data(); }
     bool Failed() const { return m_failed; }
+    bool IsOracleActive() const { return m_oracle_active; }
 
 private:
     struct Resource {
@@ -71,6 +76,8 @@ private:
     void ReplayPending();
     bool RasterizePending(uint8_t* pixels, uint32_t pitch) const;
     bool ExecutePending(KfxWgpuNativeOracle oracle = nullptr, void* oracle_context = nullptr);
+    bool m_oracle_active = false;
+    uint8_t* m_shadow_scratch = nullptr;
     void* m_context = nullptr;
     uint64_t m_target = 0;
     uint32_t m_width = 0, m_height = 0;

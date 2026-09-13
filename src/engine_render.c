@@ -19,6 +19,7 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
 #include "kfx/renderer/WgpuTerrainBridge.h"
+#include "kfx/renderer/software/WgpuShadow.h"
 #include <stddef.h>
 
 #include "engine_render.h"
@@ -513,7 +514,7 @@ static const char splittypes[64] = {
 static void do_map_who(short tnglist_idx);
 static void (*render_sprite_debug_fn) (struct Thing*, long scrpos_x, long scrpos_y) = NULL;
 static int render_sprite_debug_level = 0;
-static void draw_keepsprite_unscaled_in_buffer(unsigned short kspr_n, short angle, unsigned char current_frame, unsigned char *outbuf);
+static int draw_keepsprite_unscaled_in_buffer(unsigned short kspr_n, short angle, unsigned char current_frame, unsigned char *outbuf, const struct PolyPoint vertices[4]);
 static void draw_jonty_mapwho(struct BucketKindJontySprite *jspr);
 
 static TbBool animation_sprite_id_invalid(unsigned short animation_sprite)
@@ -6942,11 +6943,16 @@ static void display_drawlist(void) // Draws isometric and 1st person view. Not f
                 draw_jonty_mapwho(item.jontySprite);
                 break;
             case QK_CreatureShadow: // Shadows of creatures in isometric and 1st person view
-                // TODO: this could be cached
-                draw_keepsprite_unscaled_in_buffer(item.creatureShadow->anim_sprite, item.creatureShadow->angle, item.creatureShadow->current_frame, big_scratch);
                 vec_map = big_scratch;
                 vec_mode = VM_SpriteTranslucent;
                 vec_colour = item.creatureShadow->vertex_first.S;
+                {
+                    const struct PolyPoint vertices[] = {item.creatureShadow->vertex_first,
+                        item.creatureShadow->vertex_second, item.creatureShadow->vertex_third,
+                        item.creatureShadow->vertex_fourth};
+                    if (draw_keepsprite_unscaled_in_buffer(item.creatureShadow->anim_sprite,
+                        item.creatureShadow->angle, item.creatureShadow->current_frame, big_scratch, vertices)) break;
+                }
                 trig(&item.creatureShadow->vertex_first, &item.creatureShadow->vertex_second, &item.creatureShadow->vertex_third);
                 trig(&item.creatureShadow->vertex_first, &item.creatureShadow->vertex_third, &item.creatureShadow->vertex_fourth);
                 break;
@@ -8357,7 +8363,7 @@ static void draw_jonty_mapwho(struct BucketKindJontySprite *jspr)
  * @param lines_max Max lines to be written into output buffer.
  * @param scanln Length of scanline (length of line in output buffer).
  */
-static void sprite_to_sbuff(const TbSpriteData sprdata, unsigned char *outbuf, int lines_max, int scanln)
+static void sprite_to_sbuff(const unsigned char *sprdata, unsigned char *outbuf, int lines_max, int scanln)
 {
     unsigned char *out_lnstart;
     unsigned char *out;
@@ -8422,7 +8428,7 @@ static void sprite_to_sbuff(const TbSpriteData sprdata, unsigned char *outbuf, i
  * @param lines_max Max lines to be written into output buffer.
  * @param scanln Length of scanline (length of line in output buffer).
  */
-static void sprite_to_sbuff_xflip(const TbSpriteData sprdata, unsigned char *outbuf, int lines_max, int scanln)
+static void sprite_to_sbuff_xflip(const unsigned char *sprdata, unsigned char *outbuf, int lines_max, int scanln)
 {
     unsigned char *out_lnstart;
     unsigned char *out;
@@ -8482,131 +8488,61 @@ static void sprite_to_sbuff_xflip(const TbSpriteData sprdata, unsigned char *out
     }
 }
 
-static void draw_keepsprite_unscaled_in_buffer(unsigned short kspr_n, short angle, unsigned char current_frame, unsigned char *outbuf)
+struct ShadowOracle {
+    struct KfxShadowSprite sprite;
+    struct PolyPoint vertices[4];
+    unsigned char *scratch;
+};
+
+static void shadow_native_mask(const struct KfxShadowSprite *sprite, unsigned char *outbuf)
 {
-    struct KeeperSprite *kspr_arr;
-    unsigned long kspr_idx;
-    struct KeeperSprite *kspr;
-    TbSpriteData sprite_data;
-    unsigned int keepsprite_id;
-    unsigned char *tmpbuf;
-    int skip_w;
-    int skip_h;
-    int fill_w;
-    int fill_h;
-    TbBool flip_range;
-    short quarter;
-    int i;
-    if ( ((angle & ANGLE_MASK) <= 1151) || ((angle & ANGLE_MASK) >= 1919) )
-        flip_range = false;
-    else
-        flip_range = true;
-    i = ((angle + DEGREES_22_5) & ANGLE_MASK);
-    quarter = abs(4 - (i >> 8)); // i is restricted by "&" so (i>>8) is 0..7
-    kspr_arr = keepersprite_array(kspr_n);
-    if (kspr_arr == NULL) {
-        return;
-    }
-    if (kspr_arr->FramesCount == 0) {
-        return;
-    }
-    if (current_frame >= kspr_arr->FramesCount) {
-        current_frame = kspr_arr->FramesCount - 1;
-    }
-    kspr_idx = keepersprite_index(kspr_n);
+    for (int y = 0; y < sprite->clear_height; y++) memset(outbuf + 256 * y, 0, sprite->clear_width);
+    unsigned char *start = outbuf + 256 * sprite->y + sprite->x;
+    if (sprite->flip) sprite_to_sbuff_xflip(sprite->data, start, sprite->height, 256);
+    else sprite_to_sbuff(sprite->data, start, sprite->height, 256);
+}
 
-    if (kspr_arr->Rotable == 0)
-    {
-        if (!heap_manage_keepersprite(kspr_idx))
-        {
-            return;
-        }
-        keepsprite_id = current_frame + kspr_idx;
-        if (keepsprite_id >= KEEPERSPRITE_ADD_OFFSET)
-        {
-            sprite_data = keepersprite_add[keepsprite_id - KEEPERSPRITE_ADD_OFFSET];
-        }
-        else if (keepsprite_id >= KEEPSPRITE_LENGTH)
-        {
-            ERRORLOG("Sprite %d outside of valid range.", keepsprite_id);
-            return;
-        }
-        else
-        {
-            sprite_data = *keepsprite[keepsprite_id];
-        }
-        kspr = &kspr_arr[current_frame];
-        fill_w = kspr->FrameWidth;
-        fill_h = kspr->FrameHeight;
-        if ( flip_range )
-        {
-            tmpbuf = outbuf;
-            skip_w = kspr->FrameWidth - kspr->FrameOffsW;
-            skip_h = kspr->FrameOffsH;
-            for (i = fill_h; i > 0; i--)
-            {
-                memset(tmpbuf, 0, fill_w);
-                tmpbuf += 256;
-            }
-            sprite_to_sbuff_xflip(sprite_data, &outbuf[256 * skip_h + skip_w], kspr->SHeight, 256);
-        }
-        else
-        {
+static void shadow_oracle(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    struct ShadowOracle *o = context;
+    unsigned char *saved_poly = poly_screen, *saved_vec = vec_screen, *saved_map = vec_map;
+    unsigned long saved_pitch = vec_screen_width;
+    shadow_native_mask(&o->sprite, o->scratch);
+    poly_screen = pixels - pitch; vec_screen = pixels; vec_map = o->scratch; vec_screen_width = pitch;
+    trig(&o->vertices[0], &o->vertices[1], &o->vertices[2]);
+    trig(&o->vertices[0], &o->vertices[2], &o->vertices[3]);
+    poly_screen = saved_poly; vec_screen = saved_vec; vec_map = saved_map; vec_screen_width = saved_pitch;
+}
 
-            tmpbuf = outbuf;
-            skip_w = kspr->FrameOffsW;
-            skip_h = kspr->FrameOffsH;
-            for (i = fill_h; i > 0; i--)
-            {
-                memset(tmpbuf, 0, fill_w);
-                tmpbuf += 256;
-            }
-            sprite_to_sbuff(sprite_data, &outbuf[256 * skip_h + skip_w], kspr->SHeight, 256);
-        }
-    }
-    else if (kspr_arr->Rotable == 2)
-    {
-        if (!heap_manage_keepersprite(kspr_idx))
-        {
-            return;
-        }
-        kspr = &kspr_arr[current_frame + quarter * kspr_arr->FramesCount];
-        fill_w = kspr->SWidth;
-        fill_h = kspr->SHeight;
-        keepsprite_id = current_frame + quarter * kspr->FramesCount + kspr_idx;
-        if (keepsprite_id >= KEEPERSPRITE_ADD_OFFSET)
-        {
-            sprite_data = keepersprite_add[keepsprite_id - KEEPERSPRITE_ADD_OFFSET];
-        }
-        else if (keepsprite_id >= KEEPSPRITE_LENGTH)
-        {
-            return; // WTF?!!
-        }
-        else
-        {
-            sprite_data = *keepsprite[keepsprite_id];
-        }
-        if ( flip_range )
-        {
-            tmpbuf = outbuf;
-            for (i = fill_h; i > 0; i--)
-            {
-                memset(tmpbuf, 0, fill_w);
-                tmpbuf += 256;
-            }
-            sprite_to_sbuff_xflip(sprite_data, &outbuf[kspr->SWidth], kspr->SHeight, 256);
-        }
-        else
-        {
-            tmpbuf = outbuf;
-            for (i = fill_h; i > 0; i--)
-            {
-                memset(tmpbuf, 0, fill_w);
-                tmpbuf += 256;
-            }
-            sprite_to_sbuff(sprite_data, &outbuf[0], kspr->SHeight, 256);
-        }
-    }
+static int draw_keepsprite_unscaled_in_buffer(unsigned short kspr_n, short angle,
+    unsigned char current_frame, unsigned char *outbuf, const struct PolyPoint vertices[4])
+{
+    struct KeeperSprite *array = keepersprite_array(kspr_n);
+    if (array == NULL || array->FramesCount == 0) return 0;
+    if (current_frame >= array->FramesCount) current_frame = array->FramesCount - 1;
+    if (array->Rotable != 0 && array->Rotable != 2) return 0;
+    unsigned long index = keepersprite_index(kspr_n);
+    if (!heap_manage_keepersprite(index)) return 0;
+    unsigned quarter = abs(4 - (((angle + DEGREES_22_5) & ANGLE_MASK) >> 8));
+    struct KeeperSprite *sprite = &array[current_frame + (array->Rotable == 2 ? quarter * array->FramesCount : 0)];
+    unsigned id = index + current_frame + (array->Rotable == 2 ? quarter * sprite->FramesCount : 0);
+    const uint8_t *data;
+    if (id >= KEEPERSPRITE_ADD_OFFSET) data = keepersprite_add[id - KEEPERSPRITE_ADD_OFFSET];
+    else if (id >= KEEPSPRITE_LENGTH) return 0;
+    else data = *keepsprite[id];
+    unsigned flip = (angle & ANGLE_MASK) > 1151 && (angle & ANGLE_MASK) < 1919;
+    struct ShadowOracle oracle = {0};
+    oracle.sprite = (struct KfxShadowSprite){data,
+        array->Rotable == 0 ? sprite->FrameWidth : sprite->SWidth,
+        array->Rotable == 0 ? sprite->FrameHeight : sprite->SHeight,
+        sprite->SWidth, sprite->SHeight,
+        array->Rotable == 0 ? (flip ? sprite->FrameWidth - sprite->FrameOffsW : sprite->FrameOffsW) : (flip ? sprite->SWidth : 0),
+        array->Rotable == 0 ? sprite->FrameOffsH : 0, flip};
+    memcpy(oracle.vertices, vertices, sizeof(oracle.vertices));
+    oracle.scratch = outbuf;
+    if (kfx_wgpu_shadow_sprite(&oracle.sprite, vertices, outbuf, shadow_oracle, &oracle)) return 1;
+    shadow_native_mask(&oracle.sprite, outbuf);
+    return 0;
 }
 
 static void update_frontview_pointed_block(unsigned long laaa, unsigned char qdrant, long w, long h, long qx, long qy)

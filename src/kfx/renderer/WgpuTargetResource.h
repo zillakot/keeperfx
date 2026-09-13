@@ -28,6 +28,13 @@ int32_t kfx_wgpu_draw_target_snapshot_release(void *drawing, uint64_t snapshot,
 int32_t kfx_wgpu_draw_submit_target_images(void *drawing, uint64_t target,
     const struct KfxWgpuDrawCommand *commands, size_t count, char *error, size_t capacity);
 
+/* TRIG sources contain 60 geometry bytes; texture is a 256x256 GPU snapshot.
+ * Tables remain CPU asset handles. Entire batches validate before target writes.
+ */
+int32_t kfx_wgpu_draw_submit_target_triangles(void *drawing, uint64_t target,
+    const struct KfxWgpuDrawCommand *commands, size_t count, uint64_t texture,
+    char *error, size_t capacity);
+
 #pragma pack(push, 8)
 struct KfxWgpuTargetResourceCounters {
     uint64_t snapshots, snapshot_copy_bytes, sampling_copy_bytes;
