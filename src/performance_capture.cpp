@@ -1,4 +1,10 @@
 #include "pre_inc.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <sys/resource.h>
+#endif
 #include "performance_capture.h"
 #include "keeperfx.hpp"
 #include "creature_states.h"
@@ -15,11 +21,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sys/resource.h>
-#endif
 #include "post_inc.h"
 
 #ifdef KFX_RUST_PRESENTER
@@ -61,7 +62,7 @@ Resources resources()
     return r;
 }
 
-std::string quoted(const std::string& value)
+std::string json_quote(const std::string& value)
 {
     std::string result = "\"";
     for (unsigned char c : value) {
@@ -162,7 +163,7 @@ void finish(Profile& p)
         "\"resources\":{\"wall_ns\":%llu,\"process_cpu\":{\"available\":%s,\"source\":\"%s\",\"user_ns\":%llu,\"system_ns\":%llu},"
         "\"rust_allocations\":{\"available\":%s,\"calls\":%llu,\"requested_bytes\":%llu}}}\n",
         p.start_state.c_str(), state().c_str(), p.possession ? "possession" : "dungeon",
-        p.possession ? "creature" : "dungeon_top", quoted(p.renderer).c_str(), quoted(p.driver).c_str(), quoted(p.renderer_details).c_str(),
+        p.possession ? "creature" : "dungeon_top", json_quote(p.renderer).c_str(), json_quote(p.driver).c_str(), json_quote(p.renderer_details).c_str(),
         p.width, p.height, p.output_width, p.output_height, p.vsync,
         static_cast<long>(turns_per_second), fps_limit_current, is_feature_on(Ft_DeltaTime) ? "true" : "false",
         static_cast<unsigned long long>(wall_ns), cpu_available ? "true" : "false",
