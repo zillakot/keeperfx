@@ -154,6 +154,12 @@ pub struct Counters {
     pub asset_upload_bytes: u64,
     pub command_upload_bytes: u64,
     pub readback_bytes: u64,
+    pub submits: u64,
+    pub dispatches: u64,
+    pub waits: u64,
+    pub wait_ns: u64,
+    pub buffers: u64,
+    pub buffer_bytes: u64,
 }
 
 pub struct DrawRenderer {
@@ -169,6 +175,7 @@ pub struct DrawRenderer {
     present: wgpu::RenderPipeline,
     targets: HashMap<u64, Target>,
     resources: HashMap<u64, Resource>,
+    resource_bytes: usize,
     target_snapshots: HashMap<u64, target_resources::TargetSnapshot>,
     target_resource_counters: TargetResourceCounters,
     counters: Counters,
@@ -252,6 +259,7 @@ impl DrawRenderer {
             present,
             targets: HashMap::new(),
             resources: HashMap::new(),
+            resource_bytes: 0,
             target_snapshots: HashMap::new(),
             target_resource_counters: TargetResourceCounters::default(),
             counters: Counters::default(),
@@ -289,6 +297,36 @@ impl DrawRenderer {
         self.counters
     }
 
+    /// Host-side staged asset bytes the drawing context holds; not GPU memory and
+    /// not a window delta.
+    pub fn staged_asset_bytes(&self) -> u64 {
+        self.resource_bytes as u64
+    }
+
+    pub(super) fn submit_encoder(&mut self, encoder: wgpu::CommandEncoder) {
+        self.counters.submits += 1;
+        self.queue.submit([encoder.finish()]);
+    }
+
+    pub(super) fn tracked_buffer(&mut self, descriptor: &wgpu::BufferDescriptor) -> wgpu::Buffer {
+        self.counters.buffers += 1;
+        self.counters.buffer_bytes += descriptor.size;
+        self.device.create_buffer(descriptor)
+    }
+
+    /// Blocks until the queue drains, accumulating the measured stall.
+    pub(super) fn wait_for_queue(&mut self) -> Result<()> {
+        let started = std::time::Instant::now();
+        let status = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(30)),
+        });
+        self.counters.waits += 1;
+        self.counters.wait_ns += started.elapsed().as_nanos() as u64;
+        status?;
+        Ok(())
+    }
+
     pub fn create_target(&mut self, width: u32, height: u32) -> Result<u64> {
         self.check_status()?;
         let pixels = crate::frame::dimensions(width, height)?;
@@ -297,7 +335,7 @@ impl DrawRenderer {
             size <= self.storage_limit(),
             "target exceeds storage binding limit"
         );
-        let indices = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let indices = self.tracked_buffer(&wgpu::BufferDescriptor {
             label: Some("authoritative indexed target"),
             size,
             usage: wgpu::BufferUsages::STORAGE
@@ -344,15 +382,13 @@ impl DrawRenderer {
         let id = next_handle()?;
         if self.frame.is_some() {
             ensure!(
-                self.resources
-                    .values()
-                    .map(|r| r.bytes.len())
-                    .sum::<usize>()
+                self.resource_bytes
                     .checked_add(bytes.len())
-                    .is_some_and(|n| n <= 256 * 1024 * 1024),
+                    .is_some_and(|n| n <= frame_queue::MAX_FRAME_BYTES),
                 "queued resource arena exceeds 256 MiB"
             );
         }
+        self.resource_bytes += bytes.len();
         self.resources.insert(
             id,
             Resource {
@@ -369,7 +405,9 @@ impl DrawRenderer {
         if self.defer_resource_release(id)? {
             return Ok(());
         }
-        self.resources.remove(&id).context("unknown resource")?;
+        let released = self.resources.remove(&id).context("unknown resource")?;
+        debug_assert!(self.resource_bytes >= released.bytes.len());
+        self.resource_bytes = self.resource_bytes.saturating_sub(released.bytes.len());
         Ok(())
     }
 
@@ -417,24 +455,28 @@ impl DrawRenderer {
         )?;
         let tile_buffer = buffer(
             &self.device,
+            &mut self.counters,
             "ordered tile lists",
             &tiles,
             wgpu::BufferUsages::STORAGE,
         );
         let command_buffer = buffer(
             &self.device,
+            &mut self.counters,
             "immutable ordered commands",
             &words,
             wgpu::BufferUsages::STORAGE,
         );
         let asset_buffer = buffer(
             &self.device,
+            &mut self.counters,
             "immutable asset versions",
             &assets,
             wgpu::BufferUsages::STORAGE,
         );
         let parameters = buffer(
             &self.device,
+            &mut self.counters,
             "drawing dimensions",
             &[
                 target.width,
@@ -485,7 +527,8 @@ impl DrawRenderer {
             pass.set_bind_group(0, &binding, &[]);
             pass.dispatch_workgroups(target.width.div_ceil(8), target.height.div_ceil(8), 1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.counters.dispatches += 1;
+        self.submit_encoder(encoder);
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
@@ -504,7 +547,7 @@ impl DrawRenderer {
         self.check_status()?;
         let target = self.targets.get(&target).context("unknown target")?.clone();
         let size = u64::from(target.width) * u64::from(target.height) * 4;
-        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let staging = self.tracked_buffer(&wgpu::BufferDescriptor {
             label: Some("explicit indexed readback"),
             size,
             mapped_at_creation: false,
@@ -520,17 +563,14 @@ impl DrawRenderer {
                 u64::from(target.width) * 4,
             );
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit_encoder(encoder);
         let (sender, receiver) = std::sync::mpsc::channel();
         staging
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result);
             });
-        self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(std::time::Duration::from_secs(30)),
-        })?;
+        self.wait_for_queue()?;
         receiver.recv()??;
         let mapped = staging.slice(..).get_mapped_range()?;
         let bytes = mapped
@@ -574,12 +614,14 @@ impl DrawRenderer {
             .collect();
         let palette_buffer = buffer(
             &self.device,
+            &mut self.counters,
             "presentation palette version",
             &palette_words,
             wgpu::BufferUsages::STORAGE,
         );
         let parameters = buffer(
             &self.device,
+            &mut self.counters,
             "presentation dimensions",
             &[
                 target.width,
@@ -624,7 +666,7 @@ impl DrawRenderer {
             pass.set_bind_group(0, &binding, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit_encoder(encoder);
         Ok(())
     }
 }
@@ -837,11 +879,14 @@ fn pack_resource(
 
 fn buffer(
     device: &wgpu::Device,
+    counters: &mut Counters,
     label: &str,
     words: &[u32],
     usage: wgpu::BufferUsages,
 ) -> wgpu::Buffer {
     let bytes: Vec<_> = words.iter().flat_map(|v| v.to_le_bytes()).collect();
+    counters.buffers += 1;
+    counters.buffer_bytes += bytes.len() as u64;
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
         contents: &bytes,

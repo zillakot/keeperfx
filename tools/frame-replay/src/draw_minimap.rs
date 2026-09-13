@@ -148,12 +148,14 @@ impl DrawRenderer {
         }
         let assets = buffer(
             &self.device,
+            &mut self.counters,
             "minimap semantic cells and styles",
             &words,
             wgpu::BufferUsages::STORAGE,
         );
         let dummy = buffer(
             &self.device,
+            &mut self.counters,
             "unused minimap background",
             &[0],
             wgpu::BufferUsages::STORAGE,
@@ -167,6 +169,7 @@ impl DrawRenderer {
         let target = &self.targets[&target_id];
         let view = buffer(
             &self.device,
+            &mut self.counters,
             "target view",
             &[target.width, target.pitch, target.offset, 0],
             wgpu::BufferUsages::UNIFORM,
@@ -188,7 +191,8 @@ impl DrawRenderer {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(h[5].div_ceil(8), h[5].div_ceil(8), 1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.counters.dispatches += 1;
+        self.submit_encoder(encoder);
         self.counters.batches += 1;
         self.counters.commands += 1;
         self.counters.asset_upload_bytes += words.len() as u64 * 4;

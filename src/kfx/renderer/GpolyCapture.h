@@ -34,6 +34,20 @@ extern void* kfx_gpoly_triangle_context;
 typedef int (*KfxGpolySink)(void *context, const struct KfxGpolyTarget *target,
     const struct KfxGpolySpan *span, const uint8_t *texture, const uint8_t *fade);
 
+/* Identity generation for immutable drawing assets (texture pages, fade and ghost
+ * tables). Bump it after the bytes behind a stable pointer are rewritten, and also
+ * before a rewrite that can fail part-way, so a resource cached mid-write is
+ * invalidated too. Resource caches key on pointer plus this value instead of
+ * comparing content, but only inside a range registered as stable; anything else
+ * still compares content. */
+extern uint64_t kfx_render_asset_generation;
+void kfx_render_assets_changed(void);
+/* Registers storage whose bytes only change with a generation bump. At most
+ * KFX_RENDER_ASSET_RANGES ranges; re-registering the same base replaces it. */
+enum { KFX_RENDER_ASSET_RANGES = 4 };
+void kfx_render_asset_range(const void *base, size_t length);
+int kfx_render_asset_stable(const void *bytes, size_t length);
+
 void kfx_gpoly_set_sink(KfxGpolySink sink, void *context);
 extern KfxGpolySink kfx_gpoly_sink;
 extern void *kfx_gpoly_sink_context;

@@ -63,6 +63,11 @@ struct KfxWgpuDrawCommand {
 
 struct KfxWgpuDrawCounters {
     uint64_t batches, commands, asset_upload_bytes, command_upload_bytes, readback_bytes;
+    /* wait_ns is host stall time inside blocking device polls. No GPU execution
+     * time is collected; every counter here is host-side. */
+    uint64_t submits, dispatches, waits, wait_ns, buffers, buffer_bytes;
+    /* Host-side staged asset bytes the context holds, not GPU memory; a gauge. */
+    uint64_t host_staged_asset_bytes;
 };
 #pragma pack(pop)
 

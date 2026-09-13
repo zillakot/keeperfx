@@ -989,6 +989,13 @@ pub struct DrawCounters {
     asset_upload_bytes: u64,
     command_upload_bytes: u64,
     readback_bytes: u64,
+    submits: u64,
+    dispatches: u64,
+    waits: u64,
+    wait_ns: u64,
+    buffers: u64,
+    buffer_bytes: u64,
+    host_staged_asset_bytes: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1004,13 +1011,21 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 !handle.is_null() && !output.is_null(),
                 "null drawing context or counters"
             );
-            let counters = (&*handle.cast::<crate::draw::DrawRenderer>()).counters();
+            let drawing = &*handle.cast::<crate::draw::DrawRenderer>();
+            let counters = drawing.counters();
             output.write(DrawCounters {
                 batches: counters.batches,
                 commands: counters.commands,
                 asset_upload_bytes: counters.asset_upload_bytes,
                 command_upload_bytes: counters.command_upload_bytes,
                 readback_bytes: counters.readback_bytes,
+                submits: counters.submits,
+                dispatches: counters.dispatches,
+                waits: counters.waits,
+                wait_ns: counters.wait_ns,
+                buffers: counters.buffers,
+                buffer_bytes: counters.buffer_bytes,
+                host_staged_asset_bytes: drawing.staged_asset_bytes(),
             });
             Ok(Some(1))
         });

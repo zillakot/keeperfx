@@ -76,6 +76,17 @@ std::string json_quote(const std::string& value)
     return result + '"';
 }
 
+constexpr int DrawingCounterCount = sizeof(PerformanceDrawingCounters) / sizeof(unsigned long long);
+constexpr int DrawingGaugeCount = 1;
+/* Names must stay in PerformanceDrawingCounters member order; gauges come last. */
+const char* const drawing_counter_names[DrawingCounterCount] = {
+    "submits", "dispatches", "waits", "wait_ns", "checkpoints", "checkpoint_copy_bytes",
+    "validation_waits", "upload_bytes", "readback_bytes", "full_readbacks", "full_readback_bytes",
+    "buffers", "buffer_bytes", "batches", "commands", "ordered_sprites",
+    "host_staged_asset_bytes"};
+static_assert(sizeof(PerformanceDrawingCounters) == DrawingCounterCount * sizeof(unsigned long long),
+    "drawing counters must be a packed array of unsigned long long");
+
 struct Profile {
     const char* output = std::getenv("KFX_PERF_OUTPUT");
     unsigned long warmup = 40, turns = 200, start_turn = 0;
@@ -87,6 +98,10 @@ struct Profile {
     std::array<Scope, PerfScopeCount> scopes;
     Clock::time_point last_present;
     std::string start_state, renderer, driver, renderer_details;
+    std::string drawing_backend;
+    bool drawing_seen = false;
+    PerformanceDrawingCounters drawing_previous = {};
+    std::vector<std::array<unsigned long long, DrawingCounterCount>> drawing_frames;
     Resources start_resources;
     int width = 0, height = 0, output_width = 0, output_height = 0, vsync = -2;
 };
@@ -164,7 +179,7 @@ void finish(Profile& p)
         "\"width\":%d,\"height\":%d,\"output_width\":%d,\"output_height\":%d,"
         "\"vsync_actual\":%d,\"turns_per_second\":%ld,\"fps_limit\":%d,\"interpolation\":%s,"
         "\"resources\":{\"wall_ns\":%llu,\"process_cpu\":{\"available\":%s,\"source\":\"%s\",\"user_ns\":%llu,\"system_ns\":%llu},"
-        "\"rust_allocations\":{\"available\":%s,\"calls\":%llu,\"requested_bytes\":%llu}}}\n",
+        "\"rust_allocations\":{\"available\":%s,\"calls\":%llu,\"requested_bytes\":%llu}}",
         p.draw_breakdown ? "true" : "false", p.start_state.c_str(), state().c_str(), p.possession ? "possession" : "dungeon",
         p.possession ? "creature" : "dungeon_top", json_quote(p.renderer).c_str(), json_quote(p.driver).c_str(), json_quote(p.renderer_details).c_str(),
         p.width, p.height, p.output_width, p.output_height, p.vsync,
@@ -184,6 +199,24 @@ void finish(Profile& p)
 #endif
         static_cast<unsigned long long>(end_resources.allocations - p.start_resources.allocations),
         static_cast<unsigned long long>(end_resources.allocated_bytes - p.start_resources.allocated_bytes));
+    std::fprintf(info, ",\"drawing\":{\"available\":%s,\"backend\":%s,\"frames\":%zu,\"counters\":[",
+        p.drawing_seen ? "true" : "false",
+        json_quote(p.drawing_backend.empty() ? "unknown" : p.drawing_backend).c_str(),
+        p.drawing_frames.size());
+    for (int i = 0; i < DrawingCounterCount; ++i)
+        std::fprintf(info, "%s%s", i ? "," : "", json_quote(drawing_counter_names[i]).c_str());
+    std::fprintf(info, "],\"gauges\":[");
+    for (int i = DrawingCounterCount - DrawingGaugeCount; i < DrawingCounterCount; ++i)
+        std::fprintf(info, "%s%s", i > DrawingCounterCount - DrawingGaugeCount ? "," : "",
+            json_quote(drawing_counter_names[i]).c_str());
+    std::fprintf(info, "],\"per_frame\":[");
+    for (size_t frame = 0; frame < p.drawing_frames.size(); ++frame) {
+        std::fprintf(info, "%s[", frame ? "," : "");
+        for (int i = 0; i < DrawingCounterCount; ++i)
+            std::fprintf(info, "%s%llu", i ? "," : "", p.drawing_frames[frame][i]);
+        std::fprintf(info, "]");
+    }
+    std::fprintf(info, "]}}\n");
     failed = std::ferror(info) != 0;
     failed = std::fclose(info) != 0 || failed;
     if (failed) { std::remove(path.c_str()); fail(p, "writing metadata"); return; }
@@ -251,6 +284,7 @@ void performance_prepare_turn(void)
     p.start_state = state();
     p.start_turn = get_gameturn();
     p.start_resources = resources();
+    p.drawing_frames.reserve(p.turns * 4);
     p.active = true;
 }
 
@@ -332,6 +366,43 @@ void performance_renderer_info(const char* renderer, const char* driver, int wid
     p.driver = driver ? driver : "unknown";
     p.width = width; p.height = height;
     p.output_width = output_width; p.output_height = output_height; p.vsync = vsync;
+}
+
+void performance_drawing_backend(const char* backend)
+{
+    Profile& p = profile();
+    if (!p.active) return;
+    const std::string value = backend ? backend : "unknown";
+    if (p.drawing_backend.empty()) { p.drawing_backend = value; return; }
+    for (size_t start = 0; start <= p.drawing_backend.size();) {
+        const size_t end = p.drawing_backend.find('+', start);
+        const size_t stop = end == std::string::npos ? p.drawing_backend.size() : end;
+        if (p.drawing_backend.compare(start, stop - start, value) == 0) return;
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    p.drawing_backend += '+' + value;
+}
+
+void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulative)
+{
+    Profile& p = profile();
+    if (!p.active || !cumulative) return;
+    const unsigned long long* current = reinterpret_cast<const unsigned long long*>(cumulative);
+    const unsigned long long* previous = reinterpret_cast<const unsigned long long*>(&p.drawing_previous);
+    if (p.drawing_seen) {
+        if (p.drawing_frames.size() >= 100000) { fail(p, "drawing sample limit reached"); return; }
+        std::array<unsigned long long, DrawingCounterCount> delta;
+        for (int i = 0; i < DrawingCounterCount - DrawingGaugeCount; ++i) {
+            if (current[i] < previous[i]) { fail(p, "drawing counter went backwards"); return; }
+            delta[i] = current[i] - previous[i];
+        }
+        for (int i = DrawingCounterCount - DrawingGaugeCount; i < DrawingCounterCount; ++i)
+            delta[i] = current[i];
+        p.drawing_frames.push_back(delta);
+    }
+    p.drawing_previous = *cumulative;
+    p.drawing_seen = true;
 }
 
 void performance_renderer_details(const char* details)

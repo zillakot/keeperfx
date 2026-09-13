@@ -1,6 +1,6 @@
 use super::*;
 
-const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
+pub(super) const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy, Debug)]
@@ -22,7 +22,7 @@ pub(super) struct QueuedFrame {
     root: u64,
     batches: Vec<Batch>,
     count: usize,
-    released_resources: Vec<u64>,
+    released_resources: std::collections::HashSet<u64>,
     released_targets: Vec<u64>,
     invalid: bool,
 }
@@ -72,7 +72,7 @@ impl DrawRenderer {
             root,
             batches: Vec::new(),
             count: 0,
-            released_resources: Vec::new(),
+            released_resources: std::collections::HashSet::new(),
             released_targets: Vec::new(),
             invalid: false,
         });
@@ -114,9 +114,8 @@ impl DrawRenderer {
                 .is_some_and(|n| n <= MAX_COMMANDS),
             "queued frame command limit exceeded"
         );
-        let bytes: usize = self.resources.values().map(|r| r.bytes.len()).sum();
         ensure!(
-            bytes <= MAX_FRAME_BYTES,
+            self.resource_bytes <= MAX_FRAME_BYTES,
             "queued resource arena exceeds 256 MiB"
         );
         Ok(())
@@ -226,7 +225,7 @@ impl DrawRenderer {
             self.resources.contains_key(&resource) && !frame.released_resources.contains(&resource),
             "unknown resource"
         );
-        frame.released_resources.push(resource);
+        frame.released_resources.insert(resource);
         Ok(true)
     }
 
@@ -244,8 +243,11 @@ impl DrawRenderer {
     }
 
     fn drain_releases(&mut self, frame: &mut QueuedFrame) {
-        for id in frame.released_resources.drain(..) {
-            self.resources.remove(&id);
+        for id in frame.released_resources.drain() {
+            if let Some(released) = self.resources.remove(&id) {
+                debug_assert!(self.resource_bytes >= released.bytes.len());
+                self.resource_bytes = self.resource_bytes.saturating_sub(released.bytes.len());
+            }
         }
         for id in frame.released_targets.drain(..) {
             self.targets.remove(&id);
@@ -257,7 +259,7 @@ impl DrawRenderer {
             return self.check_status();
         }
         let size = statuses.len() as u64 * 4;
-        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let staging = self.tracked_buffer(&wgpu::BufferDescriptor {
             label: Some("aggregated frame validation"),
             size,
             mapped_at_creation: false,
@@ -267,15 +269,12 @@ impl DrawRenderer {
         for (i, status) in statuses.iter().enumerate() {
             encoder.copy_buffer_to_buffer(status, 0, &staging, i as u64 * 4, 4);
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit_encoder(encoder);
         let (sender, receiver) = std::sync::mpsc::channel();
         staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
-        self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(std::time::Duration::from_secs(30)),
-        })?;
+        self.wait_for_queue()?;
         receiver.recv()??;
         let mapped = staging.slice(..).get_mapped_range()?;
         let valid = mapped.iter().all(|&b| b == 0);
@@ -308,7 +307,7 @@ impl DrawRenderer {
             .context("missing frame root")?
             .clone();
         let size = u64::from(target.width) * u64::from(target.height) * 4;
-        let scratch = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let scratch = self.tracked_buffer(&wgpu::BufferDescriptor {
             label: Some("transactional queued frame"),
             size,
             mapped_at_creation: false,
@@ -318,7 +317,7 @@ impl DrawRenderer {
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         encoder.copy_buffer_to_buffer(&target.indices, 0, &scratch, 0, size);
-        self.queue.submit([encoder.finish()]);
+        self.submit_encoder(encoder);
         for view in self.targets.values_mut().filter(|t| t.root == frame.root) {
             view.indices = scratch.clone();
         }
@@ -347,7 +346,7 @@ impl DrawRenderer {
         if result.is_ok() {
             let mut encoder = self.device.create_command_encoder(&Default::default());
             encoder.copy_buffer_to_buffer(&scratch, 0, &target.indices, 0, size);
-            self.queue.submit([encoder.finish()]);
+            self.submit_encoder(encoder);
             result = self.check_status();
         }
         self.frame_counters.checkpoints += 1;
@@ -404,6 +403,76 @@ mod tests {
             height,
             ..Default::default()
         }
+    }
+
+    #[test]
+    #[ignore = "requires a Metal adapter"]
+    fn gpu_frame_counters_account_for_submits_waits_buffers_and_dispatches() {
+        let mut draw = DrawRenderer::headless().unwrap();
+        let root = draw.create_target(16, 16).unwrap();
+        let baseline = draw.counters();
+        assert_eq!(baseline.buffers, 1);
+        assert_eq!(baseline.buffer_bytes, 16 * 16 * 4);
+        assert_eq!(
+            (baseline.submits, baseline.waits, baseline.dispatches),
+            (0, 0, 0)
+        );
+        draw.frame_begin(root).unwrap();
+        let bytes = vec![9u8; 64];
+        let source = draw.create_resource(&bytes, 8, 8, 8).unwrap();
+        assert_eq!(draw.resource_bytes, 64);
+        draw.submit(root, &[rectangle(3, 0, 0, 4, 4)]).unwrap();
+        assert_eq!(draw.counters().submits, 0);
+        draw.frame_end().unwrap();
+        let after = draw.counters();
+        assert!(
+            after.submits >= 3,
+            "checkpoint copies and the batch must submit"
+        );
+        assert_eq!(after.dispatches, 1);
+        assert_eq!(draw.staged_asset_bytes(), 64);
+        assert_eq!(after.waits, 0);
+        assert_eq!(after.wait_ns, 0);
+        assert!(after.buffers > baseline.buffers);
+        assert!(after.buffer_bytes >= baseline.buffer_bytes + 16 * 16 * 4);
+        assert_eq!(draw.frame_counters().checkpoints, 1);
+        assert_eq!(draw.frame_counters().checkpoint_copy_bytes, 2 * 16 * 16 * 4);
+        let before_readback = draw.counters().submits;
+        draw.readback(root).unwrap();
+        let read = draw.counters();
+        assert_eq!(read.submits, before_readback + 1);
+        assert_eq!(read.waits, 1);
+        assert!(
+            read.wait_ns > 0,
+            "a blocking poll must record measured time"
+        );
+        assert_eq!(read.readback_bytes, 16 * 16 * 4);
+        draw.release_resource(source).unwrap();
+        assert_eq!(draw.resource_bytes, 0);
+        assert_eq!(draw.staged_asset_bytes(), 0);
+    }
+
+    #[test]
+    #[ignore = "requires a Metal adapter"]
+    fn gpu_deferred_resource_releases_are_a_set_and_track_arena_bytes() {
+        let mut draw = DrawRenderer::headless().unwrap();
+        let root = draw.create_target(8, 8).unwrap();
+        let first = draw.create_resource(&[1u8; 32], 8, 4, 8).unwrap();
+        let second = draw.create_resource(&[2u8; 16], 8, 2, 8).unwrap();
+        assert_eq!(draw.resource_bytes, 48);
+        draw.frame_begin(root).unwrap();
+        draw.release_resource(first).unwrap();
+        assert!(draw.release_resource(first).is_err());
+        assert!(draw.check_queued_resource(first).is_err());
+        assert!(draw.check_queued_resource(second).is_ok());
+        assert_eq!(
+            draw.resource_bytes, 48,
+            "deferred releases keep the queued version"
+        );
+        draw.frame_end().unwrap();
+        assert_eq!(draw.resource_bytes, 16);
+        draw.release_resource(second).unwrap();
+        assert_eq!(draw.resource_bytes, 0);
     }
 
     #[test]

@@ -134,12 +134,14 @@ impl DrawRenderer {
         let pipeline = self.effects.as_ref().unwrap();
         let assets = buffer(
             &self.device,
+            &mut self.counters,
             "immutable lens sources and maps",
             &words,
             wgpu::BufferUsages::STORAGE,
         );
         let view = buffer(
             &self.device,
+            &mut self.counters,
             "target view",
             &[target.width, target.pitch, target.offset, 0],
             wgpu::BufferUsages::UNIFORM,
@@ -163,7 +165,8 @@ impl DrawRenderer {
             pass.set_bind_group(0, &binding, &[]);
             pass.dispatch_workgroups(dispatch[0], dispatch[1], 1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.counters.dispatches += 1;
+        self.submit_encoder(encoder);
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += 1;

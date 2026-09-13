@@ -49,6 +49,7 @@ public:
         uint64_t barrier_readbacks = 0, verification_readbacks = 0, invalid_frames = 0, missing_cpu_barriers = 0;
         uint64_t transition_checkpoint_bytes = 0, transition_snapshot_copy_bytes = 0, transition_commands = 0;
         uint64_t native_commands = 0, verification_cpu_commands = 0, gpu_sprite_commands = 0;
+        uint64_t gpu_ordered_sprites = 0;
         uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
     };
@@ -93,10 +94,14 @@ public:
     bool IsOracleActive() const { return m_oracle_active; }
 
 private:
+    /* Bytes the 32x32 gpoly tile read actually touches at pitch 256. */
+    static constexpr size_t TEXTURE_READ_BYTES = 31 * 256 + 32;
     struct Resource {
         uint64_t handle;
         std::vector<uint8_t> bytes;
         uint32_t width, height, pitch;
+        const void* key = nullptr;
+        uint64_t generation = 0;
     };
     static int Sink(void* context, const KfxGpolyTarget* target,
         const KfxGpolySpan* span, const uint8_t* texture, const uint8_t* fade);
@@ -106,8 +111,10 @@ private:
         const uint8_t*, const uint8_t*, KfxGpolyRasterizer);
     int Draw(const KfxGpolyTarget& target, const KfxGpolySpan& span,
         const uint8_t* texture, const uint8_t* fade);
-    uint64_t ResourceFor(std::vector<Resource>& cache, const uint8_t* bytes,
-        size_t length, uint32_t width, uint32_t height, uint32_t pitch, size_t limit);
+    static const void* StableKey(const void* bytes, size_t length);
+    uint64_t ResourceFor(std::vector<Resource>& cache, const void* key, uint64_t generation,
+        const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
+        size_t limit);
     int Fail(const char* reason);
     void ReplayPending();
     bool RasterizePending(uint8_t* pixels, uint32_t pitch) const;

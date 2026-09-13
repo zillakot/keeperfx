@@ -107,6 +107,7 @@ impl DrawRenderer {
         let target = self.create_target(256, 256)?;
         let input = buffer(
             &self.device,
+            &mut self.counters,
             "immutable shadow artwork and prior scratch",
             &values,
             wgpu::BufferUsages::STORAGE,
@@ -124,7 +125,8 @@ impl DrawRenderer {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(32, 32, 1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.counters.dispatches += 1;
+        self.submit_encoder(encoder);
         self.counters.asset_upload_bytes += values.len() as u64 * 4;
         self.counters.commands += 1;
         self.counters.batches += 1;

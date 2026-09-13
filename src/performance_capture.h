@@ -16,6 +16,19 @@ enum PerformanceScope {
     PerfScopeCount,
 };
 
+/* Cumulative drawing-backend counters sampled once per presented frame.
+ * The capture stores per-frame deltas for the measured window only. */
+struct PerformanceDrawingCounters {
+    unsigned long long submits, dispatches, waits, wait_ns;
+    unsigned long long checkpoints, checkpoint_copy_bytes, validation_waits;
+    unsigned long long upload_bytes, readback_bytes, full_readbacks, full_readback_bytes;
+    unsigned long long buffers, buffer_bytes, batches, commands, ordered_sprites;
+    /* Trailing gauges are stored as observed, not differenced. */
+    unsigned long long host_staged_asset_bytes;
+};
+void performance_drawing_backend(const char* backend);
+void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulative);
+
 int performance_requested(void);
 int performance_active(void);
 void performance_failed(const char* reason);
