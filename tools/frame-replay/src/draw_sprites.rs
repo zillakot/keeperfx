@@ -1,0 +1,409 @@
+use super::*;
+
+pub(super) fn ordered(command: &Command) -> bool {
+    command.kind == SPRITE && command.source_x & 8 != 0
+}
+
+pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
+    let w = command.source_width as usize;
+    let h = command.source_height as usize;
+    ensure!(
+        w > 0 && h > 0 && w <= 8192 && h <= 8192,
+        "invalid sprite dimensions"
+    );
+    ensure!(
+        command.source_x <= 15
+            && command.source_y <= if ordered(command) { 3 } else { 0 }
+            && command.transparent == 256
+            && (!ordered(command) || (command.source_x & 1 != 0 && command.blend == 0)),
+        "invalid sprite options"
+    );
+    let axis = 2 * w * h;
+    ensure!(
+        source.bytes.len() == axis + 8 * (w + h) + 256,
+        "invalid sprite asset length"
+    );
+    for row in source.bytes[..axis].chunks_exact(w * 2) {
+        let mut in_run = false;
+        for pixel in row.as_chunks::<2>().0 {
+            ensure!(
+                pixel[1] <= if ordered(command) { 2 } else { 1 },
+                "invalid sprite coverage"
+            );
+            if ordered(command) {
+                ensure!(pixel[1] != 0 || !in_run, "unterminated sprite run");
+                in_run = pixel[1] == 1;
+            }
+        }
+        ensure!(!in_run, "unterminated sprite row");
+    }
+    for (offset, count) in [(axis, w), (axis + 8 * w, h)] {
+        let mut previous = None;
+        for i in 0..count {
+            let index = offset + 8 * i;
+            let start = u32::from_le_bytes(source.bytes[index..index + 4].try_into().unwrap());
+            let length = u32::from_le_bytes(source.bytes[index + 4..index + 8].try_into().unwrap());
+            ensure!(
+                start <= 16384 && length <= 16384 && start + length <= 16384,
+                "invalid sprite scaling range"
+            );
+            ensure!(
+                previous.is_none_or(|end| end == start),
+                "noncontiguous sprite scaling ranges"
+            );
+            previous = Some(start + length);
+        }
+    }
+    Ok(())
+}
+
+fn range(source: &Resource, offset: usize) -> (i64, i64) {
+    let start = u32::from_le_bytes(source.bytes[offset..offset + 4].try_into().unwrap());
+    let count = u32::from_le_bytes(source.bytes[offset + 4..offset + 8].try_into().unwrap());
+    (i64::from(start), i64::from(count))
+}
+
+fn validate_target(c: &Command, source: &Resource, width: u32, height: u32) -> Result<()> {
+    ensure!(
+        c.x == 0 && c.y == 0 && c.width == width && c.height == height,
+        "ordered sprite requires full target bounds"
+    );
+    let w = c.source_width as usize;
+    let h = c.source_height as usize;
+    let axis = 2 * w * h;
+    for (offset, count, start, length, limit) in [
+        (axis, w, c.clip_x, c.clip_width, width),
+        (axis + w * 8, h, c.clip_y, c.clip_height, height),
+    ] {
+        ensure!(
+            start >= 0 && i64::from(start) + i64::from(length) <= i64::from(limit),
+            "ordered sprite clip outside target"
+        );
+        for i in 0..count {
+            let (at, n) = range(source, offset + 8 * i);
+            ensure!(
+                at >= i64::from(start) && at + n <= i64::from(start) + i64::from(length),
+                "ordered sprite range outside clip"
+            );
+        }
+    }
+    for sy in 0..h {
+        let ay = if c.source_x & 2 != 0 { h - 1 - sy } else { sy };
+        let (y, n) = range(source, axis + (w + ay) * 8);
+        if n <= 1 || y != 0 {
+            continue;
+        }
+        for sx in 0..w {
+            if source.bytes[2 * (sy * w + sx) + 1] == 2 {
+                let (x, _) = range(source, axis + (w - 1 - sx) * 8);
+                ensure!(x > 0, "ordered sprite row copy outside target");
+            }
+        }
+    }
+    Ok(())
+}
+
+impl DrawRenderer {
+    pub(super) fn submit_ordered_sprites(
+        &mut self,
+        target_id: u64,
+        commands: &[Command],
+    ) -> Result<()> {
+        let target = self
+            .targets
+            .get(&target_id)
+            .context("unknown sprite target")?;
+        pack_commands(
+            commands,
+            &self.resources,
+            target.width,
+            target.height,
+            self.storage_limit() as usize,
+        )?;
+        for c in commands.iter().filter(|c| ordered(c)) {
+            validate_target(c, &self.resources[&c.source], target.width, target.height)?;
+        }
+        for c in commands {
+            if !ordered(c) {
+                self.submit(target_id, std::slice::from_ref(c))?;
+                continue;
+            }
+            let target = &self.targets[&target_id];
+            let (words, assets) = pack_commands(
+                std::slice::from_ref(c),
+                &self.resources,
+                target.width,
+                target.height,
+                self.storage_limit() as usize,
+            )?;
+            let command_buffer = buffer(
+                &self.device,
+                "ordered sprite command",
+                &words,
+                wgpu::BufferUsages::STORAGE,
+            );
+            let asset_buffer = buffer(
+                &self.device,
+                "sprite artwork and run boundaries",
+                &assets,
+                wgpu::BufferUsages::STORAGE,
+            );
+            let parameters = buffer(
+                &self.device,
+                "sprite target dimensions",
+                &[
+                    target.width,
+                    target.height,
+                    1,
+                    0,
+                    target.pitch,
+                    target.offset,
+                    0,
+                    0,
+                ],
+                wgpu::BufferUsages::UNIFORM,
+            );
+            let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ordered sprite"),
+                layout: &self.compute_sprite_ordered.get_bind_group_layout(0),
+                entries: &[
+                    entry(0, &target.indices),
+                    entry(1, &command_buffer),
+                    entry(2, &asset_buffer),
+                    entry(3, &parameters),
+                ],
+            });
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("native sprite write and row-copy order"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.compute_sprite_ordered);
+                pass.set_bind_group(0, &binding, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+            self.queue.submit([encoder.finish()]);
+            self.check_status()?;
+            self.counters.batches += 1;
+            self.counters.commands += 1;
+            self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+            self.counters.command_upload_bytes += words.len() as u64 * 4;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::draw::{DrawRenderer, IMAGE, SPRITE};
+    use std::io::Read;
+
+    fn word(bytes: &[u8], index: usize) -> u32 {
+        u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn rejects_malformed_sprite_assets() {
+        let command = Command {
+            kind: SPRITE,
+            source_width: 1,
+            source_height: 1,
+            ..Default::default()
+        };
+        let mut resource = Resource {
+            width: 1,
+            height: 1,
+            pitch: 1,
+            bytes: vec![0; 274],
+        };
+        validate(&command, &resource).unwrap();
+        resource.bytes[1] = 2;
+        assert!(validate(&command, &resource).is_err());
+        resource.bytes[1] = 1;
+        resource.bytes[2..6].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(validate(&command, &resource).is_err());
+        resource.bytes.clear();
+        assert!(validate(&command, &resource).is_err());
+        assert!(
+            validate(
+                &Command {
+                    source_width: u32::MAX,
+                    ..command
+                },
+                &resource
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ordered_sprite_validates_runs_and_copy_extent() {
+        let mut command = Command {
+            kind: SPRITE,
+            width: 8,
+            height: 8,
+            clip_width: 8,
+            clip_height: 8,
+            source_x: 9,
+            source_width: 2,
+            source_height: 1,
+            ..Default::default()
+        };
+        let mut resource = Resource {
+            width: 1,
+            height: 1,
+            pitch: 1,
+            bytes: vec![0; 284],
+        };
+        resource.bytes[1] = 2;
+        resource.bytes[3] = 2;
+        for (offset, value) in [(4, 0u32), (8, 4), (12, 4), (16, 4), (20, 1), (24, 3)] {
+            resource.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        validate(&command, &resource).unwrap();
+        validate_target(&command, &resource, 8, 8).unwrap();
+        resource.bytes[3] = 1;
+        assert!(validate(&command, &resource).is_err());
+        resource.bytes[3] = 0;
+        resource.bytes[1] = 1;
+        assert!(validate(&command, &resource).is_err());
+        resource.bytes[1] = 2;
+        resource.bytes[3] = 2;
+        resource.bytes[20..24].copy_from_slice(&0u32.to_le_bytes());
+        assert!(validate_target(&command, &resource, 8, 8).is_err());
+        command.source_x = 11;
+        assert!(validate_target(&command, &resource, 8, 8).is_err());
+        resource.bytes[24..28].copy_from_slice(&1u32.to_le_bytes());
+        validate_target(&command, &resource, 8, 8).unwrap();
+        command.source_y = 3;
+        validate(&command, &resource).unwrap();
+        command.source_y = 4;
+        assert!(validate(&command, &resource).is_err());
+        command.source_y = 0;
+        command.source_x = 8;
+        assert!(validate(&command, &resource).is_err());
+        command.source_x = 9;
+        command.blend = 1;
+        assert!(validate(&command, &resource).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires GPU and KFX_SPRITE_FIXTURE generated by sprite_fixture"]
+    fn gpu_actual_legacy_sprites() {
+        gpu_sprite_fixture("KFX_SPRITE_FIXTURE");
+    }
+
+    #[test]
+    #[ignore = "requires GPU and KFX_SPRITE_COPY_FIXTURE generated by sprite_copy_fixture"]
+    fn gpu_actual_legacy_sprite_copies() {
+        gpu_sprite_fixture("KFX_SPRITE_COPY_FIXTURE");
+    }
+
+    fn gpu_sprite_fixture(variable: &str) {
+        let path = std::env::var(variable).unwrap_or_else(|_| panic!("set {variable}"));
+        let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        let mut header = [0u8; 20];
+        file.read_exact(&mut header).unwrap();
+        assert_eq!(word(&header, 0), 0x3353464b);
+        assert_eq!(word(&header, 4), 112);
+        let count = word(&header, 1);
+        let width = word(&header, 2);
+        let height = word(&header, 3);
+        let size = (width * height) as usize;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        eprintln!("sprite fixtures adapter: {:?}", adapter.get_info());
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let renderer = crate::gpu::Renderer::new(device, queue).unwrap();
+        let mut drawing = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        let target = drawing.create_target(width, height).unwrap();
+        let initial: Vec<u8> = (0..size)
+            .map(|i| (i * 19 + i / width as usize * 13) as u8)
+            .collect();
+        let initial_source = drawing
+            .create_resource(&initial, width, height, width)
+            .unwrap();
+        let mut expected = vec![0; size];
+        for fixture in 0..count {
+            let mut bytes = [0; 112];
+            file.read_exact(&mut bytes).unwrap();
+            let mut length = [0; 4];
+            file.read_exact(&mut length).unwrap();
+            let mut source = vec![0; u32::from_le_bytes(length) as usize];
+            file.read_exact(&mut source).unwrap();
+            let source_handle = drawing.create_resource(&source, 1, 1, 1).unwrap();
+            source.fill(19);
+            let mut table_handle = 0;
+            if word(&bytes, 2) != 0 {
+                let mut table = vec![0; 65536];
+                file.read_exact(&mut table).unwrap();
+                table_handle = drawing.create_resource(&table, 256, 256, 256).unwrap();
+                table.fill(23);
+            }
+            file.read_exact(&mut expected).unwrap();
+            let command = Command {
+                abi_version: word(&bytes, 0),
+                kind: word(&bytes, 1),
+                blend: word(&bytes, 2),
+                colour: word(&bytes, 3),
+                x: word(&bytes, 4) as i32,
+                y: word(&bytes, 5) as i32,
+                width: word(&bytes, 6),
+                height: word(&bytes, 7),
+                clip_x: word(&bytes, 8) as i32,
+                clip_y: word(&bytes, 9) as i32,
+                clip_width: word(&bytes, 10),
+                clip_height: word(&bytes, 11),
+                source: source_handle,
+                table: table_handle,
+                source_x: word(&bytes, 16),
+                source_y: word(&bytes, 17),
+                source_width: word(&bytes, 18),
+                source_height: word(&bytes, 19),
+                start_low: word(&bytes, 20),
+                start_high: word(&bytes, 21),
+                step_low: word(&bytes, 22),
+                step_high: word(&bytes, 23),
+                transparent: word(&bytes, 24),
+                ..Default::default()
+            };
+            drawing
+                .submit(
+                    target,
+                    &[
+                        Command {
+                            kind: IMAGE,
+                            source: initial_source,
+                            width,
+                            height,
+                            source_width: width,
+                            source_height: height,
+                            ..Default::default()
+                        },
+                        command,
+                    ],
+                )
+                .unwrap();
+            drawing.release_resource(source_handle).unwrap();
+            if table_handle != 0 {
+                drawing.release_resource(table_handle).unwrap();
+            }
+            let actual = drawing.readback(target).unwrap();
+            if let Some(pixel) = actual.iter().zip(&expected).position(|(a, b)| a != b) {
+                panic!(
+                    "fixture {fixture} {command:?}: pixel ({},{}) GPU={} legacy={}",
+                    pixel % width as usize,
+                    pixel / width as usize,
+                    actual[pixel],
+                    expected[pixel]
+                );
+            }
+        }
+        let mut trailing = [0];
+        assert_eq!(file.read(&mut trailing).unwrap(), 0);
+        eprintln!("{count} exact actual-legacy sprite GPU fixtures passed");
+    }
+}

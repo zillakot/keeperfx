@@ -20,6 +20,7 @@ _spec = importlib.util.spec_from_file_location("capture_frame", Path(__file__).w
 capture = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(capture)
 KINDS = ("simulation", "draw", "presentation", "present_wait", "frame_interval")
+DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 SETTINGS = {
     "DELTA_TIME": "ON", "TURNS_PER_SECOND": "20", "FRAMES_PER_SECOND": "60", "VSYNC": "OFF",
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
@@ -80,6 +81,7 @@ def environment_for(args, output):
         environment.update(SDL_VIDEODRIVER="cocoa", SDL_VIDEO_DRIVER="cocoa", SDL_RENDER_DRIVER="metal")
     environment.update(KFX_PRESENT_BACKEND="wgpu" if args.backend == "rust" else "sdl",
                        SDL_RENDER_VSYNC="0", KFX_PERF_OUTPUT=str(output / "raw.csv"),
+                       KFX_PERF_DRAW_BREAKDOWN="1" if getattr(args, "draw_breakdown", False) else "0",
                        KFX_PERF_TURN=str(args.warmup_turns), KFX_PERF_TURNS=str(args.turns),
                        KFX_PERF_SCENE="possession" if args.scene == "possession" else "dungeon")
     return environment
@@ -129,8 +131,13 @@ def summarize(output, args):
         if (not isinstance(details, dict) or details.get("backend") != "Metal" or not details.get("adapter")
                 or details.get("present_mode") not in ("Immediate", "Mailbox") or not details.get("format")):
             raise RuntimeError("Rust backend did not confirm its adapter, format and actual non-VSync present mode")
-    samples = {kind: [] for kind in KINDS}
-    sample_turns = {kind: [] for kind in KINDS}
+    breakdown = metadata.get("draw_breakdown", False)
+    if type(breakdown) is not bool or breakdown != getattr(args, "draw_breakdown", False):
+        raise RuntimeError("engine draw breakdown does not match the request")
+    kinds = KINDS + DRAW_KINDS if breakdown else KINDS
+    samples = {kind: [] for kind in kinds}
+    sample_turns = {kind: [] for kind in kinds}
+    pending_draw = []
     with (output / "raw.csv").open(newline="") as stream:
         reader = csv.DictReader(stream)
         if reader.fieldnames != ["kind", "turn", "wall_ns"]:
@@ -139,8 +146,21 @@ def summarize(output, args):
             kind, turn, duration = row["kind"], int(row["turn"]), int(row["wall_ns"])
             if kind not in samples or duration < 0 or not start <= turn <= end:
                 raise RuntimeError("invalid sample kind, duration or turn")
+            if breakdown:
+                if kind in DRAW_KINDS:
+                    pending_draw.append((kind, turn))
+                    if len(pending_draw) > len(DRAW_KINDS):
+                        raise RuntimeError("duplicate draw breakdown samples")
+                elif kind == "draw":
+                    if pending_draw != [(child, turn) for child in DRAW_KINDS]:
+                        raise RuntimeError("draw breakdown must be a complete ordered block before its parent")
+                    pending_draw.clear()
+                elif pending_draw:
+                    raise RuntimeError("draw breakdown block interrupted before its parent")
             samples[kind].append(duration)
             sample_turns[kind].append(turn)
+    if pending_draw:
+        raise RuntimeError("draw breakdown has no enclosing draw sample")
     if sample_turns["simulation"] != list(range(start, end)):
         raise RuntimeError("simulation samples must cover every measured turn exactly once in order")
     if not all(samples.values()):
@@ -154,8 +174,25 @@ def summarize(output, args):
         raise RuntimeError("frame intervals must be positive")
     if any(wait > present for wait, present in zip(samples["present_wait"], samples["presentation"])):
         raise RuntimeError("present_wait cannot exceed its enclosing presentation duration")
+    if breakdown:
+        for kind in DRAW_KINDS:
+            if sample_turns[kind] != sample_turns["draw"]:
+                raise RuntimeError("each draw must have exactly one sample per breakdown category")
+        unaccounted = [draw - sum(children) for draw, *children in zip(
+            samples["draw"], *(samples[kind] for kind in DRAW_KINDS))]
+        if any(value < 0 for value in unaccounted):
+            raise RuntimeError("draw breakdown exceeds its enclosing draw duration")
+        samples["draw_unaccounted"] = unaccounted
     resource_report = summarize_resources(metadata.get("resources"), args.turns, len(presentations))
     limitations = LIMITATIONS + ([] if resource_report["process_cpu"] is not None else ["Process CPU time is not available in this run."])
+    if breakdown:
+        limitations += [
+            "Draw includes scene preparation, raster dispatch, front-view raster dispatch and overlays; these nested series must not be added to draw.",
+            "Raster dispatch combines terrain, sprites, shadows and bucket overlays; no per-command or per-pixel timers are collected.",
+            "draw_unaccounted is draw minus its non-overlapping coarse child scopes, computed per frame; it includes other draw work and instrumentation overhead.",
+            "Breakdown zero samples mean the scope was not visited or took less than clock resolution; they do not prove a drawing family was absent.",
+            "Compare matched runs with and without --draw-breakdown to measure instrumentation overhead; overhead is not assumed negligible.",
+        ]
     return {"engine": metadata, "wall_ms": {kind: distribution(values) for kind, values in samples.items()},
             "resources": resource_report,
             "percentile_method": "linear interpolation at (sample_count - 1) * percentile / 100",
@@ -246,6 +283,7 @@ def main():
     parser.add_argument("--resolution", type=capture.resolution, default=(640, 480))
     parser.add_argument("--warmup-turns", type=int, default=40, help="earliest game turn to begin measuring (1..600)")
     parser.add_argument("--turns", type=int, default=200, help="actual simulation updates to measure (20..1200)")
+    parser.add_argument("--draw-breakdown", action="store_true", help="coarse nested CPU drawing timings; compare against a matched run without this flag")
     parser.add_argument("--headless", action="store_true", help="dummy/software smoke test, not a native performance baseline")
     args = parser.parse_args()
     if args.backend == "rust" and (args.headless or sys.platform != "darwin"):

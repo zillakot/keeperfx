@@ -30,7 +30,7 @@ extern "C" void kfx_wgpu_allocation_counts(uint64_t* allocations, uint64_t* requ
 namespace {
 using Clock = std::chrono::steady_clock;
 struct Sample { int scope; unsigned long turn; uint64_t ns; };
-struct Scope { Clock::time_point start; unsigned long turn; bool active = false; };
+struct Scope { Clock::time_point start; unsigned long turn; bool active = false; uint64_t total_ns = 0; };
 struct Resources {
     Clock::time_point wall;
     uint64_t user_ns = 0, system_ns = 0, allocations = 0, allocated_bytes = 0;
@@ -79,7 +79,7 @@ std::string json_quote(const std::string& value)
 struct Profile {
     const char* output = std::getenv("KFX_PERF_OUTPUT");
     unsigned long warmup = 40, turns = 200, start_turn = 0;
-    bool initialized = false, active = false, finished = false, possession = false;
+    bool initialized = false, active = false, finished = false, possession = false, draw_breakdown = false;
     bool possession_started = false;
     unsigned long possession_turn = 0;
     FILE* file = nullptr;
@@ -140,11 +140,14 @@ void fail(Profile& p, const char* reason)
 
 void finish(Profile& p)
 {
+    for (const Scope& scope : p.scopes) {
+        if (scope.active) { fail(p, "unfinished timing scope"); return; }
+    }
     p.active = false;
     const Resources end_resources = resources();
     const bool cpu_available = p.start_resources.cpu_available && end_resources.cpu_available;
     const uint64_t wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_resources.wall - p.start_resources.wall).count();
-    const char* names[] = {"simulation", "draw", "presentation", "present_wait", "frame_interval"};
+    const char* names[] = {"simulation", "draw", "presentation", "present_wait", "draw_scene", "draw_raster", "draw_front_raster", "draw_overlays", "frame_interval"};
     std::fprintf(p.file, "kind,turn,wall_ns\n");
     for (const Sample& s : p.samples)
         std::fprintf(p.file, "%s,%lu,%llu\n", names[s.scope], s.turn, static_cast<unsigned long long>(s.ns));
@@ -156,13 +159,13 @@ void finish(Profile& p)
     FILE* info = std::fopen(path.c_str(), "wx");
     if (!info) { fail(p, "metadata already exists or cannot be created"); return; }
     std::fprintf(info,
-        "{\"format\":\"KFXPERF01\",\"complete\":true,\"start\":%s,\"end\":%s,"
+        "{\"format\":\"KFXPERF01\",\"complete\":true,\"draw_breakdown\":%s,\"start\":%s,\"end\":%s,"
         "\"scene\":\"%s\",\"view\":\"%s\",\"renderer\":%s,\"video_driver\":%s,\"renderer_details\":%s,"
         "\"width\":%d,\"height\":%d,\"output_width\":%d,\"output_height\":%d,"
         "\"vsync_actual\":%d,\"turns_per_second\":%ld,\"fps_limit\":%d,\"interpolation\":%s,"
         "\"resources\":{\"wall_ns\":%llu,\"process_cpu\":{\"available\":%s,\"source\":\"%s\",\"user_ns\":%llu,\"system_ns\":%llu},"
         "\"rust_allocations\":{\"available\":%s,\"calls\":%llu,\"requested_bytes\":%llu}}}\n",
-        p.start_state.c_str(), state().c_str(), p.possession ? "possession" : "dungeon",
+        p.draw_breakdown ? "true" : "false", p.start_state.c_str(), state().c_str(), p.possession ? "possession" : "dungeon",
         p.possession ? "creature" : "dungeon_top", json_quote(p.renderer).c_str(), json_quote(p.driver).c_str(), json_quote(p.renderer_details).c_str(),
         p.width, p.height, p.output_width, p.output_height, p.vsync,
         static_cast<long>(turns_per_second), fps_limit_current, is_feature_on(Ft_DeltaTime) ? "true" : "false",
@@ -204,6 +207,11 @@ void performance_prepare_turn(void)
             std::getenv("KFX_FRAME_CAPTURE")) {
             fail(p, "invalid options or simultaneous frame capture"); return;
         }
+        const char* breakdown = std::getenv("KFX_PERF_DRAW_BREAKDOWN");
+        if (breakdown && std::strcmp(breakdown, "0") && std::strcmp(breakdown, "1")) {
+            fail(p, "invalid draw breakdown option"); return;
+        }
+        p.draw_breakdown = breakdown && !std::strcmp(breakdown, "1");
         p.possession = scene && !std::strcmp(scene, "possession");
         p.file = std::fopen(p.output, "wx");
         if (!p.file) { fail(p, "output already exists or cannot be created"); return; }
@@ -250,7 +258,20 @@ void performance_begin(enum PerformanceScope scope)
 {
     Profile& p = profile();
     if (!p.active) return;
+    if (scope < 0 || scope >= PerfScopeCount) { fail(p, "invalid timing scope"); return; }
+    if (scope >= PerfDrawScene) {
+        if (!p.draw_breakdown || !p.scopes[PerfDraw].active) return;
+        for (int child = PerfDrawScene; child < PerfScopeCount; ++child) {
+            if (p.scopes[child].active) { fail(p, "overlapping draw timing scopes"); return; }
+        }
+    }
     Scope& s = p.scopes[scope];
+    if (s.active || (scope == PerfPresentWait && !p.scopes[PerfPresentation].active)) {
+        fail(p, "invalid timing scope nesting"); return;
+    }
+    if (scope == PerfDraw) {
+        for (int child = PerfDrawScene; child < PerfScopeCount; ++child) p.scopes[child].total_ns = 0;
+    }
     s.start = Clock::now();
     s.turn = get_gameturn();
     s.active = true;
@@ -267,13 +288,34 @@ void performance_begin(enum PerformanceScope scope)
 void performance_end(enum PerformanceScope scope)
 {
     Profile& p = profile();
-    if (!p.active || !p.scopes[scope].active) return;
-    auto end = Clock::now();
+    if (!p.active) return;
+    if (scope < 0 || scope >= PerfScopeCount) { fail(p, "invalid timing scope"); return; }
+    if (scope >= PerfDrawScene && (!p.draw_breakdown || !p.scopes[PerfDraw].active)) return;
     Scope& s = p.scopes[scope];
+    if (!s.active) { fail(p, "unmatched timing scope end"); return; }
+    const auto end = Clock::now();
+    const uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - s.start).count();
     s.active = false;
-    if (p.samples.size() >= 100000) { fail(p, "sample limit reached"); return; }
-    p.samples.push_back({scope, s.turn,
-        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - s.start).count())});
+    if (scope >= PerfDrawScene) {
+        s.total_ns += ns;
+        return;
+    }
+    if (scope == PerfPresentation && p.scopes[PerfPresentWait].active) {
+        fail(p, "unfinished present_wait scope"); return;
+    }
+    const size_t count = scope == PerfDraw && p.draw_breakdown ? 1 + PerfScopeCount - PerfDrawScene : 1;
+    if (p.samples.size() + count > 100000) { fail(p, "sample limit reached"); return; }
+    if (scope == PerfDraw && p.draw_breakdown) {
+        uint64_t accounted = 0;
+        for (int child = PerfDrawScene; child < PerfScopeCount; ++child) {
+            if (p.scopes[child].active) { fail(p, "unfinished draw timing scope"); return; }
+            accounted += p.scopes[child].total_ns;
+        }
+        if (accounted > ns) { fail(p, "draw timing scopes exceed parent"); return; }
+        for (int child = PerfDrawScene; child < PerfScopeCount; ++child)
+            p.samples.push_back({child, s.turn, p.scopes[child].total_ns});
+    }
+    p.samples.push_back({scope, s.turn, ns});
 }
 
 void performance_renderer_info(const char* renderer, const char* driver, int width, int height,

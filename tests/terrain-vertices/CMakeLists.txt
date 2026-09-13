@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.20)
+project(terrain_vertices_tests C CXX)
+set(CMAKE_CXX_STANDARD 20)
+enable_testing()
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SDL3 REQUIRED sdl3)
+get_filename_component(KFX_ROOT "../.." ABSOLUTE)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ver_defs.h" "#define VER_STRING \"vertex-test\"\n")
+set(KFX_GPU_LIBRARY "" CACHE FILEPATH "wgpu static library")
+add_executable(terrain_vertices_test bridge_test.cpp oracle.c
+    "${KFX_ROOT}/src/kfx/renderer/WgpuTerrainBridge.cpp"
+    "${KFX_ROOT}/src/kfx/renderer/GpolyCapture.c")
+target_include_directories(terrain_vertices_test PRIVATE "${KFX_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}" ${SDL3_INCLUDE_DIRS})
+target_compile_definitions(terrain_vertices_test PRIVATE KFX_RUST_PRESENTER=1 BFDEBUG_LEVEL=0)
+target_compile_options(terrain_vertices_test PRIVATE -fwrapv -Wall -Wextra -Wno-unknown-pragmas -fsanitize=address -fno-omit-frame-pointer)
+target_link_options(terrain_vertices_test PRIVATE -fsanitize=address)
+target_link_libraries(terrain_vertices_test PRIVATE "${KFX_GPU_LIBRARY}" "-framework Metal" "-framework QuartzCore" "-framework Foundation" "-framework AppKit" "-framework IOKit" "-framework CoreGraphics")
+add_test(NAME terrain_vertices COMMAND terrain_vertices_test)

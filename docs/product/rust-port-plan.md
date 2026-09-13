@@ -10,7 +10,9 @@ original pixel-art appearance and game behavior. The long-term target is a
 Rust-owned application and game implementation. Third-party libraries may still
 contain C/C++; rewriting those libraries is outside this plan.
 
-The phases below are proposals; the completed foundations are listed separately. Delivery scope, findings and validation belong in the
+The graphics migration below is authorized for execution; later language and
+gameplay phases remain proposals. Completed foundations are listed separately.
+Delivery scope, findings and validation belong in the
 [fork's pull requests](https://github.com/zillakot/keeperfx/pulls). Issues are
 currently disabled in the fork, so this plan uses PRs as delivery records.
 
@@ -45,9 +47,9 @@ track for sound remastering and replacement, audio compatibility fixtures and
 gradual Rust ownership. Its initial audition pack can use the existing engine;
 live audio and graphics integration share explicit lifecycle checks.
 
-The next graphics task is the investigation below. Utility and gameplay migration
-remain separate tracks; GPU world drawing does not require transferring simulation
-ownership to Rust. Later phases require their own scoped designs.
+The active graphics task is full wgpu drawing, delivered through the gates below.
+Utility and gameplay migration remain separate tracks; GPU world drawing does not
+require transferring simulation ownership to Rust. Later phases require their own scoped designs.
 
 ## Delivered milestone: optional live Rust presentation
 
@@ -143,16 +145,107 @@ and threading changes must not silently change simulation order.
 Preserve the original sprites, textures, palette lookup, nearest sampling, draw
 order and pixel coverage. GPU world drawing needs scene or draw-command data
 **before rasterization**. Replaying the finished framebuffer only changes
-presentation; it cannot remove CPU terrain or sprite drawing. No GPU world drawing
-has been implemented, and no new renderer architecture has been selected.
+presentation; it cannot remove CPU terrain or sprite drawing. The implemented
+foundation uses ordered indexed commands and integer compute drawing, with one
+GPU-owned `u32` palette index per pixel. CPU tile lists retain submission order;
+each GPU invocation exclusively owns a destination pixel. The live integration
+currently synchronizes that target with remaining CPU drawing. Full GPU target
+ownership now has a queued-frame implementation; complete native coverage and
+performance acceptance remain open.
 
-### Next session: measure CPU drawing and define one extraction boundary
+### Active delivery: full wgpu drawing
 
-This is the first bounded follow-up task, deferred to the next session. Deliver
-one investigation PR with a rendering-cost report, a source-backed scene/command
-boundary sketch and a go/no-go recommendation for one small GPU experiment.
-Instrumentation and runner changes needed for that investigation belong in that
-PR; implementing a GPU world renderer does not.
+The user authorized the full drawing migration on 2026-09-13. Inventory and
+measurement are the first gate, followed by command extraction, GPU implementation,
+all drawing paths and native validation. A single family or framebuffer presenter
+does not complete this scope. The foundation lands opt-in so the software path
+stays default while the remaining gates are worked; record exact source and
+evidence at each gate without marking untested paths complete.
+
+### Status: 2026-09-14
+
+The objective is full Rust/wgpu ownership of drawing, with the C/C++ drawing
+retired afterwards, exact indexed parity and 60 FPS at a 1920×1080 framebuffer.
+[PR #16](https://github.com/zillakot/keeperfx/pull/16) merges to `master` as the
+opt-in foundation of that work: software drawing and SDL presentation stay the
+default, `KFX_RUST_PRESENTER` and `KFX_DRAW_BACKEND=wgpu` select the GPU path,
+and the restructuring below ships as small PRs against `master`.
+
+The tested runtime is `33ff16a4f65d1c310194d1ca7dd367f027d7ad0f`; executable SHA256
+`045ba991be5ebc193e659c4ba592a06e7418cdfed73fb7918b50dadf872f7de8`.
+It was built with AppleClang 21, release Rust 1.98.1 and native RelWithDebInfo.
+The later `2afba22c2` changes only fixture prerequisites and generated audio cue
+references. Original assets and the earlier playable binary remain unchanged.
+
+Native validation found and fixed resident presentation bypassing
+`KFX_WGPU_VERIFY`. The rebuilt runtime passed 94/94 acquired-surface comparisons
+and 76,859 independent drawing-batch comparisons, with zero drawing failures,
+invalid frames or missing barriers. A separate production queued-cursor run
+passed 21/21 surface comparisons. Parchment, resize and cursor checks passed;
+save/reload and compound-lens evidence also exist at their separately recorded
+runtime identities. This is not complete coverage of every view, language, asset
+or failure path.
+
+Clean serial runs used the same binary and wgpu Metal presenter, 640×480 framebuffer
+and output, VSync off, 20 turns/s and a 60 FPS cap. Verification, control/API,
+audio and per-frame statistics-file I/O were disabled. Each run measured 200 turns.
+
+| Scene | Software draw mean | GPU draw mean / p95 | Software / GPU observed FPS |
+| --- | ---: | ---: | ---: |
+| Quiet | 0.894 ms | 23.535 / 25.494 ms | 60.01 / 31.62 |
+| Busy | 0.949 ms | 20.179 / 23.175 ms | 60.00 / 33.75 |
+
+The earlier synchronous prototype reached only about 7.6–7.7 FPS in its recorded
+clean runs. Batching removed ordinary per-command framebuffer transfers in the
+exercised paths, but the current GPU path still misses the software reference.
+These are host wall timings, not GPU timestamps or uncapped throughput; seeds,
+evolved populations and host conditions differ. Continuous unobscured window
+visibility was not independently established. Three zero-presentation surface
+acquisition attempts were rejected and contribute no timing claims.
+
+#### HD measurement
+
+The same binary, presenter and settings, capped host-wall timing at a 1920×1080
+framebuffer:
+
+| Scene | Software draw mean / FPS | GPU draw mean / FPS | GPU presentation mean |
+| --- | ---: | ---: | ---: |
+| Quiet | 3.463 ms / 60.00 | 68.266 ms / 8.76 | 45.7 ms |
+| Busy | 3.318 ms / 60.00 | 70.442 ms / 8.00 | 54.2 ms |
+
+The GPU runs did not sustain 20 turns/s at 1280×800 or 1920×1080. Process CPU
+stayed flat while wall time grew, so the added cost is waiting rather than
+computation.
+
+#### Diagnosis and next step
+
+The current path performs about 125 queue submits, 17 blocking waits and 9
+checkpoints per frame, re-uploads immutable assets every frame (about 20 MB) and
+runs shadows as synchronous readback chains. The measured presentation cost is a
+checkpoint drain inside the presentation scope. Removing scaffolding cannot reach
+the target: the next step is a restructure to one ordered command stream per
+frame, a persistent asset arena, one or two submits and zero blocking waits,
+keeping the existing exact kernels.
+
+Per-frame acceptance metrics for that restructure: at most 4 submits; zero
+blocking waits outside verification and screenshots; at most 1 checkpoint;
+steady-state asset upload under 1 MB; allocation traffic under 1 MB; at most 3
+full-target dispatches; parity unchanged.
+
+Next PRs, in order:
+
+1. Measured-window drawing-backend, submit, wait and transfer counters, plus the
+   two free fixes (in progress).
+2. Shadows as queued commands rather than synchronous readback chains.
+3. The single-stream restructure, guided by a design document added under
+   [`docs/architecture/`](../architecture/).
+
+Coverage work remains independent of performance: arbitrary Lua pixel/batch
+drawing, general striped-line coverage, remaining valid-input/alias domains and
+persistent offscreen/scratch ownership are still open. Passing current fixtures
+or reaching a frame-rate target does not complete the full drawing goal.
+
+### Inventory and measurement
 
 Entry: start from the latest fork `master`, retain PR #9 as the presentation
 baseline, and record the exact source/binary/assets/settings used. Reuse the
@@ -198,12 +291,12 @@ Work and deliverables:
    scene representation. Compare extraction at that boundary with a narrower
    rasterizer input; choose only after measuring cost and compatibility needs.
 
-Exit/acceptance: the PR identifies which measured work limits each scene, includes
-absolute costs and distributions with workload/identity limits, and names one
-candidate's callers, required data, ownership, exclusions and expected removable
-CPU work. It proposes synthetic pixel fixtures and a local game comparison for that
-candidate. If the data do not justify GPU work, record that conclusion and the
-next measured question instead of promising an FPS improvement.
+Inventory acceptance: identify which measured work limits each scene, include
+absolute costs and distributions with workload/identity limits, and record every
+drawing family's callers, input, ownership and pixel rules. Choose the first
+extraction boundary and fixtures from this evidence, then continue through the
+remaining gates. A lack of measured speedup must be reported; it does not establish
+migration completion or justify an FPS claim.
 
 Validation for changed measurement code must cover sample completeness, nesting,
 metadata/config mismatch rejection and preservation of default capped behavior.
@@ -213,16 +306,150 @@ run builds/profilers concurrently with benchmark collection. Keep original artwo
 raw captures, session descriptors and private host details out of the PR; publish
 portable procedures, aggregate evidence and redistributable fixtures.
 
-### Gates after the investigation
+### Execution and coverage ledger
 
-| Gate | Small delivery and acceptance |
-| --- | --- |
-| Select a bounded slice | Measured cost and command-boundary feasibility justify one terrain or sprite family and one initial view. Define coverage, unsupported cases and numerical/pixel rules before choosing raster versus compute or a broader scene architecture. |
-| Extract and compare commands | Add a bounded read-only adapter and synthetic fixtures in a separate PR. Specify ownership, limits and errors; preserve C/C++ simulation authority. Capture input before rasterization and prove that the legacy path still produces the reference pixels. |
-| Prototype GPU world drawing | Implement only the selected family behind an opt-in path. Compare identical command input against CPU output, including clipping, ordering, transparency, palette/shade behavior and integer scaling. Explain CPU/GPU composition and synchronization costs; fall back for unsupported input. |
-| Integrate and measure | Run exact pixel and native lifecycle/gameplay checks, then matched end-to-end measurements with verification disabled. Account for command extraction, upload, synchronization, remaining CPU drawing and frame-time tails. Expand only when evidence supports the next slice. |
+This ledger records the completed 2026-09-13 implementation slices and their
+separate validation identities. It does not certify the combined development head.
+The [live guide](../live-rust-presentation.md#partial-gpu-drawing) describes selection,
+ownership, synchronization, counters and failure behavior.
 
-Keep exact presentation comparisons unchanged. Define the new slice's visual
+| Gate | Status | Evidence and remaining work |
+| --- | --- | --- |
+| Inventory and measurement | Partial | Clean 640×480 measurements exposed the synchronous prototype regression: software drawing about 1.3–1.5 ms versus GPU drawing about 129–131 ms, with verifiers disabled. Full-frame readback dominated the separate stack sample. Queued frames are now measured at 640×480 and 1920×1080 (see the status section); the front-view matrix remains open. |
+| Extract commands | Partial | [Gpoly capture](../../src/kfx/renderer/GpolyCapture.h) owns span/resource snapshots; reviewed CPU oracle at `beec45800`: 615 fixtures and 20,389 spans matched native indices. Original-vertex native routing at `17e993a84` copies vertices before CPU setup and retains immutable texture/fade versions. Other families need immutable commands. |
+| Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h) cover the implemented families below. General triangles have all 27 kernels and deterministic thin-triangle setup. Queued frames, alias views, resource ownership and borrowed cursor integration are implemented; final combined runtime and performance evidence must match their exact source. |
+| Cover every drawing path | Open | Accepted original-vertex terrain bypasses CPU setup and rasterization; bounded 2D hooks suppress selected CPU pixel loops. The remaining families below and routine upload/readback bridges prevent complete GPU coverage. |
+| Native validation | Partial | Exact `e19ff26f7` sessions passed gameplay, parchment, save/reload and compound-lens possession, with 788 surface-verified presentations and no drawing failures. A real parchment oracle-recursion crash was fixed and retested. Later queued-frame source requires its own acceptance; complete views, languages, assets and failure coverage remain open. |
+| Performance and delivery | Open | The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
+
+| Drawing family and source boundary | Implemented coverage | Remaining GPU work / validation |
+| --- | --- | --- |
+| Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Original vertices → GPU setup, clipping, scan conversion and texture/shade stores; general-triangle kernels cover the other implemented modes | Broader scene/resource and allocation/alias coverage; full offscreen possession target ownership |
+| Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` original-vertex terrain batching is wired | Independent front-view runtime proof; sprites and interleaved overlays |
+| General triangles: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | Original vertices feed GPU kernels for modes 0–26; native adapter covers 26 modes and dedicated shadows provide mode10 | Allocation/alias fallback, combined-head native coverage and resident target integration |
+| Creature shadows: [shadow adapter](../../src/kfx/renderer/software/WgpuShadow.h), world dispatch | Original RLE/frame metadata → GPU silhouette → immutable GPU snapshot → both native-order mode10 triangles; partial scratch clear preserved | Prior scratch upload and native mirror remain; scratch-alias residency, broader assets and combined-head gameplay |
+| World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores | Ordered GPU run copies cover solid scaled-up horizontal flips, including native alignment/chunk behavior; asset/destination aliases and custom-asset/gameplay coverage remain open |
+| Pixels, boxes, HV lines and circles: [bflib_vidraw.c](../../src/kfx/renderer/software/bflib_vidraw.c) | Reviewed native GPU hooks and 1,116 exact fixtures; circles preserve repeated blend hits | Circle radii above 8,191 and other unsupported inputs decline to CPU; complete runtime coverage remains open |
+| General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level primitives; scaled normal/remap/one-colour/alpha and immediate normal/one-colour sprites | General-line coverage/color selection, unsupported sprite modes and full interleaving validation |
+| Text, including Asian fonts: [bflib_sprfnt.c](../../src/bflib_sprfnt.c) | Sprite glyphs and direct DBC bitmap GPU hooks; CPU layout retained; huge/DBC native fixture group has 849 exact Metal cases | Actual language/font runtime coverage, oversized custom inputs and mutable-source aliases |
+| Raw/tiled images, frontend backgrounds, landview/torture/zoom: [raw adapter](../../src/kfx/renderer/software/WgpuRawImage.c), [raw helper](../../src/front_simple.c), [slab helper](../../src/gui_draw.c) | Raw8 scaling/letterbox, tiled slabs, static backgrounds, huge sprite and campaign zoom GPU paths | Mutable source/destination aliases, noncanonical huge steps and source footprints above 1,048,576 pixels; full asset/runtime coverage |
+| Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | Semantic GPU cells, setup fills, markers and map/zoom transforms; 568 minimap and 1,358 map-view native/Metal fixtures | Minimap background dictionary still needs an explicit CPU read checkpoint; broader states and complete offscreen ownership |
+| Built-in possession lenses: [lens implementations](../../src/kfx/lense/) | Indexed displacement/flyeye remaps, mist and overlay GPU kernels preserve sequential source/target aliases; CPU map preparation and palette lifecycle remain | Resident GPU target views; lightness 32–63 mist, out-of-viewport maps, asset/destination aliases and oversized inputs still decline; full LensManager lifecycle/gameplay validation |
+| Custom Lua lenses: [LuaLensEffect.cpp](../../src/kfx/lense/LuaLensEffect.cpp), [lua_api_lens.c](../../src/lua_api_lens.c) | CPU reference | Ordered GPU writes/copies and exact read-after-write compatibility for arbitrary pixel-dependent Lua control flow; CPU-script readback is explicit, never hidden CPU-rendered lens upload |
+| Smoothing and map fades/transitions: [engine_redraw.c](../../src/engine_redraw.c) | GPU snapshots and exact indexed effects; 271 native/Metal cases plus failed-preparation/normal-exit state tests | Retained CPU recovery checkpoints, valid alias cases and broader lifecycle coverage |
+| Movies: [bflib_fmvids.cpp](../../src/bflib_fmvids.cpp) | CPU decoding feeds GPU frame scaling/copy, packed doubling/interlace and palette-index writes; 105 exact native fixtures | Visible playback/audio timing, uncommon source domains and recording/readback ownership |
+| Cursor, clears, screenshots and recording: [bflib_mspointer.cpp](../../src/bflib_mspointer.cpp), [RendererSoftware.cpp](../../src/kfx/renderer/RendererSoftware.cpp), [scrcapt.c](../../src/scrcapt.c) | GPU indexed clear for full SDL surface clips, preserving row padding; direct cursor scaling and GPU snapshot backup/keyed draw/opaque restore; native captures still consume the synchronized image | Nonfull SDL clip clears; retire cursor wrapper transfers and integrate authoritative GPU capture with matching frame/palette/cursor semantics |
+| Cross-family palette, transparency, clipping and scaling | Bounded command and offscreen palette-output fixtures pass | Full-family index/RGBA comparisons; table versions, target aliases and strict CPU-writer/readback audit |
+
+The reviewed original-vertex [GPU preparation test](../../tools/frame-replay/tests/gpoly_gpu.rs)
+compared 597,800 setup words and 6,202,175 palette indices, including pitch padding,
+against independent native output on Metal. It consumes GPU-produced rows directly
+in a subsequent GPU pass. The production [triangle test](../../tools/frame-replay/tests/draw_triangles_gpu.rs)
+at `17e993a84` separately checks all 1,225 triangles in ordered overlapping batches,
+immutable texture/fade versions and atomic shade/resource/coordinate rejection.
+Independent review fixes at `ab2300ea1` add allocation and pixel-dispatch limits;
+three limited-device Metal cases preserve the target and a usable device. Counter
+hardening at `10eb96a35` counts verified triangles only after a complete exact
+comparison; matching and forced-mismatch/recovery mock cases pass ASan.
+The [native bridge fixture](../../tests/terrain-vertices/bridge_test.cpp) independently
+checks CPU setup bypass, resource mutation, CPU interleaving and original-input
+reconstruction with ASan/Metal. None establishes whole-frame GPU ownership or speedup.
+The 2D [native fixture generator](../../tests/primitives/fixture.c) compares actual
+legacy output for the supported primitives; it does not establish full HUD/text
+coverage.
+
+The sprite slice through `c20303633` has 12,386 exact native-reference Metal cases
+from the [ASan native fixture](../../tests/sprites/fixture.c), including all 588 former
+scaled solid horizontal-flip declines. Ordered GPU run copies preserve the extra
+left pixel, RLE segmentation and overlapping destination writes. Independent review
+added 576 [narrow-pitch cases](../../tests/sprites/copy_fixture.c): actual native
+four-byte copy grouping depends on destination alignment, which the command now
+preserves. All 12,962 cases match exact Metal indices, including 2,029 ordered commands.
+The verification oracle preserves native target alignment in its temporary buffer.
+Separate cursor and shadow adapters now handle their direct native paths.
+Trusted native RLE pointers have no encoded-length contract, and mutable artwork/table
+aliases with the destination explicitly decline. Three native alias regressions verify
+exact fallback for decoded RLE, remap and blend-table overlap; GPU alias support is open.
+The raw slice through `8a38178ef` has 270 exact native-reference Metal cases from
+the [raw fixture](../../tests/raw-images/fixture.c), including tile clipping/phase and
+padded clears. Both suites check isolated recursive oracles and source snapshots.
+These bounded fixtures do not replace combined-head gameplay, complete asset coverage or performance evidence.
+The native build at `8a38178ef` passed with binary SHA-256
+`63a0c73186aae4ef5b53470bdb0e9de7f6cf7e043689b295aae7e0c302e58228`;
+that is compilation/linking evidence only. Sprite/raw commands still use the
+synchronous full-target upload/readback bridge, including clears and backgrounds.
+
+The shadow slice at `3add2d680` uses the [actual native mask and mode10 oracle](../../tests/shadows/fixture.c).
+Its Metal evidence covers 192 complete 65,536-byte masks and 384 native-order triangles,
+all 64 constant shades, four scratch alignments, partial clears, offsets, flip scanline
+crossings and padded cumulative targets. Separate selection checks cover 72 native
+frame/orientation/base/custom choices. The ASan native bridge verifies 192 accepted
+calls and exact fallback after initialization failure or one successful batch.
+Independent review also requires the same complete target/scratch hash from 192
+production calls with verification disabled and zero CPU oracle commands.
+Accepted production calls perform no CPU mask rasterization: the mask snapshot is
+sampled GPU-to-GPU before its mirror readback. The first 64 KiB of scratch is still
+uploaded as prior state and committed after successful destination/oracle checks;
+remaining scratch is untouched. Generic scratch aliases and complete residency remain open.
+
+The cursor slice at `95c4ec603` has [actual native pointer and SDL surface oracles](../../tests/cursor/cursor_test.cpp),
+including 81 backup/draw/restore cycles and 12 scale/hotspot/position/begin-end-swap
+traces. Independent review expands direct cases to all four pointer alignments with
+allocation guards and padded pitch. Enabled traces require zero CPU cursor raster,
+backup or composition calls. Borrowed targets, immutable artwork, resize/absence,
+release order and invalid-target checkpoint recovery are covered. Native wrappers
+still upload/read back the screen and maintain sprite/backup checkpoints; the borrowed
+context must outlive its cursor and does not provide automatic CPU reconstruction.
+Captures retain their position between begin-swap composition and end-swap restoration
+by source inspection, not a new visible gameplay capture. The frame-replay workflow
+builds real SDL3 surface code and the portable drawing C ABI for a required Vulkan
+cursor fixture. Exact-head CI, physical input, visible presentation and device-loss
+reconstruction remain separate validation gates. These offscreen proofs do not establish
+combined-head gameplay, complete GPU frame ownership or a performance improvement.
+
+The built-in lens slice at `7a865cc43`, combined with shared dispatch at `d18840c6b`,
+has 54 [native fixture cases](../../tests/lens/lens_test.cpp) covering padded/different
+pitches, in-place and partial aliases, signed alpha, wrapped mist phases, transparent
+index 255 and signed remaps. Its extracted-loop native oracle is separate from the
+GPU shader; it does not run the full LensManager. Review additionally verifies source
+snapshot lifetime, mixed-lens batch rejection, and limited-device rejection without
+target changes or device loss. Mist animation remains once per Draw by source review;
+palette effects have no pixel loop. Native wrappers still upload the current target
+and source assets, execute GPU pixels, then read back before committing. Dimensions
+above 8192, pitches above 1 MiB, extents above 32 MiB, packed assets above 16 MiB,
+out-of-viewport map entries and asset/destination aliases retain native fallback.
+Mist requires 33 readable fade rows; configured lightness 32–63 remains native,
+including valid narrower-shade cases. No visible presentation, final linked-game
+lifecycle result, resident target ownership or speedup follows from these fixtures.
+
+The original-vertex native smoke used original campaign level 1, a 640×480 indexed
+target, isolated assets/settings/saves, SDL presentation and drawing verification:
+438,568 GPU original triangles in 4,992 exact bridge batches, with zero GPU spans,
+declined/replayed triangles or failures. Native movement, capture and quit succeeded.
+Its binary SHA-256 was
+`b3b08abd28fb25141fcd7211758a70dc401ef4686709fd4239197ee63dbef6ba`;
+it predates final invalid-shade fallback hardening in `17e993a84`. The hardened
+native ASan/Metal fixture passed separately; the final native build hash was
+`15a2930d9acf6bac84d891a62abb9a408fde14c30206f79c1bf058d406025d62`,
+before a warning-text-only edit. The later `ab2300ea1` device-limit fix has focused
+offscreen Metal proof, not another native game run. These sources do not establish
+subsequent sprite/raw-image changes or combined-head gameplay.
+
+Earlier span-only gameplay (`7fde9463f`/`489c2e888`, binary
+`da428a86f6c5aae579b26217f937654d09a2920d602980e0b3151e728fd36a2f`)
+verified 381 batches and 356,372 spans; separate failure injection reconstructed
+110 spans. Its wgpu-presenter attempt acquired/presented zero surface frames while
+the display was locked. Visible output remains unproven for these drawing changes;
+prior PR #9 surface evidence stays separate.
+
+Each fallback or unsupported input remains uncovered GPU work. Zero declined
+gpoly spans measures one sink, not every software writer. Completion requires
+an audit of all targets and aliases, no routine built-in CPU rasterization or
+completed-frame upload in GPU mode, and explicit handling of CPU pixel reads.
+Keep original assets, raw captures and private session descriptors outside the PR;
+publish synthetic fixtures, source identities and portable aggregate evidence.
+
+Keep exact presentation comparisons unchanged. Define each drawing family's visual
 acceptance before implementation and investigate any rasterization differences;
 do not silently accept smoothing, filtering, changed palette behavior or new art.
 SDL remains default until comparable correctness, coverage and performance evidence
@@ -241,10 +468,9 @@ changed subsystem. Keep upstream synchronization separate from a Rust migration
 PR so regressions can be attributed to a bounded change.
 
 Complete the remaining drawing, menu, input, audio and resource orchestration
-before handing application ownership fully to Rust. If GPU world rendering has
-not been selected, port the CPU drawing routines to Rust while retaining their
-pixel rules. SDL, audio codecs and other external libraries can remain behind
-explicit bindings.
+before handing application ownership fully to Rust. Complete the authorized wgpu
+drawing track while retaining its pixel rules and reference fallback. SDL, audio
+codecs and other external libraries can remain behind explicit bindings.
 
 Retire a legacy component only after its callers have migrated and its agreed
 behavioral checks pass. Keep a pinned baseline build for comparison. A full port

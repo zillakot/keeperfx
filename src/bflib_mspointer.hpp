@@ -25,6 +25,7 @@
 #include "bflib_vidsurface.h"
 #include "bflib_video.h"
 #include "mutex.hpp"
+class WgpuCursor;
 
 /******************************************************************************/
 #define CURSOR_SCALING_XSTEPS MAX_SUPPORTED_SCREEN_WIDTH/10
@@ -53,7 +54,7 @@ class LbI_PointerHandler {
     // Properties
     struct SSurface surf1;
     struct SSurface surf2;
-    //unsigned char sprite_data[4096];
+    WgpuCursor* gpu_cursor;
     struct TbPoint *position;
     struct TbPoint *spr_offset;
     struct TbRect rect_1038;

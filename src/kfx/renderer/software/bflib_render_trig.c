@@ -387,6 +387,7 @@ static inline int trig_ll_md01(struct TrigLocalPrep *tlp, struct TrigLocalRend *
             NOLOG("skip due to sum %ld %ld", (long)weighted_x, (long)delta_x);
             return 0;
         }
+        tlr->shade_step = 0;
         if (extent_x != 0) {
             long long delta_shade, weighted_shade;
             delta_shade = opt_a->S - opt_c->S;
@@ -514,6 +515,8 @@ static inline int trig_ll_md02(struct TrigLocalPrep *tlp, struct TrigLocalRend *
             NOLOG("skip due to sum %ld %ld", (long)weighted_x, (long)delta_x);
             return 0;
         }
+        tlr->u_step = 0;
+        tlr->v_step = 0;
         if (extent_x != 0) {
             long long delta_shade, weighted_shade;
             delta_shade = opt_a->U - opt_c->U;
@@ -652,6 +655,9 @@ static inline int trig_ll_md05(struct TrigLocalPrep *tlp, struct TrigLocalRend *
             NOLOG("skip due to sum %ld %ld", (long)weighted_x, (long)delta_x);
             return 0;
         }
+        tlr->u_step = 0;
+        tlr->v_step = 0;
+        tlr->shade_step = 0;
         if (extent_x != 0)
         {
             long long delta_shade, weighted_shade;
@@ -982,6 +988,7 @@ static inline int trig_rl_md01(struct TrigLocalPrep *tlp, struct TrigLocalRend *
             NOLOG("skip due to sum %ld %ld", (long)wXb, (long)dXa);
             return 0;
         }
+        tlr->shade_step = 0;
         if (extent_x != 0) {
             long long delta_shade, weighted_shade;
             delta_shade = opt_b->S - opt_a->S;
@@ -1111,6 +1118,8 @@ static inline int trig_rl_md02(struct TrigLocalPrep *tlp, struct TrigLocalRend *
             NOLOG("skip due to sum %ld %ld", (long)wXb, (long)dXa);
             return 0;
         }
+        tlr->u_step = 0;
+        tlr->v_step = 0;
         if (extent_x != 0) {
             long long delta_shade, weighted_shade;
 
@@ -1252,6 +1261,8 @@ static inline int trig_rl_md05(struct TrigLocalPrep *tlp, struct TrigLocalRend *
             return 0;
         }
         tlr->shade_step = wXb;
+        tlr->u_step = 0;
+        tlr->v_step = 0;
         if (extent_x != 0) {
             long long delta_shade, weighted_shade;
 
@@ -4444,14 +4455,12 @@ void trig_render_md26(struct TrigLocalRend *tlr)
     }
 }
 
-/** Triangle rendering function.
- *
- * @param point_a
- * @param point_b
- * @param point_c
- */
+#include "kfx/renderer/software/WgpuTrig.h"
+
 void trig(struct PolyPoint *point_a, struct PolyPoint *point_b, struct PolyPoint *point_c)
 {
+    if (wgpu_trig(point_a, point_b, point_c)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     struct PolyPoint *opt_a;
     struct PolyPoint *opt_b;
     struct PolyPoint *opt_c;

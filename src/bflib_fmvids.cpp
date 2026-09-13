@@ -2,6 +2,7 @@
 #include "bflib_fmvids.h"
 #include "bflib_video.h"
 #include "kfx/renderer/RendererManager.h"
+#include "kfx/renderer/software/MovieFrame.h"
 #include "bflib_inputctrl.h"
 #include "bflib_keybrd.h"
 #include "bflib_vidsurface.h"
@@ -29,234 +30,6 @@ extern "C" {
 
 namespace {
 
-void copy_to_screen_pxquad(unsigned char *srcbuf, unsigned char *dstbuf, long width, long dst_shift)
-{
-	const auto s = dst_shift >> 2;
-	auto w = ((uint32_t)width) >> 2;
-	auto * src = reinterpret_cast<uint32_t *>(srcbuf);
-	auto * dst = reinterpret_cast<uint32_t *>(dstbuf);
-	do {
-		const auto c = *src++;
-		const auto first_pixel_low_byte = c & 0xFF;
-		const auto first_pixel_high_byte = (c >> 8) & 0xFF;
-		const auto first_doubled_pixel = (first_pixel_high_byte << 24) + (first_pixel_high_byte << 16) + (first_pixel_low_byte << 8) + first_pixel_low_byte;
-		dst[0] = first_doubled_pixel;
-		dst[s] = first_doubled_pixel;
-		const auto second_pixel_low_byte = (c >> 16) & 0xFF;
-		const auto second_pixel_high_byte = (c >> 24) & 0xFF;
-		const auto second_doubled_pixel = (second_pixel_high_byte << 24) + (second_pixel_high_byte << 16) + (second_pixel_low_byte << 8) + second_pixel_low_byte;
-		dst[1] = second_doubled_pixel;
-		dst[s+1] = second_doubled_pixel;
-		dst += 2;
-		w--;
-	}
-	while (w > 0);
-}
-
-void copy_to_screen_pxdblh(unsigned char *srcbuf, unsigned char *dstbuf, long width, long dst_shift)
-{
-	const auto s = dst_shift >> 2;
-	auto w = ((unsigned long)width) >> 2;
-	auto src = (uint32_t *)srcbuf;
-	auto dst = (uint32_t *)dstbuf;
-	do {
-		const auto n = *src++;
-		dst[0] = n;
-		dst[s] = n;
-		dst++;
-		w--;
-	}
-	while (w > 0);
-}
-
-void copy_to_screen_pxdblw(unsigned char *srcbuf, unsigned char *dstbuf, long width)
-{
-	auto w = ((unsigned long)width) >> 2;
-	auto src = (uint32_t *)srcbuf;
-	auto dst = (uint32_t *)dstbuf;
-	do {
-		const auto c = *src++;
-		const auto first_pixel_low_byte = c & 0xFF;
-		const auto first_pixel_high_byte = (c >> 8) & 0xFF;
-		dst[0] = (first_pixel_high_byte << 24) + (first_pixel_high_byte << 16) + (first_pixel_low_byte << 8) + first_pixel_low_byte;
-		const auto second_pixel_low_byte = (c >> 16) & 0xFF;
-		const auto second_pixel_high_byte = (c >> 24) & 0xFF;
-		dst[1] = (second_pixel_high_byte << 24) + (second_pixel_high_byte << 16) + (second_pixel_low_byte << 8) + second_pixel_low_byte;
-		dst += 2;
-		w--;
-	}
-	while (w > 0);
-}
-
-void copy_to_screen(const AVFrame & frame, const int flags)
-{
-	const auto src_pitch = frame.linesize[0];
-	auto srcbuf = frame.data[0];
-	long screen_buffer_center_offset;
-	if (flags & (SMK_PixelDoubleLine | SMK_InterlaceLine)) {
-		screen_buffer_center_offset = lbDisplay.GraphicsScreenWidth * ((LbScreenHeight() - 2 * frame.height) >> 1);
-	} else {
-		screen_buffer_center_offset = lbDisplay.GraphicsScreenWidth * ((LbScreenHeight() - frame.height) >> 1);
-	}
-	auto w = frame.width;
-	if (flags & SMK_PixelDoubleWidth) {
-		w = 2 * frame.width;
-	}
-	auto dstbuf = &lbDisplay.WScreen[screen_buffer_center_offset + ((LbScreenWidth() - w) >> 1)];
-	if (flags & SMK_PixelDoubleLine) {
-		if (flags & SMK_PixelDoubleWidth) {
-			for (int h = frame.height; h > 0; h--) {
-				copy_to_screen_pxquad(srcbuf, dstbuf, frame.width, lbDisplay.GraphicsScreenWidth);
-				dstbuf += 2 * lbDisplay.GraphicsScreenWidth;
-				srcbuf += src_pitch;
-			}
-		} else {
-			for (int h = frame.height; h > 0; h--) {
-				copy_to_screen_pxdblh(srcbuf, dstbuf, frame.width, lbDisplay.GraphicsScreenWidth);
-				dstbuf += 2 * lbDisplay.GraphicsScreenWidth;
-				srcbuf += src_pitch;
-			}
-		}
-	} else {
-		if (flags & SMK_PixelDoubleWidth) {
-				if (flags & SMK_InterlaceLine) {
-					for (int h = frame.height; h > 0; h--) {
-						copy_to_screen_pxdblw(srcbuf, dstbuf, frame.width);
-						dstbuf += 2 * lbDisplay.GraphicsScreenWidth;
-						srcbuf += src_pitch;
-					}
-				} else {
-					for (int h = frame.height; h > 0; h--) {
-						copy_to_screen_pxdblw(srcbuf, dstbuf, frame.width);
-						dstbuf += lbDisplay.GraphicsScreenWidth;
-						srcbuf += src_pitch;
-					}
-				}
-		} else if (flags & SMK_InterlaceLine) {
-			for (int h = frame.height; h > 0; h--) {
-				memcpy(dstbuf, srcbuf, frame.width);
-				dstbuf += 2 * lbDisplay.GraphicsScreenWidth;
-				srcbuf += src_pitch;
-			}
-		} else {
-			for (int h = frame.height; h > 0; h--) {
-				memcpy(dstbuf, srcbuf, frame.width);
-				dstbuf += lbDisplay.GraphicsScreenWidth;
-				srcbuf += src_pitch;
-			}
-		}
-	}
-}
-
-void copy_to_screen_scaled(const AVFrame & frame, const int flags)
-{
-	const auto src_pitch = frame.linesize[0];
-	const auto src_buf = frame.data[0];
-	const auto dst_buf = &lbDisplay.WScreen[0];
-	// Compute scaling ratio -> Output co-ordinates and output size
-	const int scanline = lbDisplay.GraphicsScreenWidth;
-	const int nlines = lbDisplay.GraphicsScreenHeight;
-	int spw = 0;
-	int sph = 0;
-	int dst_width = 0;
-	int dst_height = 0;
-
-	if ((flags & SMK_FullscreenStretch) && !(flags & SMK_FullscreenFit)) {
-		// Use full screen resolution and fill the whole canvas by "stretching"
-		dst_width = scanline;
-		dst_height = nlines;
-	} else {
-		// Calculate the correct output size
-		int in_width = frame.width;
-		int in_height = frame.height;
-		float units_per_px = 0;
-		// relative aspect ratio difference between the source frame and destination frame
-		const float relative_ar_difference = (in_width * 1.0 / in_height * 1.0) / (scanline * 1.0 / nlines * 1.0);
-		// when keeping aspect ratio, instead of stretching, this is inverted depending on if we want to crop or fit
-		float comparison_ratio = 1;
-		if ((flags & SMK_FullscreenStretch) && (flags & SMK_FullscreenFit)) {
-			// stretch source from 320x200(16:10) to 320x240 (4:3) (i.e. vertical x 1.2) - "preserve *original* aspect ratio mode"
-			if (frame.width == 320 && frame.height == 200) {
-				in_height = (int)(in_height * 1.2);
-			}
-		}
-		if ((flags & SMK_FullscreenCrop) && !(flags & SMK_FullscreenFit)) {
-			// fill screen (will crop)
-			comparison_ratio = relative_ar_difference;
-		} else {
-			// fit to full screen, preserve aspect ratio (pillar/letter boxed)
-			comparison_ratio = 1.0 / relative_ar_difference;
-		}
-		// take either the destination width or height, depending on whether
-		// the destination is wider or narrower than the source
-		// (same aspect ratio is treated the same as wider),
-		// and also if we want to crop or fit
-		if (comparison_ratio <= 1.0) {
-			units_per_px = (scanline>nlines?scanline:nlines)/((in_width>in_height?in_width:in_height)/16.0);
-		} else {
-			units_per_px = (scanline>nlines?nlines:scanline)/((in_width>in_height?in_height:in_width)/16.0);
-		}
-		if ((flags & SMK_FullscreenCrop) && (flags & SMK_FullscreenFit)) {
-			// Find the highest integer scale possible
-			if (flags & SMK_FullscreenStretch) {
-				//4:3 stretch mode (crop off to the nearest 5x/6x scale
-				if (frame.width == 320 && frame.height == 200) {
-					// make sure the multiple is integer divisible by 5. Use 5x as a minimum,
-					// otherwise there will be no video (resolutions smaller than 1600x1200
-					// will have a cropped image from a buffer of that size).
-					units_per_px = (max(5, (int)(units_per_px / 16.0 / 5.0) * 5) * 16);
-				}
-			}
-			// scale to the nearest integer multiple of the source resolution.
-			units_per_px = ((int)(units_per_px / 16.0) * 16);
-		}
-		// Starting point coords and width for the destination buffer (based on desired aspect ratio)
-		spw = (int)((scanline - in_width * units_per_px / 16.0) / 2.0);
-		sph = (int)((nlines - in_height * units_per_px / 16.0) / 2.0);
-		dst_width = (int)(in_width * units_per_px / 16.0);
-		dst_height = (int)(in_height * units_per_px / 16.0);
-	}
-
-	// Clearing top of the canvas
-	for (int sh = 0; sh < sph; sh++) {
-		memset(&dst_buf[sh * scanline], 0, scanline);
-	}
-	// Clearing bottom of the canvas
-	// (Note: it must be done before drawing, to make sure we won't overwrite last line)
-	for (int sh = sph + dst_height; sh < nlines; sh++) {
-		memset(&dst_buf[sh * scanline], 0, scanline);
-	}
-	// Now drawing
-	auto dhstart = sph;
-	for (int sh = 0; sh < frame.height; sh++) {
-		const auto dhend = sph + (dst_height * (sh + 1) / frame.height);
-		const auto src = &src_buf[sh * src_pitch];
-		// make for(k=0;k<dhend-dhstart;k++) but restrict k to draw area
-		const auto mhmin = max(0, -dhstart);
-		const auto mhmax = min(dhend - dhstart, nlines - dhstart);
-		for (int k = mhmin; k < mhmax; k++) {
-			const auto dst = &dst_buf[(dhstart + k) * scanline];
-			int dwstart = spw;
-			if (dwstart > 0) {
-				memset(dst, 0, dwstart);
-			}
-			for (int sw = 0; sw < frame.width; sw++) {
-				const auto dwend = spw + (dst_width * (sw + 1) / frame.width);
-				// make for(i=0;i<dwend-dwstart;i++) but restrict i to draw area
-				const auto mwmin = max(0, -dwstart);
-				const auto mwmax = min(dwend - dwstart, scanline - dwstart);
-				for (int i = mwmin; i < mwmax; i++) {
-					dst[dwstart+i] = src[sw];
-				}
-				dwstart = dwend;
-			}
-			if (dwstart < scanline) {
-				memset(dst+dwstart, 0, scanline-dwstart);
-			}
-		}
-		dhstart = dhend;
-	}
-}
 
 struct movie_t {
 
@@ -532,9 +305,11 @@ struct movie_t {
 		if (RendererLockFramebuffer() != Lb_SUCCESS) {
 			return;
 		} else if (m_flags & (SMK_FullscreenFit | SMK_FullscreenStretch | SMK_FullscreenCrop)) { // new scaling mode
-			copy_to_screen_scaled(*m_frame, m_flags);
+			kfx_movie_copy_scaled({m_frame->data[0], m_frame->width, m_frame->height, m_frame->linesize[0]},
+                {lbDisplay.WScreen, (int)lbDisplay.GraphicsScreenWidth, (int)lbDisplay.GraphicsScreenHeight, (int)LbScreenWidth(), (int)LbScreenHeight()}, m_flags);
 		} else {
-			copy_to_screen(*m_frame, m_flags);
+			kfx_movie_copy({m_frame->data[0], m_frame->width, m_frame->height, m_frame->linesize[0]},
+                {lbDisplay.WScreen, (int)lbDisplay.GraphicsScreenWidth, (int)lbDisplay.GraphicsScreenHeight, (int)LbScreenWidth(), (int)LbScreenHeight()}, m_flags);
 		}
 		RendererUnlockFramebuffer();
 		RendererPresentFrame();

@@ -18,6 +18,7 @@
 /******************************************************************************/
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
+#include "kfx/renderer/WgpuMinimap.h"
 #include "frontmenu_ingame_map.h"
 
 #include "globals.h"
@@ -126,6 +127,147 @@ void panel_map_draw_pixel(RealScreenCoord x, RealScreenCoord y, TbPixel col)
     }
 }
 
+static void map_pattern_native(long x, long y, int count, int spread, TbPixel colour)
+{
+    for (int p = 0; p < count; p++)
+    {
+        panel_map_draw_pixel(x + draw_square[p].delta_x, y + draw_square[p].delta_y, colour);
+        if (spread != 0)
+        {
+            panel_map_draw_pixel(x + draw_square[p].delta_x + spread, y + draw_square[p].delta_y, colour);
+            panel_map_draw_pixel(x + draw_square[p].delta_x - spread, y + draw_square[p].delta_y, colour);
+            panel_map_draw_pixel(x + draw_square[p].delta_x, y + draw_square[p].delta_y + spread, colour);
+            panel_map_draw_pixel(x + draw_square[p].delta_x, y + draw_square[p].delta_y - spread, colour);
+        }
+    }
+}
+
+static void map_circle_native(long x, long y, int radius, int increment, TbPixel colour)
+{
+    int sy = radius;
+    int decision = 3 - 2 * radius;
+    int sx = 0;
+    if (radius <= 1) return;
+    for (; sx < sy; sx++)
+    {
+        panel_map_draw_pixel(x-sx, y-sy, colour);
+        panel_map_draw_pixel(x+sx, y-sy, colour);
+        panel_map_draw_pixel(x-sx, y+sy, colour);
+        panel_map_draw_pixel(x+sx, y+sy, colour);
+        panel_map_draw_pixel(x-sy, y-sx, colour);
+        panel_map_draw_pixel(x+sy, y-sx, colour);
+        panel_map_draw_pixel(x-sy, y+sx, colour);
+        panel_map_draw_pixel(x+sy, y+sx, colour);
+        if (decision >= 0) { decision += 4*(sx-sy)+increment; sy--; }
+        else { decision += 4*(sx-1)+increment; }
+    }
+    if (sy == sx)
+    {
+        panel_map_draw_pixel(x-sx, y-sy, colour);
+        panel_map_draw_pixel(x+sx, y-sy, colour);
+        panel_map_draw_pixel(x-sx, y+sy, colour);
+        panel_map_draw_pixel(x+sx, y+sy, colour);
+        panel_map_draw_pixel(x-sy, y-sx, colour);
+        panel_map_draw_pixel(x+sy, y-sx, colour);
+        panel_map_draw_pixel(x-sy, y+sx, colour);
+        panel_map_draw_pixel(x+sy, y+sx, colour);
+    }
+}
+
+static void map_slabs_native(int32_t shift_x, int32_t shift_y, int32_t shift_stl_x, int32_t shift_stl_y);
+
+static void map_command_native(const uint32_t *h)
+{
+    if (h[0] == 0) { map_slabs_native(h[6], h[7], h[8], h[9]); return; }
+    if (h[0] == 1) { map_pattern_native((int32_t)h[16], (int32_t)h[17], h[18], h[19], h[20]); return; }
+    if (h[0] == 2) { map_circle_native((int32_t)h[16], (int32_t)h[17], h[18], h[21], h[20]); return; }
+    if (h[0] == 3)
+    {
+        int32_t x = h[16], y = h[17];
+        for (int i = (int)h[21]-4; i > 0; i -= 4)
+        {
+            if (x < 0 || y < 0 || x >> 8 >= MapDiagonalLength || y >> 8 >= MapDiagonalLength) break;
+            x += (int32_t)h[6]; y += (int32_t)h[7];
+            map_pattern_native(x >> 8, y >> 8, h[18], 0, h[20]);
+        }
+        return;
+    }
+    for (int y = 0; y < MapDiagonalLength; y++)
+        for (int x = MapShapeStart[y]; x < MapShapeEnd[y]; x++)
+            panel_map_draw_pixel(x, y, 255);
+}
+
+static void map_command_oracle(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    TbPixel *saved = lbDisplay.WScreen;
+    long saved_pitch = lbDisplay.GraphicsScreenWidth;
+    lbDisplay.WScreen = pixels;
+    lbDisplay.GraphicsScreenWidth = pitch;
+    map_command_native(context);
+    lbDisplay.WScreen = saved;
+    lbDisplay.GraphicsScreenWidth = saved_pitch;
+}
+
+static void map_command(uint32_t *h)
+{
+    h[1] = lbDisplay.GraphicsScreenWidth;
+    h[2] = lbDisplay.GraphicsScreenHeight;
+    h[3] = PanelMapX; h[4] = PanelMapY; h[5] = MapDiagonalLength;
+    h[22] = 96; h[23] = 36;
+    if (kfx_wgpu_native_enabled() && MapDiagonalLength > 0 && NumBackColours <= 16)
+    {
+        size_t length = 96 + 36*8;
+        if (h[0] == 0)
+        {
+            h[10] = game.map_subtiles_x; h[11] = game.map_subtiles_y;
+            h[12] = length; h[13] = length+256;
+            h[14] = h[13]+(h[10]+1)*(h[11]+1)*2;
+            h[15] = NumBackColours*PnC_End;
+            length = h[14]+h[15];
+        }
+        if (!kfx_wgpu_native_read_barrier(draw_square, 36 * sizeof(*draw_square)) ||
+            (h[0] == 0 && (!kfx_wgpu_native_read_barrier(MapBackColours, 256) ||
+            !kfx_wgpu_native_read_barrier(PanelMap, h[14] - h[13]) ||
+            !kfx_wgpu_native_read_barrier(PanelColours, h[15])))) return;
+        uint8_t *bytes = malloc(length);
+        if (bytes != NULL)
+        {
+            for (int i = 0; i < 24; i++)
+                for (int b = 0; b < 4; b++) bytes[i*4+b] = h[i] >> (8*b);
+            for (int i = 0; i < 36; i++)
+            {
+                uint32_t dx = draw_square[i].delta_x, dy = draw_square[i].delta_y;
+                for (int b = 0; b < 4; b++) { bytes[96+i*8+b] = dx >> (8*b); bytes[100+i*8+b] = dy >> (8*b); }
+            }
+            if (h[0] == 0)
+            {
+                memcpy(bytes+h[12], MapBackColours, 256);
+                for (size_t i = 0; i < (h[14]-h[13])/2; i++)
+                { bytes[h[13]+i*2] = PanelMap[i]; bytes[h[13]+i*2+1] = PanelMap[i] >> 8; }
+                memcpy(bytes+h[14], PanelColours, h[15]);
+            }
+            struct KfxGpolyTarget target = {lbDisplay.WScreen, h[1], h[2], h[1]};
+            struct KfxWgpuNativeResource source = {bytes, length, 1, 1, 1};
+            struct KfxWgpuDrawCommand command = {0};
+            command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+            command.kind = KFX_WGPU_DRAW_MINIMAP;
+            command.width = h[1]; command.height = h[2];
+            command.clip_width = h[1]; command.clip_height = h[2];
+            int accepted = kfx_wgpu_native_draw(&target, &command, &source, NULL, map_command_oracle, h);
+            free(bytes);
+            if (accepted) return;
+        }
+    }
+    if (kfx_wgpu_native_cpu_barrier()) map_command_native(h);
+}
+
+static void map_pattern(long x, long y, int count, int spread, TbPixel colour)
+{
+    uint32_t h[24] = {0};
+    h[0] = 1; h[16] = x; h[17] = y; h[18] = count; h[19] = spread; h[20] = colour;
+    map_command(h);
+}
+
 /**
  * Draws single call to arms overlay on minimap.
  * @param owner
@@ -159,71 +301,11 @@ void draw_call_to_arms_circle(unsigned char owner, long x1, long y1, long x2, lo
         circle_time = ((get_gameturn() + owner) & 7);
     }
     cscale = circle_time * powerst->strength[dungeon->cta_power_level];
-    int dxq1;
-    int dyq1;
-    int dxq2;
-    int dyq2;
-    int dxq3;
-    int dyq3;
-    int dxq4;
-    int dyq4;
-
-    int sx;
-    int sy;
-    long base_y;
-    base_y = ((cscale >> 3) << 8) / zoom;
-    if ( base_y > 1 )
-    {
-      sy = base_y;
-      i = 3 - 2 * base_y;
-      for (sx=0; sx < sy; sx++)
-      {
-          dxq1 = center_x - sx;
-          dyq1 = center_y - sy;
-          panel_map_draw_pixel(x1 + dxq1, y1 + dyq1, col);
-          dxq2 = center_x + sx;
-          panel_map_draw_pixel(x1 + dxq2, y1 + dyq1, col);
-          dyq2 = sy + center_y;
-          panel_map_draw_pixel(x1 + dxq1, y1 + dyq2, col);
-          panel_map_draw_pixel(x1 + dxq2, y1 + dyq2, col);
-          dxq3 = center_x - sy;
-          dyq3 = center_y - sx;
-          panel_map_draw_pixel(x1 + dxq3, y1 + dyq3, col);
-          dxq4 = center_x + sy;
-          panel_map_draw_pixel(x1 + dxq4, y1 + dyq3, col);
-          dyq4 = sx + center_y;
-          panel_map_draw_pixel(x1 + dxq3, y1 + dyq4, col);
-          panel_map_draw_pixel(x1 + dxq4, y1 + dyq4, col);
-          if (i >= 0)
-          {
-              i += 4 * (sx - sy) + 10*units_per_px/16;
-              sy--;
-          } else
-          {
-              i += 4 * (sx - 1) + 10*units_per_px/16;
-          }
-      }
-
-      if (sy == sx)
-      {
-        dxq1 = center_x - sx;
-        dyq1 = center_y - sy;
-        panel_map_draw_pixel(x1 + dxq1, y1 + dyq1, col);
-        dxq2 = center_x + sx;
-        panel_map_draw_pixel(x1 + dxq2, y1 + dyq1, col);
-        dyq2 = sy + center_y;
-        panel_map_draw_pixel(x1 + dxq1, y1 + dyq2, col);
-        panel_map_draw_pixel(x1 + dxq2, y1 + dyq2, col);
-        dxq3 = center_x - sy;
-        dyq3 = center_y - sx;
-        panel_map_draw_pixel(x1 + dxq3, y1 + dyq3, col);
-        dxq4 = center_x + sy;
-        panel_map_draw_pixel(x1 + dxq4, y1 + dyq3, col);
-        dyq4 = sx + center_y;
-        panel_map_draw_pixel(x1 + dxq3, y1 + dyq4, col);
-        panel_map_draw_pixel(dxq4 + x1, dyq4 + y1, col);
-      }
-    }
+    uint32_t h[24] = {0};
+    h[0] = 2; h[16] = x1+center_x; h[17] = y1+center_y;
+    h[18] = ((cscale >> 3) << 8) / zoom;
+    h[20] = col; h[21] = 10*units_per_px/16;
+    map_command(h);
 }
 
 static void map_to_minimap(MapCoord* x, MapCoord* y, const struct Camera *cam, int32_t zoom)
@@ -342,25 +424,7 @@ int draw_overlay_traps(struct PlayerInfo *player, long units_per_px, long scaled
                 }
                 short pixels_amount = scale_pixel(basic_zoom*2);
                 short pixel_end = get_pixels_scaled_and_zoomed(basic_zoom*2);
-                for (int p = 0; p < pixel_end; p++)
-                {
-                    // Draw a cross
-                    panel_map_draw_pixel(pos.x.val + basepos + draw_square[p].delta_x,
-                                         pos.y.val + basepos + draw_square[p].delta_y,
-                                         col);
-                    panel_map_draw_pixel(pos.x.val + basepos + draw_square[p].delta_x + pixels_amount,
-                                         pos.y.val + basepos + draw_square[p].delta_y,
-                                         col);
-                    panel_map_draw_pixel(pos.x.val + basepos + draw_square[p].delta_x - pixels_amount,
-                                         pos.y.val + basepos + draw_square[p].delta_y,
-                                         col);
-                    panel_map_draw_pixel(pos.x.val + basepos + draw_square[p].delta_x,
-                                         pos.y.val + basepos + draw_square[p].delta_y + pixels_amount,
-                                         col);
-                    panel_map_draw_pixel(pos.x.val + basepos + draw_square[p].delta_x,
-                                         pos.y.val + basepos + draw_square[p].delta_y - pixels_amount,
-                                         col);
-                }
+                map_pattern(pos.x.val + basepos, pos.y.val + basepos, pixel_end, pixels_amount, col);
                 n++;
             }
         }
@@ -417,25 +481,13 @@ int draw_overlay_spells_and_boxes(struct PlayerInfo *player, long units_per_px, 
                     if (thing_is_special_box(thing) || thing_is_spellbook(thing))
                     {
                         short pixel_end = get_pixels_scaled_and_zoomed(basic_zoom);
-                        int p;
-                        for (p = 0; p < pixel_end; p++)
-                        {
-                            panel_map_draw_pixel(pos.x.val + basepos + draw_square[p].delta_x,
-                                                 pos.y.val + basepos + draw_square[p].delta_y,
-                                                 colours[15][0][15]);
-                        }
+                        map_pattern(pos.x.val + basepos, pos.y.val + basepos, pixel_end, 0, colours[15][0][15]);
                         n++;
                     }
                     else if (thing_is_workshop_crate(thing))
                     {
                         short pixel_end = get_pixels_scaled_and_zoomed(basic_zoom);
-                        int p;
-                        for (p = 0; p < pixel_end; p++)
-                        {
-                            panel_map_draw_pixel(pos.x.val + basepos + draw_square[p].delta_x,
-                                                 pos.y.val + basepos + draw_square[p].delta_y,
-                                                 colours[7][6][7]);
-                        }
+                        map_pattern(pos.x.val + basepos, pos.y.val + basepos, pixel_end, 0, colours[7][6][7]);
                         n++;
                     }
                 }
@@ -454,17 +506,8 @@ int draw_overlay_spells_and_boxes(struct PlayerInfo *player, long units_per_px, 
 
 void panel_map_draw_creature_dot(long mapos_x, long mapos_y, RealScreenCoord basepos, TbPixel col, long basic_zoom, TbBool isLowRes)
 {
-    if (isLowRes)
-    {
-        // At low resolutions, we only need the single pixel
-        panel_map_draw_pixel(mapos_x + basepos, mapos_y + basepos, col);
-        return;
-    }
-    short pixel_end = get_pixels_scaled_and_zoomed(basic_zoom);
-    for (int i = 0; i < pixel_end; i++)
-    {
-        panel_map_draw_pixel(mapos_x + basepos + draw_square[i].delta_x, mapos_y + basepos + draw_square[i].delta_y, col);
-    }
+    map_pattern(mapos_x + basepos, mapos_y + basepos,
+        isLowRes ? 1 : get_pixels_scaled_and_zoomed(basic_zoom), 0, col);
 }
 
 int draw_overlay_possessed_thing(struct PlayerInfo* player, long mapos_x, long mapos_y, RealScreenCoord basepos, TbPixel col, long basic_zoom, TbBool isLowRes)
@@ -479,22 +522,9 @@ int draw_overlay_possessed_thing(struct PlayerInfo* player, long mapos_x, long m
     {
         col = colours[15][15][15];
     }
-    if (isLowRes)
-    {
-        // At low resolutions, we only need the single pixel
-        panel_map_draw_pixel(mapos_x + basepos, mapos_y + basepos, col);
-        return 1;
-    }
-    short pixel_end = get_pixels_scaled_and_zoomed(basic_zoom * 2);
-    short pixels_amount = scale_pixel(basic_zoom * 2);
-    for (int i = 0; i < pixel_end; i++)
-    {
-        panel_map_draw_pixel(mapos_x + basepos + draw_square[i].delta_x, mapos_y + basepos + draw_square[i].delta_y, col);
-        panel_map_draw_pixel(mapos_x + basepos + pixels_amount + draw_square[i].delta_x, mapos_y + basepos + draw_square[i].delta_y, col);
-        panel_map_draw_pixel(mapos_x + basepos - pixels_amount + draw_square[i].delta_x, mapos_y + basepos + draw_square[i].delta_y, col);
-        panel_map_draw_pixel(mapos_x + basepos + draw_square[i].delta_x, mapos_y + basepos + pixels_amount + draw_square[i].delta_y, col);
-        panel_map_draw_pixel(mapos_x + basepos + draw_square[i].delta_x, mapos_y + basepos - pixels_amount + draw_square[i].delta_y, col);
-    }
+    map_pattern(mapos_x + basepos, mapos_y + basepos,
+        isLowRes ? 1 : get_pixels_scaled_and_zoomed(basic_zoom * 2),
+        isLowRes ? 0 : scale_pixel(basic_zoom * 2), col);
     return 1;
 }
 
@@ -656,22 +686,11 @@ int draw_line_to_heart(struct PlayerInfo *player, long units_per_px, long zoom)
     int draw_y;
     draw_x = -delta_x / 2 + (frame * delta_x) / 4 + (basepos << 8);
     draw_y = -delta_y / 2 + (frame * delta_y) / 4 + (basepos << 8);
-    int i;
-    for (i = dist - 4; i > 0; i -= 4)
-    {
-        if ((draw_x < 0) || (draw_x >> 8 >= MapDiagonalLength))
-            break;
-        if ((draw_y < 0) || (draw_y >> 8 >= MapDiagonalLength))
-            break;
-        draw_x += delta_x;
-        draw_y += delta_y;
-        short pixel_end = get_pixels_scaled_and_zoomed(zoom * 2);
-        TbPixel col = 15;
-        for (int p = 0; p < pixel_end; p++)
-        {
-            panel_map_draw_pixel((draw_x >> 8) + draw_square[p].delta_x, (draw_y >> 8) + draw_square[p].delta_y, col);
-        }
-    }
+    uint32_t h[24] = {0};
+    h[0] = 3; h[6] = delta_x; h[7] = delta_y;
+    h[16] = draw_x; h[17] = draw_y; h[18] = get_pixels_scaled_and_zoomed(zoom * 2);
+    h[20] = 15; h[21] = dist;
+    map_command(h);
     RendererClearDrawFlags(Lb_SPRITE_TRANSPAR4);
     return 1;
 }
@@ -931,6 +950,12 @@ short do_right_map_click(long start_x, long start_y, long curr_mx, long curr_my,
 
 void setup_background(long units_per_px)
 {
+    if (!kfx_wgpu_native_read_barrier(lbDisplay.WScreen,
+        (size_t)lbDisplay.GraphicsScreenWidth * lbDisplay.GraphicsScreenHeight))
+    {
+        MapDiagonalLength = 0;
+        return;
+    }
     if (MapDiagonalLength != 2*(PANEL_MAP_RADIUS*units_per_px/16))
     {
         MapDiagonalLength = 2*(PANEL_MAP_RADIUS*units_per_px/16);
@@ -976,7 +1001,6 @@ void setup_background(long units_per_px)
 
             TbPixel orig;
             orig = out[w];
-            out[w] = 255;
             int colour;
             for (colour=0; colour < num_colours; colour++)
             {
@@ -995,6 +1019,8 @@ void setup_background(long units_per_px)
         out += out_scanline;
     }
     NumBackColours = num_colours;
+    uint32_t hclear[24] = {4};
+    map_command(hclear);
 }
 
 void setup_panel_colors(void)
@@ -1257,6 +1283,13 @@ void panel_map_draw_slabs(long x, long y, long units_per_px, long zoom)
     int32_t shift_stl_x = (cam->mappos.x.val << 8) - MapDiagonalLength * shift_x / 2 - MapDiagonalLength * shift_y / 2;
     int32_t shift_stl_y = (cam->mappos.y.val << 8) - MapDiagonalLength * shift_y / 2 + MapDiagonalLength * shift_x / 2;
 
+    uint32_t h[24] = {0};
+    h[6] = shift_x; h[7] = shift_y; h[8] = shift_stl_x; h[9] = shift_stl_y;
+    map_command(h);
+}
+
+static void map_slabs_native(int32_t shift_x, int32_t shift_y, int32_t shift_stl_x, int32_t shift_stl_y)
+{
     TbPixel *bkgnd_line;
     bkgnd_line = MapBackground;
     TbPixel *out_line;

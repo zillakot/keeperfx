@@ -1,3 +1,4 @@
+#include "kfx/renderer/WgpuTerrainBridge.h"
 /******************************************************************************/
 // Free implementation of Bullfrog's Dungeon Keeper strategy game.
 /******************************************************************************/
@@ -212,7 +213,7 @@ TbBool LuaLensEffect::Draw(LensRenderContext* ctx)
     
     SYNCDBG(7, "Invoking LUA lens effect '%s'", m_lens_name.c_str());
     
-    // Invoke LUA callback
+    if (!kfx_wgpu_native_cpu_barrier()) return false;
     return InvokeLuaCallback(ctx);
 }
 

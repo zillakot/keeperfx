@@ -207,7 +207,7 @@ They require a GPU adapter; the regular unit tests remain GPU-independent.
 [PR #9](https://github.com/zillakot/keeperfx/pull/9) extends the shared palette
 pipeline to optional live Metal presentation. Its surface comparisons and matched
 performance results are separate from offline replay. The
-[next graphics task](product/rust-port-plan.md#next-session-measure-cpu-drawing-and-define-one-extraction-boundary)
+[active graphics migration](product/rust-port-plan.md#active-delivery-full-wgpu-drawing)
 needs commands before rasterization; `KFXFRM01` contains finished pixels and cannot
 serve as a world-rendering command stream.
 

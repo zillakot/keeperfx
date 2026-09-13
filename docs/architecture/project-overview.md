@@ -32,10 +32,12 @@ sprites and textures as the reference appearance.
 | Repeatable game checks | [Native game control](../native-game-control.md) drives normal in-process input handlers and real SDL window operations in isolated sessions; it does not prove physical OS input delivery. |
 
 The [Rust port plan](../product/rust-port-plan.md) proposes the migration sequence
-and validation criteria. A GPU world renderer or broader Rust migration would be
-additional work. The [next graphics investigation](../product/rust-port-plan.md#next-session-measure-cpu-drawing-and-define-one-extraction-boundary)
-will break down CPU drawing and evaluate a bounded source of commands before
-rasterization. AI, pathfinding and gameplay simulation remain separate CPU work.
+and validation criteria. Full wgpu drawing is authorized; an opt-in partial
+foundation is delivered, and the remaining coverage and performance work ships as
+small PRs against `master`.
+The [active graphics migration](../product/rust-port-plan.md#active-delivery-full-wgpu-drawing)
+starts with CPU drawing measurement and command extraction before rasterization,
+then covers GPU implementation, all drawing paths and native validation. AI, pathfinding and gameplay simulation remain separate CPU work.
 Measure simulation, drawing and presentation separately. Reproducing the current
 pixels is a correctness milestone, not an FPS benchmark.
 

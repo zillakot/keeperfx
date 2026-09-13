@@ -19,6 +19,7 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
 #include "gui_draw.h"
+#include "kfx/renderer/software/WgpuRawImage.h"
 
 #include "globals.h"
 #include "bflib_basics.h"
@@ -115,6 +116,19 @@ void draw_slab64k_background(long pos_x, long pos_y, long width, long height)
     RendererDrawSlabBackground(pos_x, pos_y, width, height);
 }
 
+struct SlabOracle { long x, y, width, height; };
+static void slab_oracle(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    struct SlabOracle *o = context;
+    unsigned char *screen = lbDisplay.WScreen;
+    long old_pitch = lbDisplay.GraphicsScreenWidth;
+    lbDisplay.WScreen = pixels;
+    lbDisplay.GraphicsScreenWidth = pitch;
+    draw_slab64k_background_immediate(o->x, o->y, o->width, o->height);
+    lbDisplay.WScreen = screen;
+    lbDisplay.GraphicsScreenWidth = old_pitch;
+}
+
 void draw_slab64k_background_immediate(long pos_x, long pos_y, long width, long height)
 {
     long i;
@@ -140,6 +154,12 @@ void draw_slab64k_background_immediate(long pos_x, long pos_y, long width, long 
     i = MyScreenHeight;
     if (scr_y + scr_h > i)
         scr_h = i - scr_y;
+    struct SlabOracle oracle = {pos_x, pos_y, width, height};
+    if (scr_x >= 0 && scr_y >= 0 && scr_w > 0 && scr_h > 0 &&
+        scr_x <= 8192 && scr_y <= 8192 && scr_w <= 8192 && scr_h <= 8192 &&
+        kfx_wgpu_raw_tile(lbDisplay.WScreen, lbDisplay.GraphicsScreenWidth, MyScreenHeight,
+            scr_x, scr_y, scr_w, scr_h, gui_slab, GUI_SLAB_DIMENSION, slab_oracle, &oracle)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     TbPixel* out = &lbDisplay.WScreen[scr_x + lbDisplay.GraphicsScreenWidth * scr_y];
     for (i=0; scr_h > i; i++)
     {

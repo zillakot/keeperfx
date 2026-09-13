@@ -9,6 +9,10 @@ enum PerformanceScope {
     PerfDraw,
     PerfPresentation,
     PerfPresentWait,
+    PerfDrawScene,
+    PerfDrawRaster,
+    PerfDrawFrontRaster,
+    PerfDrawOverlays,
     PerfScopeCount,
 };
 

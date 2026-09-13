@@ -1,14 +1,15 @@
 ---
 type: guide
-description: Build, select and validate optional live Rust/wgpu presentation on Apple Silicon while preserving SDL input and CPU gameplay drawing.
+description: Build, select and validate optional Rust/wgpu presentation and partial GPU drawing on Apple Silicon, including ownership, synchronization and fallback.
 ---
 
 # Live Rust presentation
 
 The optional presenter runs the existing indexed-frame palette shader directly
-on a Metal window surface. Terrain, creatures, effects, menus, HUD and the software
-cursor are still drawn by the existing C/C++ CPU renderer. SDL owns the window,
-events, mouse and keyboard. The default presenter remains SDL.
+on a Metal window surface. Drawing defaults to the C/C++ CPU renderer; the
+separate opt-in [partial GPU drawing path](#partial-gpu-drawing) replaces selected
+terrain and 2D pixel loops. SDL owns the window, events, mouse and keyboard.
+The default presenter remains SDL.
 
 ## Build and select
 
@@ -76,10 +77,11 @@ sampling, matching the existing SDL full-window presentation. Integer scales
 replicate pixels exactly; arbitrary window sizes necessarily produce uneven pixel
 widths. Monitor color management remains outside byte comparison.
 
-Indices/palette are uploaded and one pass renders directly into the acquired
+For framebuffer presentation, indices/palette are uploaded and one pass renders directly into the acquired
 surface. Indexed texture and binding change only when input dimensions change;
 there is no retained offscreen output texture in the live path. There is no routine
-readback or GPU completion wait. wgpu/driver submission and staging allocations
+readback or GPU completion wait in this presenter path. The partial drawing bridge
+below does require synchronous readback. wgpu/driver submission and staging allocations
 still occur; retained resources do not imply allocation-free presentation.
 
 `presentation` covers cursor composition, acquisition, polling/reconfiguration,
@@ -115,3 +117,147 @@ The profile runner removes inherited verification/fault flags and rejects a Rust
 run that actually presents through SDL. Keep lifecycle and interactive gameplay
 findings alongside paired measurements in the delivery PR; unit tests cannot
 establish successful input, audio, save/reload or window behavior.
+
+## Partial GPU drawing
+
+Build with `KFX_RUST_PRESENTER=ON` as above. Set `KFX_DRAW_BACKEND=wgpu` to
+route the implemented terrain and 2D families through compute drawing;
+`KFX_DRAW_BACKEND=software` or leaving it unset keeps CPU drawing. This selector
+is independent of `KFX_PRESENT_BACKEND=sdl|wgpu`: GPU drawing can feed either
+presenter through the synchronized native image. Unsupported platforms retain
+software drawing. The [canonical coverage ledger](product/rust-port-plan.md#execution-and-coverage-ledger)
+records exactly which paths are implemented and validated. Full GPU drawing and
+a speedup are not established.
+
+This path merges to `master` as an opt-in partial foundation; software drawing
+and SDL presentation stay default. At 1920×1080 it currently costs about 68–70 ms
+per drawn frame against 3.3–3.5 ms software, dominated by waiting rather than
+computation. The [status section](product/rust-port-plan.md#status-2026-09-14)
+records the measurement, the diagnosis and the single-stream restructure that
+follows.
+
+The [indexed backend](../tools/frame-replay/src/draw.rs) stores one `u32` palette
+index per pixel. CPU binning preserves command order within 16×16 tiles; each GPU
+invocation owns one destination pixel and evaluates its ordered commands. Exact
+integer operations preserve texture/shade lookup and destination-index palette
+composition. The [drawing C ABI](../src/kfx/renderer/WgpuDraw.h) owns copied,
+immutable resource versions and validates complete batches before submission.
+Its direct GPU-target palette presentation API is tested offscreen, but the game
+still presents the synchronized native framebuffer.
+
+[WgpuTerrainBridge](../src/kfx/renderer/WgpuTerrainBridge.cpp) batches selected
+terrain between audited world-dispatch boundaries. Accepted textured gpoly calls
+copy original unsorted vertices and return before CPU sorting, setup, clipping or
+scan conversion. [GPU preparation](../tools/frame-replay/src/gpoly.rs) supplies its
+row buffer directly to the [ordered pixel pass](../tools/frame-replay/src/draw_triangles.rs);
+no prepared rows are read back to construct draw commands. Each destination pixel
+consumes the bounded triangle batch in submission order. A four-byte GPU shade
+validation flag is read back before target writes. Other bucket entries flush
+terrain first; switching between original triangles and the retained span path
+also flushes pending work. Pixel, box, HV-line and circle hooks in
+[bflib_vidraw.c](../src/kfx/renderer/software/bflib_vidraw.c) use the same bridge.
+Circles execute their integer coverage recurrence on GPU. The
+[sprite adapter](../src/kfx/renderer/software/WgpuSprite.c) decodes RLE into immutable
+index/coverage assets and copies native scale ranges and tables; GPU source selection
+performs supported scaling, flips, remap and blending. Scaled solid horizontal flips
+with duplicated rows use ordered GPU run copies, preserving native extra-left pixels,
+four-byte copy grouping and target alignment. The [cursor adapter](../src/kfx/renderer/WgpuCursor.cpp)
+uses GPU sprite scaling and immutable GPU snapshots for backup, keyed composition
+and opaque restoration. The [shadow adapter](../src/kfx/renderer/software/WgpuShadow.h)
+sends original RLE artwork and vertices; the GPU generates the silhouette and samples
+its snapshot in both mode10 triangles. Mutable sprite artwork/remap/blend tables that
+overlap the target decline before submission. Ordinary sprite glyphs reach these
+wrappers; direct DBC glyph writes remain CPU. The [raw adapter](../src/kfx/renderer/software/WgpuRawImage.c)
+submits source images for exact native scaling/letterbox and clipped slab tiling.
+Full SDL clip clears run on GPU and preserve row padding; nonfull clips remain native.
+The [lens adapter](../src/kfx/lense/WgpuLens.cpp) sends remap maps, mist texture/fade
+rows and overlay artwork to indexed GPU kernels. Source/target overlaps execute in
+native row-major order, including earlier-write visibility across different pitches.
+Map preparation and once-only mist animation/palette lifecycle stay native. Mist
+lightness 32–63, out-of-viewport map entries, asset/destination aliases and resource
+limits retain fallback; full lens lifecycle validation remains open.
+General lines, circle radii above 8,191, remaining image/effect transforms and the other
+ledger gaps remain unfinished. Enabled adapters flush terrain before unsupported fallback.
+
+At each CPU composition boundary, the bridge supplies the current CPU target as
+an initial indexed image, executes owned GPU commands, reads the complete result
+back, and commits it to the native target. This preserves interleaved CPU drawing,
+cursor composition and existing screenshot/recording behavior. It also incurs
+full-target transfers and waits. Resource versions are repacked/uploaded per
+batch; the path has no measured performance benefit.
+
+The shadow slice at `feat/wgpu-drawing` commit `3add2d680` preserves the native
+partial clear and retained scratch bytes. Its generated mask feeds both triangles
+before a counted 64 KiB compatibility mirror commit; subsequent shadows still
+upload the prior scratch checkpoint. The cursor slice at `feat/wgpu-drawing`
+commit `95c4ec603` keeps native scale/hotspot and begin/end-swap timing. Its SDL
+wrappers synchronize the screen for backup/draw/restore and retain native
+recovery checkpoints. The borrowed-context target methods queue GPU copies without those
+transfers, but their owner must outlive the cursor and supply recovery history. These
+seams do not establish complete frame residency, visible presentation or speedup.
+
+The native cursor oracle links the actual SDL3 surface runtime, pointer handler and
+C drawing ABI. `live-surface` exposes the offscreen drawing ABI on Linux for the
+frame-replay workflow's software Vulkan tests; live window presentation remains
+macOS-only. Missing GPU adapters fail the fixture rather than skip its comparisons.
+
+The native destination changes only after successful execution/readback and any
+enabled comparison. Failure reconstructs accepted original triangles with the
+native gpoly rasterizer using immutable vertices and resources; the retained span
+path uses its CPU interpreter. Reconstruction writes scratch storage and commits
+only after the complete batch succeeds. Invalid replay shades or allocation
+failure leave the native target unchanged and report a rejected batch. Failure
+disables GPU consumption for the bridge lifetime. A declined 2D command runs its
+legacy pixel loop once. Neither path reruns gameplay or picking wrappers. Resource/target changes and cache limits
+also flush pending work. Complete GPU target ownership will require equivalent
+same-frame recovery for every new command and persistent effect target.
+
+### Drawing validation and counters
+
+`KFX_WGPU_DRAW_VERIFY=1` compares bridge output with a separate CPU oracle before
+committing it. This verifies indexed drawing; `KFX_WGPU_VERIFY=1` separately checks
+acquired wgpu presentation surfaces. A screenshot of the synchronized native
+image does not prove a window surface was acquired or displayed. Visible surface
+validation for this drawing candidate is pending an unlocked display; the current
+native evidence and its source/binary limits are in the coverage ledger.
+
+`KFX_WGPU_DRAW_FAIL_INIT=1` injects drawing initialization failure;
+`KFX_WGPU_DRAW_FAIL_AFTER=N` injects failure after N successful drawing batches.
+`KFX_WGPU_DRAW_STATS` accepts an output JSON path for cumulative counts:
+
+- `gpu_triangles`: committed original-vertex terrain; `cpu_triangles`: declined triangle calls; `replayed_triangles` / `rejected_triangles`: recovery outcomes.
+- `gpu_spans` / `gpu_pixels`: retained span-path work only; `native_commands`: committed generic drawing commands, including primitives, sprites, raw images and clears; `gpu_sprite_commands`: committed sprite subset.
+- `cpu_gpoly_spans`: declined span sink calls only; `cpu_replayed_spans`: span recovery.
+- `verified_triangles` / `verified_batches`: successfully compared triangles/batches; `verification_cpu_spans` and `verification_cpu_commands`: explicitly enabled CPU oracle work.
+- `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers, including four-byte triangle validation flags.
+
+Zero declined spans is not a whole-renderer CPU-drawing count. These counters
+measure work and transfers, not elapsed GPU time or whole-process memory. Keep
+verification, fault injection, control and capture separate from performance runs.
+The current bridge's routine readbacks cannot simply be disabled for a benchmark;
+removing them requires the remaining composition migration.
+
+Asset-free native fixtures and explicit GPU tests reproduce bounded correctness:
+
+```sh
+cmake -S tests/gpoly -B out/gpoly-tests -DKFX_GPOLY_ASAN=ON
+cmake --build out/gpoly-tests
+ctest --test-dir out/gpoly-tests --output-on-failure
+KFX_GPOLY_TRIANGLE_FIXTURE="$PWD/out/gpoly-tests/triangles.bin" \
+  cargo test --locked --manifest-path tools/frame-replay/Cargo.toml \
+  --test gpoly_gpu -- --ignored --test-threads=1
+KFX_GPOLY_TRIANGLE_FIXTURE="$PWD/out/gpoly-tests/triangles.bin" \
+  cargo test --locked --manifest-path tools/frame-replay/Cargo.toml \
+  --test draw_triangles_gpu -- --ignored --test-threads=1
+cmake -S tests/primitives -B out/primitive-tests -DKFX_PRIMITIVE_ASAN=ON
+cmake --build out/primitive-tests
+ctest --test-dir out/primitive-tests --output-on-failure
+KFX_PRIMITIVE_FIXTURE="$PWD/out/primitive-tests/primitives.bin" \
+  cargo test --locked --manifest-path tools/frame-replay/Cargo.toml \
+  --lib gpu_actual_legacy_primitives -- --ignored --test-threads=1
+```
+
+These tests need SDL3 headers and a working GPU adapter; they use synthetic assets.
+The [workflow](../.github/workflows/frame-replay.yml) also generates native fixtures
+for required software-Vulkan checks. A local Metal pass does not establish remote
+CI success, native gameplay coverage or exact-head delivery validation.
