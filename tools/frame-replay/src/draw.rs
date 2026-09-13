@@ -1,3 +1,8 @@
+#[path = "draw_minimap.rs"]
+mod minimap;
+#[path = "draw_movie.rs"]
+mod movie;
+pub use minimap::MINIMAP;
 #[path = "draw_shadow.rs"]
 mod shadow;
 pub use shadow::SHADOW;
@@ -33,6 +38,7 @@ pub const CIRCLE_OUTLINE: u32 = 5;
 pub const SPRITE: u32 = 6;
 pub const RAW_IMAGE: u32 = 7;
 pub const TILED_IMAGE: u32 = 8;
+pub const MOVIE: u32 = 13;
 pub const OPAQUE: u32 = 256;
 const MAX_COMMANDS: usize = 262_144;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
@@ -127,6 +133,7 @@ pub struct DrawRenderer {
     effects: Option<wgpu::ComputePipeline>,
     trig_validate: Option<wgpu::ComputePipeline>,
     shadow: Option<wgpu::ComputePipeline>,
+    minimap: Option<minimap::MinimapState>,
     triangles: Option<triangles::TrianglePipelines>,
     present: wgpu::RenderPipeline,
     targets: HashMap<u64, Target>,
@@ -155,6 +162,8 @@ impl DrawRenderer {
                     include_str!("draw_sprites.wgsl"),
                     "\n",
                     include_str!("draw_raw.wgsl"),
+                    "\n",
+                    include_str!("draw_movie.wgsl"),
                     "\n",
                     include_str!("draw_trig.wgsl")
                 )
@@ -216,6 +225,7 @@ impl DrawRenderer {
             effects: None,
             trig_validate: None,
             shadow: None,
+            minimap: None,
             triangles: None,
             present,
             targets: HashMap::new(),
@@ -317,6 +327,9 @@ impl DrawRenderer {
 
     pub fn submit(&mut self, target: u64, commands: &[Command]) -> Result<()> {
         self.check_status()?;
+        if commands.len() == 1 && commands[0].kind == MINIMAP {
+            return self.submit_minimap(target, &commands[0]);
+        }
         if commands.len() == 1 && commands[0].kind == LENS_EFFECT {
             return self.submit_effect(target, &commands[0]);
         }
@@ -593,7 +606,10 @@ fn pack_commands(
             "invalid command ABI"
         );
         ensure!(
-            c.kind <= TRIG && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
+            (c.kind <= TRIG || c.kind == MOVIE)
+                && c.blend <= 2
+                && c.colour <= 255
+                && c.transparent <= OPAQUE,
             "invalid drawing operation"
         );
         let rectangle = if c.kind == CLEAR {
@@ -614,7 +630,7 @@ fn pack_commands(
         let mut source_pitch = 0;
         if matches!(
             c.kind,
-            IMAGE | GPOLY_SPAN | SPRITE | RAW_IMAGE | TILED_IMAGE | TRIG
+            IMAGE | GPOLY_SPAN | SPRITE | RAW_IMAGE | TILED_IMAGE | TRIG | MOVIE
         ) {
             let source = resources.get(&c.source).context("unknown source version")?;
             source_pitch = source.pitch;
@@ -652,6 +668,8 @@ fn pack_commands(
                         "invalid raw image scaling"
                     );
                 }
+            } else if c.kind == MOVIE {
+                movie::validate(c, source, width, height)?;
             } else if c.kind == TRIG {
                 trig::validate(c, source, width, height)?;
             } else if c.kind == SPRITE {

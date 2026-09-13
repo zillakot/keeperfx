@@ -16,6 +16,8 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/out/rust-target
       KFX_GPOLY_FIXTURE: ${{ github.workspace }}/out/gpoly-fixture.bin
       KFX_GPOLY_TRIANGLE_FIXTURE: ${{ github.workspace }}/out/gpoly-tests/triangles.bin
+      KFX_MINIMAP_FIXTURE: ${{ github.workspace }}/out/minimap-tests/minimap.bin
+      KFX_MOVIE_FRAME_FIXTURE: ${{ github.workspace }}/out/movie-frame-tests/movie-frames.bin
       KFX_RAW_IMAGE_FIXTURE: ${{ github.workspace }}/out/raw-image-tests/raw-images.bin
       KFX_SPRITE_COPY_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprite-copies.bin
       KFX_SPRITE_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprites.bin
@@ -79,6 +81,18 @@ jobs:
             -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
           cmake --build out/sprite-tests --parallel 2
           ctest --test-dir out/sprite-tests --output-on-failure
+      - name: Compare minimap terrain with native drawing
+        run: |
+          cmake -S tests/minimap -B out/minimap-tests
+          cmake --build out/minimap-tests --parallel 2
+          ctest --test-dir out/minimap-tests --output-on-failure
+          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_minimap_gpu -- --ignored --nocapture --test-threads=1
+      - name: Compare movie frames with native drawing
+        run: |
+          cmake -S tests/movie-frames -B out/movie-frame-tests
+          cmake --build out/movie-frame-tests --parallel 2
+          ctest --test-dir out/movie-frame-tests --output-on-failure
+          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_movie_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare raw images with native drawing
         run: |
           cmake -S tests/raw-images -B out/raw-image-tests -DKFX_RAW_IMAGE_ASAN=ON \

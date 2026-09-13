@@ -25,6 +25,9 @@ extern "C" {
 #define KFX_WGPU_DRAW_TILED_IMAGE 8u
 #define KFX_WGPU_DRAW_TRIG 9u
 #define KFX_WGPU_DRAW_LENS_EFFECT 10u
+#define KFX_WGPU_DRAW_MOVIE 13u
+/* MOVIE source_x bits select width doubling, line doubling and interlace;
+ * start is the signed native image origin. Packed doubling omits width tails. */
 /* TRIG source begins with three x/y/u/v/shade little-endian i32 vertices,
  * then source_y texture bytes. source_x is the native mode, source_width is
  * the native long width (64). Table is 64 fade rows followed by 256 ghost rows. */
