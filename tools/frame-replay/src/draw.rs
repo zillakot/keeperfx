@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+#[path = "draw_arena.rs"]
+mod arena;
 #[path = "draw_frame.rs"]
 mod frame_queue;
 pub use frame_queue::FrameCounters;
