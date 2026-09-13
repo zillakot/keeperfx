@@ -15,12 +15,26 @@ fn word(bytes: &[u8], offset: &mut usize) -> u32 {
 #[test]
 #[ignore = "requires GPU and native shadow fixture"]
 fn actual_native_shadow_masks_and_triangles() {
+    native_shadow_cases(false);
+}
+
+#[test]
+#[ignore = "requires GPU and native shadow fixture"]
+fn queued_world_keeps_shadow_mask_and_cpu_checkpoint_order() {
+    native_shadow_cases(true);
+}
+
+fn native_shadow_cases(queued: bool) {
     let path = std::env::var("KFX_SHADOW_FIXTURE").expect("KFX_SHADOW_FIXTURE is required");
     let bytes = std::fs::read(path).unwrap();
     let mut offset = 0;
     let count = word(&bytes, &mut offset);
     let mut draw = drawing();
     let target = draw.create_target(79, 61).unwrap();
+    if queued {
+        draw.frame_begin(target).unwrap();
+    }
+    let mut prior_pixel = 167;
     let table = draw
         .create_resource(&bytes[offset..offset + 81920], 256, 320, 256)
         .unwrap();
@@ -80,9 +94,26 @@ fn actual_native_shadow_masks_and_triangles() {
             clip_height: 61,
             ..Default::default()
         };
+        let before = draw.frame_counters().checkpoints;
+        if queued {
+            draw.submit(
+                target,
+                &[Command {
+                    kind: keeperfx_frame_replay::draw::RECT,
+                    colour: prior_pixel,
+                    width: 1,
+                    height: 1,
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+        }
         let mut mirror = vec![77; 65536];
         draw.submit_shadow(target, &command, &mut mirror).unwrap();
         draw.release_resource(source).unwrap();
+        if queued {
+            assert_eq!(draw.frame_counters().checkpoints, before + 1);
+        }
         if mirror != bytes[offset..offset + 65536] {
             let i = mirror
                 .iter()
@@ -102,7 +133,11 @@ fn actual_native_shadow_masks_and_triangles() {
             &bytes[offset..offset + 79 * 61],
             "shadow triangles case {case}"
         );
+        prior_pixel = u32::from(bytes[offset]);
         offset += 79 * 61;
+    }
+    if queued {
+        draw.frame_end().unwrap();
     }
     assert_eq!(offset, bytes.len());
     assert_eq!(draw.target_resource_counters().snapshots, u64::from(count));

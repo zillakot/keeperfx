@@ -79,21 +79,34 @@ impl DrawRenderer {
         Ok(())
     }
 
-    fn check_queued_target(&self, target: u64, count: usize) -> Result<()> {
-        let frame = self.frame.as_ref().unwrap();
+    fn frame_target_aliases(&self, target: u64) -> Result<bool> {
+        let Some(frame) = &self.frame else {
+            return Ok(false);
+        };
         ensure!(!frame.invalid, "queued frame is invalid; abort required");
-        ensure!(
-            self.targets
-                .get(&target)
-                .context("unknown queued target")?
-                .root
-                == frame.root,
-            "queued target does not belong to active frame"
-        );
         ensure!(
             !frame.released_targets.contains(&target),
             "released queued target"
         );
+        let target = self.targets.get(&target).context("unknown frame target")?;
+        let root = self
+            .targets
+            .get(&frame.root)
+            .context("missing frame root")?;
+        Ok(target.indices == root.indices)
+    }
+
+    pub(super) fn checkpoint_target(&mut self, target: u64) -> Result<()> {
+        self.check_status()?;
+        if self.frame_target_aliases(target)? {
+            self.frame_flush()?;
+        }
+        Ok(())
+    }
+
+    fn check_queued_target(&self, count: usize) -> Result<()> {
+        let frame = self.frame.as_ref().unwrap();
+        ensure!(!frame.invalid, "queued frame is invalid; abort required");
         ensure!(
             frame
                 .count
@@ -109,16 +122,14 @@ impl DrawRenderer {
         Ok(())
     }
 
-    fn check_queued_resource(&self, handle: u64) -> Result<()> {
+    pub(super) fn check_queued_resource(&self, handle: u64) -> Result<()> {
         ensure!(
             handle == 0
                 || (self.resources.contains_key(&handle)
                     && !self
                         .frame
                         .as_ref()
-                        .unwrap()
-                        .released_resources
-                        .contains(&handle)),
+                        .is_some_and(|frame| frame.released_resources.contains(&handle))),
             "unknown or released queued resource"
         );
         Ok(())
@@ -129,7 +140,7 @@ impl DrawRenderer {
             return Ok(false);
         }
         self.check_status()?;
-        self.check_queued_target(target, commands.len())?;
+        let aliases = self.frame_target_aliases(target)?;
         for command in commands {
             ensure!(
                 command.abi_version == ABI_VERSION && command.reserved == [0; 3],
@@ -138,6 +149,10 @@ impl DrawRenderer {
             self.check_queued_resource(command.source)?;
             self.check_queued_resource(command.table)?;
         }
+        if !aliases {
+            return Ok(false);
+        }
+        self.check_queued_target(commands.len())?;
         if commands.is_empty() {
             return Ok(true);
         }
@@ -149,13 +164,13 @@ impl DrawRenderer {
         let frame = self.frame.as_mut().unwrap();
         frame.count += commands.len();
         self.frame_counters.queued_commands += commands.len() as u64;
-        if compatible(commands) {
-            if let Some(Batch::Commands(prior_target, prior)) = frame.batches.last_mut() {
-                if *prior_target == target && compatible(prior) {
-                    prior.extend_from_slice(commands);
-                    return Ok(true);
-                }
-            }
+        if compatible(commands)
+            && let Some(Batch::Commands(prior_target, prior)) = frame.batches.last_mut()
+            && *prior_target == target
+            && compatible(prior)
+        {
+            prior.extend_from_slice(commands);
+            return Ok(true);
         }
         frame
             .batches
@@ -172,7 +187,7 @@ impl DrawRenderer {
             return Ok(false);
         }
         self.check_status()?;
-        self.check_queued_target(target, commands.len())?;
+        let aliases = self.frame_target_aliases(target)?;
         for command in commands {
             ensure!(
                 command.abi_version == ABI_VERSION && command.reserved == 0,
@@ -181,17 +196,21 @@ impl DrawRenderer {
             self.check_queued_resource(command.source)?;
             self.check_queued_resource(command.table)?;
         }
+        if !aliases {
+            return Ok(false);
+        }
+        self.check_queued_target(commands.len())?;
         if commands.is_empty() {
             return Ok(true);
         }
         let frame = self.frame.as_mut().unwrap();
         frame.count += commands.len();
         self.frame_counters.queued_commands += commands.len() as u64;
-        if let Some(Batch::Triangles(prior_target, prior)) = frame.batches.last_mut() {
-            if *prior_target == target {
-                prior.extend_from_slice(commands);
-                return Ok(true);
-            }
+        if let Some(Batch::Triangles(prior_target, prior)) = frame.batches.last_mut()
+            && *prior_target == target
+        {
+            prior.extend_from_slice(commands);
+            return Ok(true);
         }
         frame
             .batches

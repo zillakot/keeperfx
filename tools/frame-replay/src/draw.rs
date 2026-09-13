@@ -500,7 +500,7 @@ impl DrawRenderer {
     }
 
     pub fn readback(&mut self, target: u64) -> Result<Vec<u8>> {
-        self.frame_flush()?;
+        self.checkpoint_target(target)?;
         self.check_status()?;
         let target = self.targets.get(&target).context("unknown target")?.clone();
         let size = u64::from(target.width) * u64::from(target.height) * 4;
@@ -554,7 +554,7 @@ impl DrawRenderer {
         output_height: u32,
         view: &wgpu::TextureView,
     ) -> Result<()> {
-        self.frame_flush()?;
+        self.checkpoint_target(target)?;
         self.check_status()?;
         let target = self.targets.get(&target).context("unknown target")?.clone();
         crate::frame::dimensions(output_width, output_height)?;

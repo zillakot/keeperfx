@@ -44,18 +44,22 @@ impl DrawRenderer {
         height: u32,
         pitch: u32,
     ) -> Result<u64> {
-        self.frame_flush()?;
         self.check_status()?;
-        let target = self
+        let source_target = self
             .targets
             .get(&target)
             .context("unknown snapshot target")?;
         let size = snapshot_size(width, height, pitch, self.storage_limit())?;
         ensure!(
-            u64::from(x) + u64::from(width) <= u64::from(target.width)
-                && u64::from(y) + u64::from(height) <= u64::from(target.height),
+            u64::from(x) + u64::from(width) <= u64::from(source_target.width)
+                && u64::from(y) + u64::from(height) <= u64::from(source_target.height),
             "snapshot rectangle exceeds target"
         );
+        self.checkpoint_target(target)?;
+        let target = self
+            .targets
+            .get(&target)
+            .context("unknown snapshot target")?;
         let id = next_handle()?;
         let indices = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("immutable GPU target snapshot"),
@@ -126,9 +130,11 @@ impl DrawRenderer {
 
     /// IMAGE and single TRANSITION sources are GPU snapshots; tables are CPU resources.
     pub fn submit_target_images(&mut self, target: u64, commands: &[Command]) -> Result<()> {
-        self.frame_flush()?;
         self.check_status()?;
         let (width, height) = self.target_dimensions(target)?;
+        for command in commands {
+            self.check_queued_resource(command.table)?;
+        }
         let batch = self.pack_target_images(commands)?;
         if commands.is_empty() {
             return Ok(());
@@ -139,6 +145,7 @@ impl DrawRenderer {
             "snapshot drawing dispatch exceeds device limit"
         );
         let tiles = bin_commands(&batch.words, width, height, self.storage_limit() as usize)?;
+        self.checkpoint_target(target)?;
         let command_buffer = buffer(
             &self.device,
             "snapshot image commands",

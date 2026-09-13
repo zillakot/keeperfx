@@ -8,7 +8,7 @@ impl DrawRenderer {
         commands: &[Command],
         texture: u64,
     ) -> Result<()> {
-        self.frame_flush()?;
+        self.checkpoint_target(target)?;
         self.check_status()?;
         let (width, height) = self.target_dimensions(target)?;
         ensure!(
@@ -30,6 +30,8 @@ impl DrawRenderer {
         let mut copies = Vec::new();
         let mut length = 0usize;
         for c in commands {
+            self.check_queued_resource(c.source)?;
+            self.check_queued_resource(c.table)?;
             ensure!(
                 c.abi_version == ABI_VERSION
                     && c.reserved == [0; 3]
