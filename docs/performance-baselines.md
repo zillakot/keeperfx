@@ -176,6 +176,42 @@ The profiling runner disables sound and gameplay commands, so run those checks
 separately. Scoped Rust allocation counts also leave total-process allocation
 and memory comparisons outstanding.
 
+## Recorded live presentation result
+
+[PR #9](https://github.com/zillakot/keeperfx/pull/9) records the final 30 serial runs
+on source `506b703a35b84f4adb1bbe92d5f109166b3f8481`: five pairs per scene,
+200 simulation updates and 600 presentations per run. Both paths used Metal,
+640×480 framebuffer/output, VSync off, 20 turns/s, interpolation on and a 60 FPS
+cap. Control/API, audio and verification/readback were disabled. Rust used
+`Bgra8Unorm` and Immediate mode; no run fell back or failed collection.
+
+| Scene | Presentation median ms, SDL → Rust | Paired median reduction, median (range) | Paired p95 increase, median |
+| --- | ---: | ---: | ---: |
+| Quiet | 0.644 → 0.623 | 3.811% (-0.940 to 6.107%) | 6.636% |
+| Busy | 0.634 → 0.604 | 1.038% (-15.914 to 17.456%) | 9.358% |
+| Possession | 0.676 → 0.627 | 3.072% (-11.269 to 9.868%) | 9.336% |
+
+Absolute values are medians of per-run statistics; percentages are calculated
+within pairs before aggregation. Every scene's median-reduction range crosses
+zero, and presentation p95 increased in all 15 pairs. Process CPU savings also
+had ranges crossing zero in every scene. Both paths stayed near the cap; there is
+no demonstrated uncapped FPS gain. These results supersede earlier pre-control
+9–13% presentation improvement claims and do not justify changing the SDL default.
+
+All 120 recorded artifact hashes, common engine/assets/config identities, sample
+counts, scheduled order and aggregate recomputation were independently checked.
+The experiment remains descriptive: startup RNG/populations varied, and background
+load, temperature, visibility/occlusion and display placement were not continuously
+controlled or independently verified. Rust allocation counters do not cover the
+whole process or GPU. PR #9 retains the full tables and evidence boundaries.
+
+The [next graphics investigation](product/rust-port-plan.md#next-session-measure-cpu-drawing-and-define-one-extraction-boundary)
+will separate CPU scene preparation, rasterization and overlays, evaluate higher
+framebuffer resolution and decide whether a bounded pre-rasterization command
+adapter is worthwhile. The current scripts have no uncapped option; such a study
+needs a validated runner extension and a separate matched matrix. No further
+benchmark or GPU implementation is part of this planning update.
+
 ## Asset-free checks and headless validation
 
 ```sh

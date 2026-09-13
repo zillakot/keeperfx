@@ -21,9 +21,11 @@ This is [zillakot/keeperfx](https://github.com/zillakot/keeperfx), a personal fo
 of [dkfans/keeperfx](https://github.com/dkfans/keeperfx) for learning and incremental
 modernization while preserving the original pixel art.
 
-The fork adds a native Apple Silicon development build and standalone Rust/wgpu
-frame-comparison tools. The running game still uses its C/C++ software renderer;
-the Rust tools provide development feedback, with no demonstrated gameplay speedup.
+The fork adds a native Apple Silicon development build, Rust/wgpu frame-comparison
+tools, optional live Metal presentation and isolated native game control. The
+running game still draws the world with its C/C++ software renderer; SDL remains
+the default presenter. Matched live measurements establish no reliable overall
+performance win.
 
 Start with [Understanding KeeperFX](docs/architecture/project-overview.md), or use
 the [documentation index](docs/README.md) to find build, data and graphics guides.
