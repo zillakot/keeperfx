@@ -3,8 +3,11 @@ mod shadow;
 #[path = "live_target_resources.rs"]
 mod target_resources;
 
+#[cfg(target_os = "macos")]
 use crate::gpu::{Renderer, validate_rows};
-use anyhow::{Context, Result, bail, ensure};
+#[cfg(target_os = "macos")]
+use anyhow::{Context, bail};
+use anyhow::{Result, ensure};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     ffi::{c_char, c_void},
@@ -49,6 +52,7 @@ fn count_allocation(size: usize) {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
+#[cfg(target_os = "macos")]
 struct Presenter {
     pending: Option<wgpu::SurfaceTexture>,
     surface: wgpu::Surface<'static>,
@@ -65,6 +69,7 @@ struct Presenter {
     verified_frames: u64,
 }
 
+#[cfg(target_os = "macos")]
 impl Presenter {
     unsafe fn new(layer: *mut c_void, width: u32, height: u32, vsync: bool) -> Result<Self> {
         ensure!(!layer.is_null(), "null Metal layer");
@@ -206,6 +211,7 @@ impl Presenter {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn present_mode(modes: &[wgpu::PresentMode], vsync: bool) -> Result<wgpu::PresentMode> {
     if vsync {
         return Ok(wgpu::PresentMode::Fifo);
@@ -246,6 +252,7 @@ unsafe fn boundary<T: Default>(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(target_os = "macos")]
 pub unsafe extern "C" fn kfx_wgpu_create(
     layer: *mut c_void,
     width: u32,
@@ -264,6 +271,7 @@ pub unsafe extern "C" fn kfx_wgpu_create(
 
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
+#[cfg(target_os = "macos")]
 pub unsafe extern "C" fn kfx_wgpu_submit(
     handle: *mut c_void,
     indices: *const u8,
@@ -340,6 +348,7 @@ pub unsafe extern "C" fn kfx_wgpu_submit(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(target_os = "macos")]
 pub unsafe extern "C" fn kfx_wgpu_present(
     handle: *mut c_void,
     error: *mut c_char,
@@ -365,6 +374,7 @@ pub unsafe extern "C" fn kfx_wgpu_present(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(target_os = "macos")]
 pub unsafe extern "C" fn kfx_wgpu_details(
     handle: *mut c_void,
     text: *mut c_char,
@@ -391,6 +401,7 @@ pub unsafe extern "C" fn kfx_wgpu_details(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(target_os = "macos")]
 pub unsafe extern "C" fn kfx_wgpu_destroy(handle: *mut c_void) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if !handle.is_null() {
@@ -419,6 +430,7 @@ pub unsafe extern "C" fn kfx_wgpu_allocation_counts(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(target_os = "macos")]
 fn verify_surface(
     renderer: &Renderer,
     texture: &wgpu::Texture,
@@ -492,7 +504,7 @@ fn verify_surface(
     readback.unmap();
     result
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     #[test]
@@ -719,8 +731,13 @@ pub unsafe extern "C" fn kfx_wgpu_draw_context(
     unsafe {
         boundary(error, capacity, || {
             ensure!(!handle.is_null(), "null presenter");
-            let drawing = (&mut *handle.cast::<Presenter>()).drawing()?;
-            Ok((drawing as *mut crate::draw::DrawRenderer).cast())
+            #[cfg(target_os = "macos")]
+            {
+                let drawing = (&mut *handle.cast::<Presenter>()).drawing()?;
+                Ok((drawing as *mut crate::draw::DrawRenderer).cast())
+            }
+            #[cfg(not(target_os = "macos"))]
+            anyhow::bail!("live presenter requires macOS")
         })
     }
 }
@@ -899,6 +916,7 @@ pub unsafe extern "C" fn kfx_wgpu_draw_readback(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(target_os = "macos")]
 pub unsafe extern "C" fn kfx_wgpu_draw_prepare_present(
     handle: *mut c_void,
     target: u64,

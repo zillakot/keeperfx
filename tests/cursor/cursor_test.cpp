@@ -141,12 +141,15 @@ int main()
     TbSprite sprite = {data, 7, 5};
     const int positions[][2] = {{0,0},{3,5},{-4,-3},{30,21},{-40,4},{4,-40},{45,40},{-6,25},{33,-4}};
     int32_t xs[16] = {}, ys[12] = {};
-    for (int scale = 1; scale <= 3; ++scale) for (auto& p : positions) {
-        std::vector<uint8_t> pixels(41 * 31);
-        for (size_t i = 0; i < pixels.size(); ++i) pixels[i] = i * 19;
+    for (int scale = 1; scale <= 3; ++scale) for (auto& p : positions) for (unsigned alignment = 0; alignment < 4; ++alignment) {
+        std::vector<uint8_t> guarded(41 * 31 + 8, 203);
+        auto* pixels = guarded.data() + 4 + alignment;
+        for (size_t i = 0; i < 41 * 31; ++i) pixels[i] = i * 19;
         steps(xs, ys, p[0], p[1], scale, 37, 31);
-        KfxGpolyTarget target = {pixels.data(), 37, 31, 41};
+        KfxGpolyTarget target = {pixels, 37, 31, 41};
         check(kfx_wgpu_cursor_direct(target, &sprite, xs, ys), "direct cursor declined");
+        for (unsigned i = 0; i < 4 + alignment; ++i) check(guarded[i] == 203, "direct prefix guard");
+        for (size_t i = 4 + alignment + 41 * 31; i < guarded.size(); ++i) check(guarded[i] == 203, "direct suffix guard");
     }
     SDL_Palette* palette = SDL_CreatePalette(256);
     SDL_Color colours[256];

@@ -17,6 +17,7 @@ jobs:
       KFX_GPOLY_FIXTURE: ${{ github.workspace }}/out/gpoly-fixture.bin
       KFX_GPOLY_TRIANGLE_FIXTURE: ${{ github.workspace }}/out/gpoly-tests/triangles.bin
       KFX_MINIMAP_FIXTURE: ${{ github.workspace }}/out/minimap-tests/minimap.bin
+      KFX_MAP_VIEW_FIXTURE: ${{ github.workspace }}/out/map-view-tests/map-views.bin
       KFX_MOVIE_FRAME_FIXTURE: ${{ github.workspace }}/out/movie-frame-tests/movie-frames.bin
       KFX_RAW_IMAGE_FIXTURE: ${{ github.workspace }}/out/raw-image-tests/raw-images.bin
       KFX_SPRITE_COPY_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprite-copies.bin
@@ -42,7 +43,6 @@ jobs:
           repository: libsdl-org/SDL
           ref: release-3.4.12
           path: out/sdl-headers
-          sparse-checkout: include
       - name: Generate native gpoly drawing oracle
         run: |
           cmake -S tests/gpoly -B out/gpoly-tests -DKFX_GPOLY_ASAN=ON \
@@ -87,6 +87,12 @@ jobs:
           cmake --build out/minimap-tests --parallel 2
           ctest --test-dir out/minimap-tests --output-on-failure
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_minimap_gpu -- --ignored --nocapture --test-threads=1
+      - name: Compare map views with native drawing
+        run: |
+          cmake -S tests/map-views -B out/map-view-tests
+          cmake --build out/map-view-tests --parallel 2
+          ctest --test-dir out/map-view-tests --output-on-failure
+          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_map_view_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare movie frames with native drawing
         run: |
           cmake -S tests/movie-frames -B out/movie-frame-tests
@@ -106,6 +112,25 @@ jobs:
           cmake --build out/lens-tests --parallel 2
           ctest --test-dir out/lens-tests --output-on-failure
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_lenses_gpu -- --ignored --nocapture --test-threads=1
+      - name: Build SDL3 surface runtime for native cursor oracle
+        run: |
+          cmake -S out/sdl-headers -B out/sdl-runtime -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/out/sdl-install" \
+            -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST_LIBRARY=OFF -DSDL_UNIX_CONSOLE_BUILD=ON \
+            -DSDL_AUDIO=OFF -DSDL_VIDEO=OFF -DSDL_JOYSTICK=OFF \
+            -DSDL_HAPTIC=OFF -DSDL_HIDAPI=OFF -DSDL_SENSOR=OFF -DSDL_CAMERA=OFF
+          cmake --build out/sdl-runtime --parallel 2
+          cmake --install out/sdl-runtime
+      - name: Compare native cursor lifecycle through the real drawing C ABI
+        run: |
+          cargo clippy --locked --manifest-path tools/frame-replay/Cargo.toml --features live-surface --all-targets -- -D warnings
+          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --features live-surface --lib live::
+          cargo build --locked --manifest-path tools/frame-replay/Cargo.toml --features live-surface --lib
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/out/sdl-install/lib/pkgconfig"
+          cmake -S tests/cursor -B out/cursor-tests \
+            -DKFX_GPU_LIBRARY="$CARGO_TARGET_DIR/debug/libkeeperfx_frame_replay.a"
+          cmake --build out/cursor-tests --parallel 2
+          ctest --test-dir out/cursor-tests --output-on-failure
       - name: Verify GPU target snapshots and ordered sampling
         run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_target_resources_gpu -- --ignored --nocapture --test-threads=1
       - name: Replay synthetic frames and sequences

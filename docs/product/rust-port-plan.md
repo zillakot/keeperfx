@@ -242,8 +242,9 @@ ownership, synchronization, counters and failure behavior.
 | --- | --- | --- |
 | Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Original unsorted vertices → GPU setup, clipping, scan conversion and ordered texture/shade stores for `QK_PolygonStandard`, `QK_PolyMode5`, near-FP textured subtypes 0–11; immutable texture/fade snapshots | Other polygon modes and near-FP solid subtypes 12–23; broader scene/resource coverage |
 | Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` original-vertex terrain batching is wired | Independent front-view runtime proof; sprites and interleaved overlays |
-| General triangles and creature shadows: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | CPU reference | All modes, destination-dependent blending and GPU shadow-mask generation |
-| World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores | Ordered GPU run copies cover solid scaled-up horizontal flips, including native alignment/chunk behavior; creature shadow masks, asset/destination aliases, custom-asset/gameplay coverage and direct cursor kernels remain open |
+| General triangles: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | Original vertices feed GPU kernels for modes 0–26; native adapter covers 26 modes and dedicated shadows provide mode10 | Allocation/alias fallback, combined-head native coverage and resident target integration |
+| Creature shadows: [shadow adapter](../../src/kfx/renderer/software/WgpuShadow.h), world dispatch | Original RLE/frame metadata → GPU silhouette → immutable GPU snapshot → both native-order mode10 triangles; partial scratch clear preserved | Prior scratch upload and native mirror remain; scratch-alias residency, broader assets and combined-head gameplay |
+| World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores | Ordered GPU run copies cover solid scaled-up horizontal flips, including native alignment/chunk behavior; asset/destination aliases and custom-asset/gameplay coverage remain open |
 | Pixels, boxes, HV lines and circles: [bflib_vidraw.c](../../src/kfx/renderer/software/bflib_vidraw.c) | Native GPU hooks; circles use original center/radius and preserve repeated blend hits | Independent review and combined-head native checks; circle radii above 8,191 and other unsupported inputs decline to CPU |
 | General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level primitives; scaled normal/remap/one-colour/alpha and immediate normal/one-colour sprites | General-line coverage/color selection, unsupported sprite modes and full interleaving validation |
 | Text, including Asian fonts: [bflib_sprfnt.c](../../src/bflib_sprfnt.c) | Ordinary sprite-based glyphs reach GPU sprite wrappers; CPU layout retained | Direct DBC bitmap glyphs, unsupported sprite modes and complete underline/shadow/font validation |
@@ -253,7 +254,7 @@ ownership, synchronization, counters and failure behavior.
 | Custom Lua lenses: [LuaLensEffect.cpp](../../src/kfx/lense/LuaLensEffect.cpp), [lua_api_lens.c](../../src/lua_api_lens.c) | CPU reference | Ordered GPU writes/copies and exact read-after-write compatibility for arbitrary pixel-dependent Lua control flow; CPU-script readback is explicit, never hidden CPU-rendered lens upload |
 | Smoothing and map fades/transitions: [engine_redraw.c](../../src/engine_redraw.c) | CPU reference | GPU target snapshots and exact indexed effects, including traversal/truncation quirks |
 | Movies: [bflib_fmvids.cpp](../../src/bflib_fmvids.cpp) | CPU decode and screen drawing | Upload decoded source assets; GPU centering/scaling/interlace and palette timing |
-| Cursor, clears, screenshots and recording: [bflib_mspointer.cpp](../../src/bflib_mspointer.cpp), [RendererSoftware.cpp](../../src/kfx/renderer/RendererSoftware.cpp), [scrcapt.c](../../src/scrcapt.c) | GPU indexed clear for full SDL surface clips, preserving row padding; CPU cursor composition/capture of the synchronized native image | Nonfull SDL clip clears, direct cursor kernel and backup/restore; authoritative GPU capture with matching frame/palette/cursor semantics |
+| Cursor, clears, screenshots and recording: [bflib_mspointer.cpp](../../src/bflib_mspointer.cpp), [RendererSoftware.cpp](../../src/kfx/renderer/RendererSoftware.cpp), [scrcapt.c](../../src/scrcapt.c) | GPU indexed clear for full SDL surface clips, preserving row padding; direct cursor scaling and GPU snapshot backup/keyed draw/opaque restore; native captures still consume the synchronized image | Nonfull SDL clip clears; retire cursor wrapper transfers and integrate authoritative GPU capture with matching frame/palette/cursor semantics |
 | Cross-family palette, transparency, clipping and scaling | Bounded command and offscreen palette-output fixtures pass | Full-family index/RGBA comparisons; table versions, target aliases and strict CPU-writer/readback audit |
 
 The reviewed original-vertex [GPU preparation test](../../tools/frame-replay/tests/gpoly_gpu.rs)
@@ -281,8 +282,8 @@ added 576 [narrow-pitch cases](../../tests/sprites/copy_fixture.c): actual nativ
 four-byte copy grouping depends on destination alignment, which the command now
 preserves. All 12,962 cases match exact Metal indices, including 2,029 ordered commands.
 The verification oracle preserves native target alignment in its temporary buffer.
-The cursor's direct scaling kernel and creature-shadow mask loop bypass these wrappers;
-trusted native RLE pointers have no encoded-length contract, and mutable artwork/table
+Separate cursor and shadow adapters now handle their direct native paths.
+Trusted native RLE pointers have no encoded-length contract, and mutable artwork/table
 aliases with the destination explicitly decline. Three native alias regressions verify
 exact fallback for decoded RLE, remap and blend-table overlap; GPU alias support is open.
 The raw slice through `8a38178ef` has 270 exact native-reference Metal cases from
@@ -293,6 +294,34 @@ The native build at `8a38178ef` passed with binary SHA-256
 `63a0c73186aae4ef5b53470bdb0e9de7f6cf7e043689b295aae7e0c302e58228`;
 that is compilation/linking evidence only. Sprite/raw commands still use the
 synchronous full-target upload/readback bridge, including clears and backgrounds.
+
+The shadow slice at `3add2d680` uses the [actual native mask and mode10 oracle](../../tests/shadows/fixture.c).
+Its Metal evidence covers 192 complete 65,536-byte masks and 384 native-order triangles,
+all 64 constant shades, four scratch alignments, partial clears, offsets, flip scanline
+crossings and padded cumulative targets. Separate selection checks cover 72 native
+frame/orientation/base/custom choices. The ASan native bridge verifies 192 accepted
+calls and exact fallback after initialization failure or one successful batch.
+Independent review also requires the same complete target/scratch hash from 192
+production calls with verification disabled and zero CPU oracle commands.
+Accepted production calls perform no CPU mask rasterization: the mask snapshot is
+sampled GPU-to-GPU before its mirror readback. The first 64 KiB of scratch is still
+uploaded as prior state and committed after successful destination/oracle checks;
+remaining scratch is untouched. Generic scratch aliases and complete residency remain open.
+
+The cursor slice at `95c4ec603` has [actual native pointer and SDL surface oracles](../../tests/cursor/cursor_test.cpp),
+including 81 backup/draw/restore cycles and 12 scale/hotspot/position/begin-end-swap
+traces. Independent review expands direct cases to all four pointer alignments with
+allocation guards and padded pitch. Enabled traces require zero CPU cursor raster,
+backup or composition calls. Borrowed targets, immutable artwork, resize/absence,
+release order and invalid-target checkpoint recovery are covered. Native wrappers
+still upload/read back the screen and maintain sprite/backup checkpoints; the borrowed
+context must outlive its cursor and does not provide automatic CPU reconstruction.
+Captures retain their position between begin-swap composition and end-swap restoration
+by source inspection, not a new visible gameplay capture. The frame-replay workflow
+builds real SDL3 surface code and the portable drawing C ABI for a required Vulkan
+cursor fixture. Exact-head CI, physical input, visible presentation and device-loss
+reconstruction remain separate validation gates. These offscreen proofs do not establish
+combined-head gameplay, complete GPU frame ownership or a performance improvement.
 
 The built-in lens slice at `7a865cc43`, combined with shared dispatch at `d18840c6b`,
 has 54 [native fixture cases](../../tests/lens/lens_test.cpp) covering padded/different

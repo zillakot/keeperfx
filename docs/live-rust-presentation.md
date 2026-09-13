@@ -154,8 +154,11 @@ Circles execute their integer coverage recurrence on GPU. The
 index/coverage assets and copies native scale ranges and tables; GPU source selection
 performs supported scaling, flips, remap and blending. Scaled solid horizontal flips
 with duplicated rows use ordered GPU run copies, preserving native extra-left pixels,
-four-byte copy grouping and target alignment. The cursor's direct kernel and separate
-creature-shadow masks remain native. Mutable sprite artwork/remap/blend tables that
+four-byte copy grouping and target alignment. The [cursor adapter](../src/kfx/renderer/WgpuCursor.cpp)
+uses GPU sprite scaling and immutable GPU snapshots for backup, keyed composition
+and opaque restoration. The [shadow adapter](../src/kfx/renderer/software/WgpuShadow.h)
+sends original RLE artwork and vertices; the GPU generates the silhouette and samples
+its snapshot in both mode10 triangles. Mutable sprite artwork/remap/blend tables that
 overlap the target decline before submission. Ordinary sprite glyphs reach these
 wrappers; direct DBC glyph writes remain CPU. The [raw adapter](../src/kfx/renderer/software/WgpuRawImage.c)
 submits source images for exact native scaling/letterbox and clipped slab tiling.
@@ -175,6 +178,20 @@ back, and commits it to the native target. This preserves interleaved CPU drawin
 cursor composition and existing screenshot/recording behavior. It also incurs
 full-target transfers and waits. Resource versions are repacked/uploaded per
 batch; the path has no measured performance benefit.
+
+The shadow slice at `3add2d680` preserves the native partial clear and retained scratch
+bytes. Its generated mask feeds both triangles before a counted 64 KiB compatibility
+mirror commit; subsequent shadows still upload the prior scratch checkpoint. The
+cursor slice at `95c4ec603` keeps native scale/hotspot and begin/end-swap timing. Its
+SDL wrappers synchronize the screen for backup/draw/restore and retain native recovery
+checkpoints. The borrowed-context target methods queue GPU copies without those
+transfers, but their owner must outlive the cursor and supply recovery history. These
+seams do not establish complete frame residency, visible presentation or speedup.
+
+The native cursor oracle links the actual SDL3 surface runtime, pointer handler and
+C drawing ABI. `live-surface` exposes the offscreen drawing ABI on Linux for the
+frame-replay workflow's software Vulkan tests; live window presentation remains
+macOS-only. Missing GPU adapters fail the fixture rather than skip its comparisons.
 
 The native destination changes only after successful execution/readback and any
 enabled comparison. Failure reconstructs accepted original triangles with the

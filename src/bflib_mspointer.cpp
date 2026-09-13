@@ -33,7 +33,6 @@
 #include "bflib_vidraw.h"
 #include "kfx/renderer/WgpuCursor.h"
 
-#include "keeperfx.hpp"
 #include "post_inc.h"
 /******************************************************************************/
 struct SSurface;
