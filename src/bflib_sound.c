@@ -19,6 +19,7 @@
 /******************************************************************************/
 #include "pre_inc.h"
 #include "bflib_sound.h"
+#include "audio_trace.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -867,8 +868,13 @@ long start_emitter_playing(struct SoundEmitter *emit, SoundSmplTblID smptbl_id, 
     get_emitter_pan_volume_pitch(&Receiver, emit, &pan, &volume, &pitch);
     long smpl_idx = find_slot(smptbl_id, emit, ctype, priority);
     volume = (volume * loudness) / 256;
-    if (smpl_idx < 0)
+    sound_trace_event("managed_request", get_emitter_id(emit), smptbl_id, smptbl_id,
+        smpl_idx, volume, pan, smpitch, fild1D, priority);
+    if (smpl_idx < 0) {
+        sound_trace_event("drop_managed_full", get_emitter_id(emit), smptbl_id, smptbl_id,
+            smpl_idx, volume, pan, smpitch, fild1D, priority);
         return 0;
+    }
     SoundMilesID mss_id = play_sample(get_emitter_id(emit), smptbl_id, volume, pan, smpitch, fild1D, ctype);
     if (mss_id <= 0) {
         return 0;

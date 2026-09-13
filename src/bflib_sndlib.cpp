@@ -4,6 +4,8 @@
 #include "bflib_sndlib.h"
 #include "bflib_datetm.h"
 #include "bflib_sound.h"
+#include "audio_trace.h"
+#include "audio_trace_buffer.h"
 #include "bflib_fileio.h"
 #include <AL/al.h>
 #include <AL/alc.h>
@@ -464,6 +466,15 @@ static std::unordered_map<SoundSmplTblID, SoundStackPolicy> g_stack_policies;
 static unsigned long g_audio_tick_counter = 0; // tick != turn; ticks continue while navigating the frontend/main menu
 static std::unordered_map<SoundSmplTblID, unsigned long> g_tick_samples_last_tick;
 
+extern "C" void sound_trace_event(const char *event, long emitter, long requested, long resolved,
+    long voice, long volume, long pan, long pitch, long repeats, long priority)
+{
+    if (!audio_trace_records) return;
+    audio_trace_append({event, g_audio_tick_counter, game.play_gameturn, game.sound_random_seed,
+        emitter, requested, resolved, voice, volume, pan, pitch, repeats, priority});
+}
+
+
 static SoundStackPolicy get_stack_policy(SoundSmplTblID smptbl_id) {
 	const auto it = g_stack_policies.find(smptbl_id);
 	if (it != g_stack_policies.end()) {
@@ -667,6 +678,7 @@ extern "C" void set_music_volume(SoundVolume value) {
 }
 
 extern "C" TbBool play_music(const char * fname) {
+	sound_trace_event("music_request", 0, 0, 0, 0, g_music_volume, 0, 0, -1, 0);
 	std::lock_guard<std::mutex> guard(g_mix_mutex);
 	if (g_current_music_fname == fname) {
 		return true;
@@ -678,12 +690,14 @@ extern "C" TbBool play_music(const char * fname) {
 		snprintf(game.music_fname, sizeof(game.music_fname), "%s", fname);
 	}
 	if (!g_mixer || !g_music_track) {
+		sound_trace_event("music_failed", 0, 0, 0, 0, 0, 0, 0, 0, 0);
 		return false;
 	}
 	// SDL3_mixer: load into a MIX_Audio and bind it to the persistent music track.
 	MIX_Audio* new_audio = MIX_LoadAudio(g_mixer, game.music_fname, false);
 	if (!new_audio) {
 		WARNLOG("Cannot load music from %s: %s", game.music_fname, SDL_GetError());
+		sound_trace_event("music_failed", 0, 0, 0, 0, 0, 0, 0, 0, 0);
 		return false;
 	}
 	// MIX_SetTrackAudio replaces any currently-bound audio; the old audio is no
@@ -695,11 +709,13 @@ extern "C" TbBool play_music(const char * fname) {
 	}
 	if (!MIX_PlayTrack(g_music_track, 0)) {
 		WARNLOG("Cannot play music from %s: %s", game.music_fname, SDL_GetError());
+		sound_trace_event("music_failed", 0, 0, 0, 0, 0, 0, 0, 0, 0);
 		return false;
 	}
 	MIX_SetTrackLoops(g_music_track, -1); // loop forever (was Mix_PlayMusic(music, -1))
 	g_current_music_fname = fname;
 	g_current_music_track = 0;
+	sound_trace_event("music_start", 0, 0, 0, 0, g_music_volume, 0, 0, -1, 0);
 	return true;
 }
 
@@ -906,9 +922,11 @@ extern "C" TbBool GetSoundInstalled() {
 // the frontend/main menu, this should probably be buffer based and not tick based..
 extern "C" void MonitorStreamedSoundTrack() {
 	++g_audio_tick_counter;
+	sound_trace_event("tick", 0, 0, 0, 0, 0, 0, 0, 0, 0);
 	for (auto & source : g_sources) {
 		try {
 			if (source.emit_id > 0 && !source.is_playing()) {
+				sound_trace_event("complete", source.emit_id, source.smptbl_id, source.smptbl_id, source.mss_id, 0, 0, 0, 0, 0);
 				const SoundSmplTblID finished_smptbl_id = source.smptbl_id;
 				source.emit_id = 0;
 				source.smptbl_id = 0;
@@ -934,6 +952,7 @@ extern "C" void StopAllSamples() {
 	for (auto & source : g_sources) {
 		try {
 			source.stop();
+			if (source.emit_id) sound_trace_event("stop_all", source.emit_id, source.smptbl_id, source.smptbl_id, source.mss_id, 0, 0, 0, 0, 0);
 		} catch (const std::exception & e) {
 			ERRORLOG("%s", e.what());
 		}
@@ -941,6 +960,8 @@ extern "C" void StopAllSamples() {
 }
 
 extern "C" TbBool InitAudio(const SoundSettings * settings) {
+	audio_trace_init();
+	sound_trace_event("openal_init_request", 0, 0, 0, settings->max_number_of_samples, 0, 0, 0, 0, 0);
 	try {
 		if (game.easter_eggs_enabled == true) {
 			TbDate date;
@@ -973,10 +994,12 @@ extern "C" TbBool InitAudio(const SoundSettings * settings) {
 		load_sound_banks();
 		g_openal_device = std::move(device);
 		g_openal_context = std::move(context);
+		sound_trace_event("openal_ready", 0, 0, 0, g_sources.size(), 0, 0, 0, 0, 0);
 		return true;
 	} catch (const std::exception & e) {
 		ERRORLOG("%s", e.what());
 	}
+	sound_trace_event("openal_failed", 0, 0, 0, 0, 0, 0, 0, 0, 0);
 	SoundDisabled = true;
 	return false;
 }
@@ -1047,8 +1070,14 @@ extern "C" SoundMilesID play_sample(
 	char repeats, // possible values: -1, 0
 	unsigned char ctype // possible values: 2, 3
 ) {
+    const SoundSmplTblID requested = smptbl_id;
+    const auto trace = [&](const char *event, SoundMilesID voice = 0) {
+        sound_trace_event(event, emit_id, requested, smptbl_id, voice, volume, pan, pitch, repeats, 0);
+    };
+    trace("request");
 	if (emit_id <= 0) {
 		ERRORLOG("Can't play sample %d, invalid emitter ID", smptbl_id);
+		trace("drop_invalid_emitter");
 		return 0;
 	}
 	// Apply raw-ID redirect before bank dispatch (only for effect-bank IDs)
@@ -1064,6 +1093,7 @@ extern "C" SoundMilesID play_sample(
 		const SoundSmplTblID idx = smptbl_id - g_custom_offset;
 		if (idx < 0 || idx >= (SoundSmplTblID)g_custom_bank.size()) {
 			ERRORLOG("Can't play custom sample %d, out of range", smptbl_id);
+			trace("drop_invalid_cue");
 			return 0;
 		}
 		buf = &g_custom_bank[idx].buffer;
@@ -1071,6 +1101,7 @@ extern "C" SoundMilesID play_sample(
 		const SoundSmplTblID idx = smptbl_id - g_speech_offset;
 		if (idx <= 0 || idx >= (SoundSmplTblID)g_banks[1].size()) {
 			ERRORLOG("Can't play speech sample %d, out of range", smptbl_id);
+			trace("drop_invalid_cue");
 			return 0;
 		}
 		buf = &g_banks[1][idx].buffer;
@@ -1079,6 +1110,7 @@ extern "C" SoundMilesID play_sample(
 			if (smptbl_id != 0) {
 				ERRORLOG("Can't play effect sample %d, out of range", smptbl_id);
 			}
+			trace("drop_invalid_cue");
 			return 0;
 		}
 		buf = &g_banks[0][smptbl_id].buffer;
@@ -1112,6 +1144,7 @@ extern "C" SoundMilesID play_sample(
 						// down instead of leaving it at the full, un-ducked volume just set above.
 						apply_duck_gain(smptbl_id);
 					}
+					trace("restart", source.mss_id);
 					return source.mss_id;
 				}
 			}
@@ -1124,7 +1157,8 @@ extern "C" SoundMilesID play_sample(
 			// only start once per tick, regardless of which emitter triggers it.
 			const auto tick_it = g_tick_samples_last_tick.find(smptbl_id);
 			if (tick_it != g_tick_samples_last_tick.end() && tick_it->second == g_audio_tick_counter) {
-				return 0; // dropped: already triggered this tick
+				trace("drop_tick_gate");
+				return 0;
 			}
 			g_tick_samples_last_tick[smptbl_id] = g_audio_tick_counter;
 		} else {
@@ -1136,7 +1170,8 @@ extern "C" SoundMilesID play_sample(
 					}
 				}
 				if (active_count >= stack_policy.max_instances) {
-					return 0; // dropped: at this sample's concurrency cap
+					trace("drop_stack_cap");
+					return 0;
 				}
 			}
 		}
@@ -1164,16 +1199,19 @@ extern "C" SoundMilesID play_sample(
 				if (has_explicit_stack_policy && stack_policy.mode == SStack_Duck) {
 					apply_duck_gain(smptbl_id);
 				}
+				trace("start", source.mss_id);
 				return source.mss_id;
 			}
 		}
 		if (game.frame_skip < 2) {
 			ERRORLOG("Can't play sample %d, too many samples playing at once", smptbl_id);
 		}
+		trace("drop_sources_full");
 		return 0;
 	} catch (const std::exception & e) {
 		ERRORLOG("%s", e.what());
 	}
+	trace("drop_backend_error");
 	return 0;
 }
 
@@ -1182,6 +1220,7 @@ extern "C" void stop_sample(SoundEmitterID emit_id, SoundSmplTblID smptbl_id) {
 		if (emit_id == source.emit_id && smptbl_id == source.smptbl_id) {
 			try {
 				source.stop();
+			sound_trace_event("stop", emit_id, smptbl_id, smptbl_id, source.mss_id, 0, 0, 0, 0, 0);
 				source.emit_id = 0;
 				source.smptbl_id = 0;
 			} catch (const std::exception & e) {
@@ -1209,6 +1248,7 @@ extern "C" SoundSmplTblID get_custom_offset(void) { return g_custom_offset; }
 
 extern "C" int InitialiseSDLAudio()
 {
+    audio_trace_init();
 	if (!SDL_Init(SDL_INIT_AUDIO)) {
 		ERRORLOG("Unable to initialise SDL audio subsystem: %s", SDL_GetError());
 		return 0;
@@ -1247,6 +1287,7 @@ extern "C" int InitialiseSDLAudio()
 
 extern "C" void ShutDownSDLAudio()
 {
+    sound_trace_event("sdl_shutdown", 0, 0, 0, 0, 0, 0, 0, 0, 0);
 	g_music_track = nullptr;
 	g_speech_track = nullptr;
 	if (g_mixer) {
