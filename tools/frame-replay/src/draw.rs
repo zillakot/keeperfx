@@ -920,6 +920,88 @@ mod tests {
 
     #[test]
     #[ignore = "requires a GPU adapter"]
+    fn gpu_clipped_image_subregion_and_cross_context_rejection() {
+        let (renderer, mut drawing) = renderer();
+        let target = drawing.create_target(4, 4).unwrap();
+        let mut foreign = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        let foreign_target = foreign.create_target(4, 4).unwrap();
+        let bytes: Vec<u8> = (0..150)
+            .map(|i| {
+                if i % 17 < 14 {
+                    (i / 17 * 14 + i % 17) as u8
+                } else {
+                    255
+                }
+            })
+            .collect();
+        let source = drawing.create_resource(&bytes, 14, 9, 17).unwrap();
+        let foreign_source = foreign.create_resource(&bytes, 14, 9, 17).unwrap();
+        let table: Vec<u8> = (0..65536)
+            .map(|i| ((i >> 8) * 7 + (i & 255) * 3) as u8)
+            .collect();
+        let lookup = drawing.create_resource(&table, 256, 256, 256).unwrap();
+        let clear = Command {
+            kind: CLEAR,
+            colour: 19,
+            ..Default::default()
+        };
+        let image = Command {
+            kind: IMAGE,
+            source,
+            table: lookup,
+            blend: 1,
+            x: -2,
+            y: -1,
+            width: 7,
+            height: 5,
+            clip_x: 1,
+            clip_y: 0,
+            clip_width: 3,
+            clip_height: 3,
+            source_x: 2,
+            source_y: 1,
+            source_width: 11,
+            source_height: 7,
+            transparent: 50,
+            ..Default::default()
+        };
+        drawing.submit(target, &[clear, image]).unwrap();
+        let expected = vec![
+            19, 39, 53, 60, 19, 137, 19, 158, 19, 77, 91, 98, 19, 19, 19, 19,
+        ];
+        assert_eq!(drawing.readback(target).unwrap(), expected);
+        assert!(drawing.submit(foreign_target, &[clear]).is_err());
+        assert!(drawing.readback(foreign_target).is_err());
+        assert!(drawing.release_target(foreign_target).is_err());
+        assert!(drawing.release_resource(foreign_source).is_err());
+        assert!(
+            drawing
+                .submit(
+                    target,
+                    &[
+                        clear,
+                        Command {
+                            source: foreign_source,
+                            ..image
+                        }
+                    ]
+                )
+                .is_err()
+        );
+        assert_eq!(drawing.readback(target).unwrap(), expected);
+        assert_eq!(foreign.readback(foreign_target).unwrap(), vec![0; 16]);
+        assert_eq!(drawing.counters().batches, 1);
+        assert_eq!(drawing.counters().commands, 2);
+        drawing.release_resource(source).unwrap();
+        let replacement = drawing.create_resource(&bytes, 14, 9, 17).unwrap();
+        assert_ne!(replacement, source);
+        assert!(drawing.submit(target, &[clear, image]).is_err());
+        assert_eq!(drawing.readback(target).unwrap(), expected);
+        renderer.check_status().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter"]
     fn gpu_gpoly_wrapping_carries_clips_and_invalid_shades() {
         let (renderer, mut drawing) = renderer();
         let target = drawing.create_target(79, 32).unwrap();
