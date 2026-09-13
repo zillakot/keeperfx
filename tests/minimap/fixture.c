@@ -95,11 +95,11 @@ int main(int argc,char **argv)
         }
         for(int r=0;r<18;r++)
         {
-            map_pattern((r*11)%MapDiagonalLength,(r*17)%MapDiagonalLength,1+r*2, r%3?0:3, r*15);
+            map_pattern((r*11)%MapDiagonalLength,(r*17)%MapDiagonalLength,r==17?36:1+r*2, r%3?0:(r==15?-3:3), r*15);
             uint32_t h[24]={0};h[0]=2;h[16]=MapDiagonalLength/2+r-9;h[17]=MapDiagonalLength/2-r+9;
             h[18]=r*3;h[20]=255-r*13;h[21]=10*(8+scene)/16;map_command(h);
             memset(h,0,sizeof(h));h[0]=3;h[16]=(MapDiagonalLength/2)<<8;h[17]=(MapDiagonalLength/2)<<8;
-            h[6]=(r-9)*101;h[7]=(9-r)*103;h[18]=1+r*2;h[20]=15;h[21]=127;map_command(h);
+            h[6]=(r-9)*101;h[7]=(9-r)*103;h[18]=r==17?36:1+r*2;h[20]=15;h[21]=127;map_command(h);
         }
     }
     if(pixels[0]!=39||pixels[sizeof(pixels)-1]!=39)abort();
