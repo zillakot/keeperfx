@@ -18,6 +18,7 @@
 /******************************************************************************/
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
+#include "kfx/renderer/WgpuTerrainBridge.h"
 #include <stddef.h>
 
 #include "engine_render.h"
@@ -6815,7 +6816,9 @@ static void display_drawlist(void) // Draws isometric and 1st person view. Not f
     {
         for (item.b = buckets[bucket_num]; item.b != NULL; item.b = item.b->next)
         {
-            //JUSTLOG("%d",(int)item.b->kind);
+            kfx_wgpu_terrain_boundary(item.b->kind == QK_PolygonStandard ||
+                item.b->kind == QK_PolyMode5 || (item.b->kind == QK_PolygonNearFP &&
+                item.polygonNearFP->subtype < 12));
             switch ( item.b->kind )
             {
             case QK_PolygonStandard: // All textured polygons for isometric and 'far' textures in 1st person view
@@ -6984,6 +6987,7 @@ static void display_drawlist(void) // Draws isometric and 1st person view. Not f
             }
         }
     }
+    kfx_wgpu_terrain_boundary(0);
     if (render_problems > 0)
       WARNLOG("Incurred %lu rendering problems; last was with poly kind %ld",render_problems,render_prob_kind);
 }
@@ -7253,6 +7257,7 @@ static void display_fast_drawlist(struct Camera *cam) // Draws frontview only. N
     {
         for (item.b = buckets[bucket_num]; item.b != NULL; item.b = item.b->next)
         {
+            kfx_wgpu_terrain_boundary(item.b->kind == QK_TextureQuad);
             switch (item.b->kind)
             {
             case QK_JontySprite: // Creatures and things
@@ -7291,6 +7296,7 @@ static void display_fast_drawlist(struct Camera *cam) // Draws frontview only. N
             }
         }
     } // end for(bucket_num...
+    kfx_wgpu_terrain_boundary(0);
     if (render_problems > 0) {
         WARNLOG("Incurred %lu rendering problems; last was with poly kind %ld",render_problems,render_prob_kind);
     }

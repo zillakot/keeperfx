@@ -9,8 +9,8 @@ struct SDL_Window;
 struct SDL_Renderer;
 struct SDL_Texture;
 struct SDL_Surface;
+class WgpuTerrainBridge;
 
-// Software backend. it's small for now, it's gonna grow the more I bring things into it.
 class RendererSoftware : public IRenderer {
 public:
     const char* GetPresenterName() const override {
@@ -37,6 +37,10 @@ private:
     bool ensure_present_target();
     void destroy_present_target();
 #ifdef KFX_RUST_PRESENTER
+    void report_drawing();
+    WgpuTerrainBridge* m_drawing = nullptr;
+    unsigned long m_drawing_frames = 0;
+    bool m_drawing_failure_reported = false;
     bool try_rust_presenter();
     bool present_rust_frame();
     void destroy_rust_presenter();

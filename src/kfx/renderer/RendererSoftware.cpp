@@ -1,6 +1,7 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererSoftware.h"
 #include "kfx/renderer/FrameCapture.h"
+#include "kfx/renderer/WgpuTerrainBridge.h"
 #include "performance_capture.h"
 #include "bflib_video.h"       // PALETTE_COLORS, lbWindow, SDL, vsync_enabled
 #include "bflib_vidsurface.h"  // lbDrawSurface (goes away when the framebuffer migrates)
@@ -21,11 +22,37 @@ bool RendererSoftware::Init()
     if (backend != nullptr && strcmp(backend, "wgpu") == 0)
         WARNLOG("Rust presentation is not built on this platform; using SDL");
 #endif
+    const char* drawing = SDL_getenv("KFX_DRAW_BACKEND");
+    if (drawing != nullptr && strcmp(drawing, "software") != 0 && strcmp(drawing, "wgpu") != 0)
+        WARNLOG("Unknown KFX_DRAW_BACKEND '%s'; using software drawing", drawing);
+    if (drawing != nullptr && strcmp(drawing, "wgpu") == 0) {
+#ifdef KFX_RUST_PRESENTER
+        const char* fail_after = SDL_getenv("KFX_WGPU_DRAW_FAIL_AFTER");
+        m_drawing = new WgpuTerrainBridge(fail_after != nullptr ? strtoull(fail_after, nullptr, 10) : 0,
+            SDL_getenv("KFX_WGPU_DRAW_FAIL_INIT") != nullptr, SDL_getenv("KFX_WGPU_DRAW_VERIFY") != nullptr);
+        SYNCLOG("Drawing selected: partial wgpu terrain with synchronous CPU composition bridges");
+#else
+        WARNLOG("Rust drawing is not built on this platform; using software drawing");
+#endif
+    }
     return true;
 }
 
 void RendererSoftware::Shutdown()
 {
+#ifdef KFX_RUST_PRESENTER
+    if (m_drawing != nullptr) {
+        m_drawing->Boundary(false);
+        report_drawing();
+        const auto& counts = m_drawing->GetCounters();
+        SYNCLOG("GPU terrain shutdown: %llu batches, %llu spans, %llu readbacks, %llu CPU replayed spans, %llu failures",
+            static_cast<unsigned long long>(counts.gpu_batches), static_cast<unsigned long long>(counts.gpu_spans),
+            static_cast<unsigned long long>(counts.bridge_readbacks), static_cast<unsigned long long>(counts.cpu_replayed_spans),
+            static_cast<unsigned long long>(counts.failures));
+        delete m_drawing;
+        m_drawing = nullptr;
+    }
+#endif
     destroy_present_target();
 }
 
@@ -147,6 +174,13 @@ bool RendererSoftware::ScheduleScreenshot(const char* path, int fmt)
 
 void RendererSoftware::PresentFrame()
 {
+#ifdef KFX_RUST_PRESENTER
+    if (m_drawing != nullptr) {
+        m_drawing->Boundary(false);
+        ++m_drawing_frames;
+        report_drawing();
+    }
+#endif
     if (lbDrawSurface == NULL || !ensure_present_target()) {
         performance_failed("presentation target unavailable");
         return;
@@ -195,6 +229,40 @@ void RendererSoftware::PresentFrame()
 }
 
 #ifdef KFX_RUST_PRESENTER
+void RendererSoftware::report_drawing()
+{
+    const auto& counts = m_drawing->GetCounters();
+    const auto gpu = m_drawing->GetGpuCounters();
+    if (m_drawing->Failed() && !m_drawing_failure_reported) {
+        WARNLOG("GPU terrain drawing failed: %s; pending spans reconstructed in software", m_drawing->GetError());
+        m_drawing_failure_reported = true;
+    }
+    const char* path = SDL_getenv("KFX_WGPU_DRAW_STATS");
+    if (path != nullptr) {
+        FILE* output = fopen(path, "w");
+        if (output != nullptr) {
+            fprintf(output, "{\"backend\":\"wgpu-terrain-cpu-bridge\",\"frames\":%lu,"
+                "\"gpu_batches\":%llu,\"gpu_spans\":%llu,\"gpu_pixels\":%llu,"
+                "\"cpu_gpoly_spans\":%llu,\"cpu_replayed_spans\":%llu,"
+                "\"bridge_readbacks\":%llu,\"gpu_readback_bytes\":%llu,\"native_copy_bytes\":%llu,"
+                "\"bridge_initial_index_bytes\":%llu,\"resource_snapshot_bytes\":%llu,"
+                "\"target_creations\":%llu,\"failures\":%llu,\"verified_batches\":%llu,\"verification_cpu_spans\":%llu,\"gpu_api_batches\":%llu,\"gpu_api_commands\":%llu,\"gpu_asset_upload_bytes\":%llu,\"gpu_command_upload_bytes\":%llu,\"gpu_api_readback_bytes\":%llu,\"native_commands\":%llu,\"verification_cpu_commands\":%llu}\n",
+                m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
+                static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
+                static_cast<unsigned long long>(counts.cpu_gpoly_spans), static_cast<unsigned long long>(counts.cpu_replayed_spans),
+                static_cast<unsigned long long>(counts.bridge_readbacks), static_cast<unsigned long long>(counts.gpu_readback_bytes),
+                static_cast<unsigned long long>(counts.native_copy_bytes), static_cast<unsigned long long>(counts.bridge_initial_index_bytes),
+                static_cast<unsigned long long>(counts.resource_snapshot_bytes), static_cast<unsigned long long>(counts.target_creations),
+                static_cast<unsigned long long>(counts.failures), static_cast<unsigned long long>(counts.verified_batches),
+                static_cast<unsigned long long>(counts.verification_cpu_spans), static_cast<unsigned long long>(gpu.batches),
+                static_cast<unsigned long long>(gpu.commands), static_cast<unsigned long long>(gpu.asset_upload_bytes),
+                static_cast<unsigned long long>(gpu.command_upload_bytes), static_cast<unsigned long long>(gpu.readback_bytes),
+                static_cast<unsigned long long>(counts.native_commands), static_cast<unsigned long long>(counts.verification_cpu_commands));
+            fclose(output);
+        }
+    }
+}
+
 void RendererSoftware::destroy_rust_presenter()
 {
     if (m_rust != nullptr) {
