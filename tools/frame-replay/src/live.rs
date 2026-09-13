@@ -1051,7 +1051,7 @@ mod draw_abi_tests {
                 ),
                 1
             );
-            for row in bytes.chunks_exact(9) {
+            for row in bytes.as_chunks::<9>().0 {
                 assert_eq!(&row[..7], &[37; 7]);
                 assert_eq!(&row[7..], &[99; 2]);
             }
