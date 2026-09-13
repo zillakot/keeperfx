@@ -137,10 +137,14 @@ bounds and preservation of existing output directories:
 python3 -m unittest discover -s scripts/tests -p test_audio_audition.py -v
 ```
 
-An isolated native OpenAL run loaded the mod through `[after_base]` without
-custom-load errors and shut down cleanly. Its idle scenario triggered none of
-the seven replacement families: this establishes loader/startup compatibility,
-not actual playback or listening evidence for the replacements.
+An isolated Apple Silicon run loaded byte-identical PR #13 assets through
+`[after_base]` using a dummy/software SDL display and a real OpenAL device.
+Native game-control tab events produced two `TAB_CLICK` starts; a scripted dig
+produced one `DIG_IMPACT` variant 3 start. The run exited cleanly with zero trace
+overflow. The [validation artifact](audio/audition-validation.json) records the
+asset/source revisions, executable hash and observed submissions. This proves
+representative replacement playback submission, not recorded output or listening
+quality; other replacement families and private restorations remain unverified.
 
 Listening acceptance is open. No headphone or speaker listening was performed
 by the producing agent, and passing signal/decoder tests does not establish

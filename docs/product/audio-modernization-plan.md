@@ -1,6 +1,6 @@
 ---
 type: product
-description: Proposed audio engine migration and sound remastering, with a representative audition pack, compatibility tests and delivery milestones.
+description: Audio modernization direction, delivered inventory and audition foundations, compatibility tests and remaining delivery milestones.
 ---
 
 # Audio modernization plan
@@ -10,11 +10,35 @@ impact, creature character and dungeon atmosphere while retaining Dungeon Keeper
 dark, tactile and mischievous identity. Align engine work with the
 [Rust port plan](rust-port-plan.md) and progress independently of live graphics.
 
-Status: proposal based on source inspection on 2026-09-13 at `7033b6cf4`.
-No new assets have been produced or auditioned, and no audio runtime behavior has
-been validated for this plan. Implementation and listening evidence belong in
-the [fork's PRs](https://github.com/zillakot/keeperfx/pulls); issues are disabled
-and the fork currently has no GitHub Project.
+Status: A1 and A2 foundations delivered on 2026-09-13; both milestones remain
+incomplete. The [cue inventory](../audio/inventory.md),
+[audio command references](../audio-reference.md) and
+[opt-in audition pack](../audio-audition.md) provide the first implementation and
+asset experiments. Original playback remains the default; there is no profile
+selector, Rust audio ownership or replacement backend yet.
+
+The inventory records 115 named effect definitions, 417 creature definitions and
+125 speech slots, plus two music resolvers. These are source definitions, not
+unique recordings or verified language coverage.
+
+The pack contains seven distributable procedural families and a private recipe
+for five original-source restoration families. Real OpenAL references cover
+idle dungeon, menu and possession. A separate isolated run submitted replacement
+`TAB_CLICK` and one `DIG_IMPACT` variant; it does not prove all-pack playback or
+listening quality. Offline arranged A/B clips are not gameplay captures.
+Headphone/speaker listening, crowded combat, broader lifecycle references and
+music-source work remain open. Use the guides' evidence and remaining-work
+sections before treating either milestone as complete.
+
+Delivery records are [PR #11](https://github.com/zillakot/keeperfx/pull/11)
+(command tracing), [PR #12](https://github.com/zillakot/keeperfx/pull/12)
+(inventory) and [PR #13](https://github.com/zillakot/keeperfx/pull/13)
+(audition assets). Issues are disabled and no GitHub Project is attached;
+implementation and listening evidence belong in the fork's PRs.
+[PR #14](https://github.com/zillakot/keeperfx/pull/14) is under review for
+same-name override precedence and atomic variant loading; the current source
+defect and outstanding runtime checks remain documented in the inventory and
+audition guides until that fix lands.
 
 ## Intended experience
 
