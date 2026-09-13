@@ -139,11 +139,15 @@ Its direct GPU-target palette presentation API is tested offscreen, but the game
 still presents the synchronized native framebuffer.
 
 [WgpuTerrainBridge](../src/kfx/renderer/WgpuTerrainBridge.cpp) batches selected
-terrain between audited world-dispatch boundaries. In the validated native slice,
-C computes triangle setup, clipping and spans; GPU commands fetch texels, apply
-shade and write indices. Other bucket entries flush terrain first. GPU preparation
-from original vertices is separately tested in [gpoly.rs](../tools/frame-replay/src/gpoly.rs);
-its native integration is in progress. Pixel, box, HV-line and circle hooks in
+terrain between audited world-dispatch boundaries. Accepted textured gpoly calls
+copy original unsorted vertices and return before CPU sorting, setup, clipping or
+scan conversion. [GPU preparation](../tools/frame-replay/src/gpoly.rs) supplies its
+row buffer directly to the [ordered pixel pass](../tools/frame-replay/src/draw_triangles.rs);
+no prepared rows are read back to construct draw commands. Each destination pixel
+consumes the bounded triangle batch in submission order. A four-byte GPU shade
+validation flag is read back before target writes. Other bucket entries flush
+terrain first; switching between original triangles and the retained span path
+also flushes pending work. Pixel, box, HV-line and circle hooks in
 [bflib_vidraw.c](../src/kfx/renderer/software/bflib_vidraw.c) use the same bridge.
 Circles execute their integer coverage recurrence on GPU; general-line coverage,
 sprites, text and direct image/effect writers remain unfinished. Circle radii
@@ -157,10 +161,13 @@ full-target transfers and waits. Resource versions are repacked/uploaded per
 batch; the path has no measured performance benefit.
 
 The native destination changes only after successful execution/readback and any
-enabled comparison. Failure reconstructs already accepted terrain spans from
-immutable inputs through a CPU interpreter, then disables GPU consumption for the
-bridge lifetime. A declined 2D command runs its legacy pixel loop once. Neither
-path reruns gameplay or picking wrappers. Resource/target changes and cache limits
+enabled comparison. Failure reconstructs accepted original triangles with the
+native gpoly rasterizer using immutable vertices and resources; the retained span
+path uses its CPU interpreter. Reconstruction writes scratch storage and commits
+only after the complete batch succeeds. Invalid replay shades or allocation
+failure leave the native target unchanged and report a rejected batch. Failure
+disables GPU consumption for the bridge lifetime. A declined 2D command runs its
+legacy pixel loop once. Neither path reruns gameplay or picking wrappers. Resource/target changes and cache limits
 also flush pending work. Complete GPU target ownership will require equivalent
 same-frame recovery for every new command and persistent effect target.
 
@@ -177,10 +184,11 @@ native evidence and its source/binary limits are in the coverage ledger.
 `KFX_WGPU_DRAW_FAIL_AFTER=N` injects failure after N successful drawing batches.
 `KFX_WGPU_DRAW_STATS` accepts an output JSON path for cumulative counts:
 
-- `gpu_spans` / `gpu_pixels`: terrain work; `native_commands`: generic primitive submissions.
-- `cpu_gpoly_spans`: declined terrain sink calls only; `cpu_replayed_spans`: failure reconstruction.
-- `verification_cpu_spans` / `verification_cpu_commands`: explicitly enabled comparison work.
-- `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers.
+- `gpu_triangles`: committed original-vertex terrain; `cpu_triangles`: declined triangle calls; `replayed_triangles` / `rejected_triangles`: recovery outcomes.
+- `gpu_spans` / `gpu_pixels`: retained span-path work only; `native_commands`: generic primitive submissions.
+- `cpu_gpoly_spans`: declined span sink calls only; `cpu_replayed_spans`: span recovery.
+- `verified_triangles` / `verified_batches`: successfully compared triangles/batches; `verification_cpu_spans` and `verification_cpu_commands`: explicitly enabled CPU oracle work.
+- `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers, including four-byte triangle validation flags.
 
 Zero declined spans is not a whole-renderer CPU-drawing count. These counters
 measure work and transfers, not elapsed GPU time or whole-process memory. Keep
@@ -197,6 +205,9 @@ ctest --test-dir out/gpoly-tests --output-on-failure
 KFX_GPOLY_TRIANGLE_FIXTURE="$PWD/out/gpoly-tests/triangles.bin" \
   cargo test --locked --manifest-path tools/frame-replay/Cargo.toml \
   --test gpoly_gpu -- --ignored --test-threads=1
+KFX_GPOLY_TRIANGLE_FIXTURE="$PWD/out/gpoly-tests/triangles.bin" \
+  cargo test --locked --manifest-path tools/frame-replay/Cargo.toml \
+  --test draw_triangles_gpu -- --ignored --test-threads=1
 cmake -S tests/primitives -B out/primitive-tests -DKFX_PRIMITIVE_ASAN=ON
 cmake --build out/primitive-tests
 ctest --test-dir out/primitive-tests --output-on-failure

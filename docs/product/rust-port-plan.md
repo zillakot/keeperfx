@@ -232,16 +232,16 @@ ownership, synchronization, counters and failure behavior.
 | Gate | Status | Evidence and remaining work |
 | --- | --- | --- |
 | Inventory and measurement | Inventoried; measurement incomplete | Drawing families and source boundaries below; opt-in coarse timing at `02f4587bc`. Native quiet/possession/default hook smokes passed. Instrumentation overhead, busy/front-view coverage, resolution matrix and matched measurements remain open. |
-| Extract commands | Partial | [Gpoly capture](../../src/kfx/renderer/GpolyCapture.h) owns span/resource snapshots; reviewed CPU oracle at `beec45800`: 615 fixtures and 20,389 spans matched native indices. Original-vertex GPU setup is tested separately; native routing is in progress. Other families need immutable commands. |
-| Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h): ordered clear/rectangle/image/span commands, palette lookup composition and nearest palette presentation; reviewed at `c2e594d95`. Original-vertex setup at `f0c719bc6` matches native results for 1,225 triangles. Native 2D hooks at `e203dbd25` have 1,072 exact GPU fixture cases; independent review is pending. |
-| Cover every drawing path | Open | Terrain and bounded 2D hooks suppress selected CPU pixel loops. The remaining families below, CPU terrain setup in the validated live path, and routine upload/readback bridges prevent complete GPU coverage. |
-| Native validation | Partial | Terrain-span binary from `7fde9463f`/`489c2e888` passed isolated gameplay, exact indexed batches and failure reconstruction. Visible wgpu surface proof for this drawing candidate requires an unlocked display; combined-head gameplay, all views, save/reload and lifecycle coverage remain open. |
+| Extract commands | Partial | [Gpoly capture](../../src/kfx/renderer/GpolyCapture.h) owns span/resource snapshots; reviewed CPU oracle at `beec45800`: 615 fixtures and 20,389 spans matched native indices. Original-vertex native routing at `17e993a84` copies vertices before CPU setup and retains immutable texture/fade versions. Other families need immutable commands. |
+| Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h): ordered clear/rectangle/image/span commands, palette lookup composition and nearest palette presentation; reviewed at `c2e594d95`. Original-vertex setup at `f0c719bc6` and production row consumption at `17e993a84` each match 1,225 native triangles; independent integration review and limited-device fixes at `ab2300ea1` pass. Native 2D hooks at `e203dbd25` have 1,072 exact GPU fixture cases; independent review is pending. |
+| Cover every drawing path | Open | Accepted original-vertex terrain bypasses CPU setup and rasterization; bounded 2D hooks suppress selected CPU pixel loops. The remaining families below and routine upload/readback bridges prevent complete GPU coverage. |
+| Native validation | Partial | Original-vertex integration `17e993a84` has isolated exact gameplay evidence and native ASan/Metal recovery fixtures, with separate source/binary limits below. Visible wgpu surface proof for this drawing candidate requires an unlocked display; combined-head gameplay, all views, save/reload and lifecycle coverage remain open. |
 | Performance and delivery | Open | No drawing speedup measured. Correctness bridge readbacks remain mandatory. Collect final serial matched runs and absolute costs/tails after coverage and synchronization work; exact-head CI and final merge verification remain required. |
 
 | Drawing family and source boundary | Implemented coverage | Remaining GPU work / validation |
 | --- | --- | --- |
-| Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Span shading/stores for `QK_PolygonStandard`, `QK_PolyMode5`, near-FP textured subtypes 0–11; immutable texture/fade snapshots | Native original-vertex routing; other polygon modes and near-FP solid subtypes 12–23; broader scene/resource coverage |
-| Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` terrain batching is wired | Independent front-view runtime proof; sprites and interleaved overlays |
+| Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Original unsorted vertices → GPU setup, clipping, scan conversion and ordered texture/shade stores for `QK_PolygonStandard`, `QK_PolyMode5`, near-FP textured subtypes 0–11; immutable texture/fade snapshots | Other polygon modes and near-FP solid subtypes 12–23; broader scene/resource coverage |
+| Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` original-vertex terrain batching is wired | Independent front-view runtime proof; sprites and interleaved overlays |
 | General triangles and creature shadows: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | CPU reference | All modes, destination-dependent blending and GPU shadow-mask generation |
 | World sprites, creatures, objects and effects: [sprite rasterizers](../../src/kfx/renderer/software/bflib_vidraw_spr_norm.c) | CPU reference | Scaling, flips, water clipping, remap/fade/ghost/alpha, custom assets; preserve CPU picking side effects once |
 | Pixels, boxes, HV lines and circles: [bflib_vidraw.c](../../src/kfx/renderer/software/bflib_vidraw.c) | Native GPU hooks; circles use original center/radius and preserve repeated blend hits | Independent review and combined-head native checks; circle radii above 8,191 and other unsupported inputs decline to CPU |
@@ -259,22 +259,39 @@ ownership, synchronization, counters and failure behavior.
 The reviewed original-vertex [GPU preparation test](../../tools/frame-replay/tests/gpoly_gpu.rs)
 compared 597,800 setup words and 6,202,175 palette indices, including pitch padding,
 against independent native output on Metal. It consumes GPU-produced rows directly
-in a subsequent GPU pass. This establishes bounded terrain setup and pixel
-exactness, not native scene routing, whole-frame ordering or a performance gain.
+in a subsequent GPU pass. The production [triangle test](../../tools/frame-replay/tests/draw_triangles_gpu.rs)
+at `17e993a84` separately checks all 1,225 triangles in ordered overlapping batches,
+immutable texture/fade versions and atomic shade/resource/coordinate rejection.
+Independent review fixes at `ab2300ea1` add allocation and pixel-dispatch limits;
+three limited-device Metal cases preserve the target and a usable device. Counter
+hardening at `10eb96a35` counts verified triangles only after a complete exact
+comparison; matching and forced-mismatch/recovery mock cases pass ASan.
+The [native bridge fixture](../../tests/terrain-vertices/bridge_test.cpp) independently
+checks CPU setup bypass, resource mutation, CPU interleaving and original-input
+reconstruction with ASan/Metal. None establishes whole-frame GPU ownership or speedup.
 The 2D [native fixture generator](../../tests/primitives/fixture.c) compares actual
 legacy output for the supported primitives; it does not establish full HUD/text
 coverage.
 
-The terrain-span native smoke used a 640×480 indexed target and SDL presentation:
-381 exact GPU batches, 356,372 spans and 5,237,097 shaded pixels, with zero declined
-gpoly spans, recovery spans or failures. A separate injected-failure run
-reconstructed 110 accepted spans on CPU without repeating gameplay wrappers.
-The evidence binary SHA-256 was
-`da428a86f6c5aae579b26217f937654d09a2920d602980e0b3151e728fd36a2f`;
-it predates the 2D hooks. A separate wgpu-presenter run performed exact offscreen
-drawing but acquired/presented zero surface frames while the display was locked.
-That result cannot prove visible wgpu output. Prior PR #9 surface evidence remains
-separate from these drawing changes.
+The original-vertex native smoke used original campaign level 1, a 640×480 indexed
+target, isolated assets/settings/saves, SDL presentation and drawing verification:
+438,568 GPU original triangles in 4,992 exact bridge batches, with zero GPU spans,
+declined/replayed triangles or failures. Native movement, capture and quit succeeded.
+Its binary SHA-256 was
+`b3b08abd28fb25141fcd7211758a70dc401ef4686709fd4239197ee63dbef6ba`;
+it predates final invalid-shade fallback hardening in `17e993a84`. The hardened
+native ASan/Metal fixture passed separately; the final native build hash was
+`15a2930d9acf6bac84d891a62abb9a408fde14c30206f79c1bf058d406025d62`,
+before a warning-text-only edit. The later `ab2300ea1` device-limit fix has focused
+offscreen Metal proof, not another native game run. These sources do not establish
+subsequent sprite/raw-image changes or combined-head gameplay.
+
+Earlier span-only gameplay (`7fde9463f`/`489c2e888`, binary
+`da428a86f6c5aae579b26217f937654d09a2920d602980e0b3151e728fd36a2f`)
+verified 381 batches and 356,372 spans; separate failure injection reconstructed
+110 spans. Its wgpu-presenter attempt acquired/presented zero surface frames while
+the display was locked. Visible output remains unproven for these drawing changes;
+prior PR #9 surface evidence stays separate.
 
 Each fallback or unsupported input remains uncovered GPU work. Zero declined
 gpoly spans measures one sink, not every software writer. Completion requires
