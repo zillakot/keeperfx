@@ -159,6 +159,7 @@ void draw_slab64k_background_immediate(long pos_x, long pos_y, long width, long 
         scr_x <= 8192 && scr_y <= 8192 && scr_w <= 8192 && scr_h <= 8192 &&
         kfx_wgpu_raw_tile(lbDisplay.WScreen, lbDisplay.GraphicsScreenWidth, MyScreenHeight,
             scr_x, scr_y, scr_w, scr_h, gui_slab, GUI_SLAB_DIMENSION, slab_oracle, &oracle)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     TbPixel* out = &lbDisplay.WScreen[scr_x + lbDisplay.GraphicsScreenWidth * scr_y];
     for (i=0; scr_h > i; i++)
     {

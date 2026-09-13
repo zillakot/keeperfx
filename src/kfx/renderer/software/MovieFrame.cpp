@@ -26,7 +26,7 @@ bool movie_submit(const KfxMovieFrame &frame, const KfxMovieTarget &target, int 
     bool scaled, int x, int y, int width, int height)
 {
     if (oracle_active || !kfx_wgpu_native_enabled()) return false;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
     if (!target.pixels || !frame.pixels || frame.width <= 0 || frame.height <= 0 ||
         frame.pitch < frame.width || frame.pitch > 16384 || frame.width > 8192 || frame.height > 8192 ||
         target.pitch <= 0 || target.pitch > 8192 || target.height <= 0 || target.height > 8192 ||
@@ -145,6 +145,7 @@ void kfx_movie_copy(const KfxMovieFrame & frame, const KfxMovieTarget & target, 
 	}
 	if (movie_submit(frame, target, flags, false, (target.view_width - w) >> 1,
         screen_buffer_center_offset / target.pitch, w, frame.height)) return;
+    if (!oracle_active && !kfx_wgpu_native_cpu_barrier()) return;
 	auto dstbuf = &target.pixels[screen_buffer_center_offset + ((target.view_width - w) >> 1)];
 	if (flags & SMK_PixelDoubleLine) {
 		if (flags & SMK_PixelDoubleWidth) {
@@ -242,6 +243,7 @@ void kfx_movie_copy_scaled(const KfxMovieFrame & frame, const KfxMovieTarget & t
 	}
 
     if (movie_submit(frame, target, flags, true, spw, sph, dst_width, dst_height)) return;
+    if (!oracle_active && !kfx_wgpu_native_cpu_barrier()) return;
 
 	for (int sh = 0; sh < sph; sh++) {
 		memset(&dst_buf[sh * scanline], 0, scanline);

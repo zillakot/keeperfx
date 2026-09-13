@@ -1242,6 +1242,7 @@ TbResult LbSpriteDrawUsingScalingDownDataSolidLR(uchar *outbuf, int scanline, in
 TbResult LbSpriteDrawUsingScalingData(long posx, long posy, const struct TbSourceBuffer * src_buf)
 {
     if (kfx_wgpu_sprite(posx, posy, src_buf, NULL, NULL, 0, 0)) return 0;
+    if (!kfx_wgpu_native_cpu_barrier()) return Lb_FAIL;
     SYNCDBG(17,"Drawing at (%ld,%ld)",posx,posy);
     int32_t *xstep;
     int32_t *ystep;
@@ -1364,6 +1365,7 @@ TbResult LbSpriteDrawUsingScalingData(long posx, long posy, const struct TbSourc
 TbResult DrawAlphaSpriteUsingScalingData(long posx, long posy, const struct TbSourceBuffer * src_buf)
 {
     if (kfx_wgpu_sprite(posx, posy, src_buf, NULL, NULL, 0, 3)) return 0;
+    if (!kfx_wgpu_native_cpu_barrier()) return Lb_FAIL;
     SYNCDBG(17,"Drawing at (%ld,%ld)",posx,posy);
     assert(render_alpha != NULL);
     int32_t *xstep;

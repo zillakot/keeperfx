@@ -17,6 +17,8 @@ static void require(int condition, const char *message)
 unsigned short RendererGetDrawFlags(void) { return flags; }
 unsigned char RendererGetDrawColour(void) { return 33; }
 int kfx_wgpu_native_enabled(void) { return enabled; }
+int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
+void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
 int kfx_wgpu_native_cpu_barrier(void) { barriers++; return barrier_ok; }
 void kfx_wgpu_terrain_boundary(int allow) { require(!allow, "bitmap allowed terrain"); }
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,

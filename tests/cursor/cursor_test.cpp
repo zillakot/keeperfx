@@ -1,4 +1,5 @@
 #include "kfx/renderer/WgpuCursor.h"
+#include "kfx/renderer/KfxWgpuFrame.h"
 #include "kfx/renderer/WgpuTerrainBridge.h"
 #include "bflib_sprite.h"
 #include "bflib_vidraw.h"
@@ -25,7 +26,8 @@ extern "C" int LbErrorLog(const char*, ...) { return 0; }
 extern "C" int LbSyncLog(const char*, ...) { return 0; }
 static void* drawing;
 static char error[1024];
-static bool enabled = true;
+static bool enabled = true, shared = false;
+static uint64_t shared_target;
 static unsigned direct_cases;
 extern "C" void cursor_native(uint8_t*, int, int, const TbSprite*, int32_t*, int32_t*);
 static void check(bool result, const char* message)
@@ -33,6 +35,13 @@ static void check(bool result, const char* message)
     if (!result) { std::fprintf(stderr, "%s: %s\n", message, error); std::exit(1); }
 }
 extern "C" int kfx_wgpu_native_enabled() { return enabled; }
+extern "C" int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
+extern "C" void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
+extern "C" int kfx_wgpu_native_cpu_barrier(void) { return 1; }
+extern "C" void kfx_wgpu_native_context_cleanup(void (*)(void*)) {}
+extern "C" void* kfx_wgpu_native_context(void) { return shared && enabled ? drawing : nullptr; }
+extern "C" uint64_t kfx_wgpu_native_target(const KfxGpolyTarget*) { return shared_target; }
+extern "C" void kfx_wgpu_native_invalidate_frame(void) { check(false, "unexpected invalidation"); }
 extern "C" void kfx_wgpu_terrain_boundary(int allow) { check(!allow, "unexpected terrain enabled"); }
 static uint64_t upload(const KfxGpolyTarget& t)
 {
@@ -53,7 +62,7 @@ static uint64_t upload(const KfxGpolyTarget& t)
 extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget* t, const KfxWgpuDrawCommand* command,
     const KfxWgpuNativeResource* resource, const KfxWgpuNativeResource*, KfxWgpuNativeOracle oracle, void* context)
 {
-    uint64_t target = upload(*t);
+    uint64_t target = shared_target ? shared_target : upload(*t);
     uint64_t asset = kfx_wgpu_draw_resource_create(drawing, resource->bytes, resource->length,
         1, 1, 1, error, sizeof(error));
     check(asset, "sprite resource");
@@ -64,7 +73,7 @@ extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget* t, const KfxWgpuDrawCo
     oracle(expected.data(), t->pitch, context);
     check(kfx_wgpu_draw_readback(drawing, target, t->pixels, expected.size(), t->pitch, error, sizeof(error)) == 1, "direct read");
     check(!std::memcmp(t->pixels, expected.data(), expected.size()), "direct CPU oracle differs");
-    kfx_wgpu_draw_target_release(drawing, target, error, sizeof(error));
+    if (!shared_target) kfx_wgpu_draw_target_release(drawing, target, error, sizeof(error));
     ++direct_cases;
     return 1;
 }
@@ -81,6 +90,9 @@ static void paint(SDL_Surface* surface, unsigned seed)
 static std::vector<uint8_t> bytes(SDL_Surface* s)
 {
     auto* p = static_cast<uint8_t*>(s->pixels);
+    if (shared_target && s == lbDrawSurface)
+        check(kfx_wgpu_draw_readback(drawing, shared_target, p, size_t(s->pitch) * s->h,
+            s->pitch, error, sizeof(error)) == 1, "diagnostic shared frame read");
     return {p, p + size_t(s->pitch) * s->h};
 }
 static void same(SDL_Surface* surface, const std::vector<uint8_t>& expected, const char* message)
@@ -108,6 +120,12 @@ static std::vector<std::vector<uint8_t>> lifecycle(bool gpu, bool advanced, int 
     lbDisplay.MouseWindowWidth = lbDisplay.PhysicalScreenWidth = screen->w;
     lbDisplay.MouseWindowHeight = lbDisplay.PhysicalScreenHeight = screen->h;
     paint(screen, 0);
+    if (shared && gpu) {
+        const KfxGpolyTarget t = {static_cast<uint8_t*>(screen->pixels),
+            uint32_t(screen->w), uint32_t(screen->h), uint32_t(screen->pitch)};
+        shared_target = upload(t);
+        check(kfx_wgpu_draw_frame_begin(drawing, shared_target, error, sizeof(error)) == 1, "shared frame begin");
+    }
     TbPoint position = offscreen ? TbPoint{80,80} : TbPoint{3,4};
     TbPoint offset = {1,2};
     LbI_PointerHandler pointer;
@@ -129,6 +147,11 @@ static std::vector<std::vector<uint8_t>> lifecycle(bool gpu, bool advanced, int 
     lbInteruptMouse = true;
     pointer.Release(); frames.push_back(bytes(screen));
     pointer.Release(); frames.push_back(bytes(screen));
+    if (shared_target) {
+        check(kfx_wgpu_draw_frame_end(drawing, error, sizeof(error)) == 1, "shared frame end");
+        kfx_wgpu_draw_target_release(drawing, shared_target, error, sizeof(error));
+        shared_target = 0;
+    }
     SDL_DestroySurface(screen);
     return frames;
 }
@@ -174,6 +197,19 @@ int main()
         }
         check(native == gpu, "actual pointer lifecycle differs");
     }
+    shared = true;
+    for (int scale = 1; scale <= 3; ++scale) for (bool advanced : {false,true}) for (bool offscreen : {false,true}) {
+        auto native = lifecycle(false, advanced, scale, &sprite, palette, offscreen);
+        const auto before_shared = kfx_wgpu_cursor_counters();
+        auto gpu = lifecycle(true, advanced, scale, &sprite, palette, offscreen);
+        const auto after_shared = kfx_wgpu_cursor_counters();
+        check(native == gpu, "shared frame actual pointer lifecycle differs");
+        check(before_shared.bridge_initial_index_bytes == after_shared.bridge_initial_index_bytes &&
+            before_shared.cpu_sprite_draws == after_shared.cpu_sprite_draws &&
+            before_shared.cpu_backups == after_shared.cpu_backups &&
+            before_shared.cpu_compositions == after_shared.cpu_compositions, "shared frame cursor used CPU frame transfer or fallback");
+    }
+    shared = false;
     for (int scale = 1; scale <= 3; ++scale) {
         auto* screen = SDL_CreateSurface(37, 31, SDL_PIXELFORMAT_INDEX8);
         auto* expected = SDL_CreateSurface(37, 31, SDL_PIXELFORMAT_INDEX8);
@@ -255,6 +291,8 @@ int main()
         check(gpu.ComposeTarget(target,37,31,4,5,rect,true), "borrowed restore");
         check(kfx_wgpu_draw_readback(drawing,target,pixels.data(),pixels.size(),37,error,sizeof(error)) == 1, "borrowed read");
         for (auto p : pixels) check(p == 71, "borrowed restoration");
+        kfx_wgpu_cursor_detach_context(drawing);
+        check(!gpu.ComposeTarget(target,37,31,4,5,rect,false), "detached cursor reused snapshots");
         kfx_wgpu_draw_target_release(drawing,target,error,sizeof(error));
         std::memcpy(data, artwork.data(), sizeof(data));
     }
@@ -265,5 +303,5 @@ int main()
         after.gpu.readback_bytes && after.failures == 3, "missing counters");
     SDL_DestroyPalette(palette);
     kfx_wgpu_draw_destroy(drawing);
-    std::printf("%u actual native direct cursor cases; 81 advanced compositions/restores; 12 pointer lifecycle traces; failure checkpoints and borrowed targets exact\n", direct_cases);
+    std::printf("%u actual native direct cursor cases; 81 advanced compositions/restores; 24 pointer lifecycle traces including 12 shared frames; failure checkpoints and borrowed targets exact\n", direct_cases);
 }

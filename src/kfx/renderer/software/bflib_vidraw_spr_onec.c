@@ -1271,6 +1271,7 @@ TbResult LbSpriteDrawOneColourUsingScalingDownDataSolidLR(uchar *outbuf, int sca
 TbResult LbSpriteDrawOneColourUsingScalingData(long posx, long posy, const struct TbSprite *sprite, TbPixel colour)
 {
     if (kfx_wgpu_sprite(posx, posy, NULL, sprite, NULL, colour, 2)) return 0;
+    if (!kfx_wgpu_native_cpu_barrier()) return Lb_FAIL;
     SYNCDBG(17,"Drawing at (%ld,%ld)",posx,posy);
     int32_t *xstep;
     int32_t *ystep;

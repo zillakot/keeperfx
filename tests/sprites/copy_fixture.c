@@ -16,6 +16,9 @@ static void require(int condition, const char *message)
 }
 unsigned short RendererGetDrawFlags(void) { return flags; }
 int kfx_wgpu_native_enabled(void) { return enabled; }
+int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
+void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
+int kfx_wgpu_native_cpu_barrier(void) { return 1; }
 void kfx_wgpu_terrain_boundary(int allow) { require(!allow, "terrain boundary"); }
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
     const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,

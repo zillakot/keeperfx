@@ -215,6 +215,7 @@ void LbDrawHVLine(long xpos1, long ypos1, long xpos2, long ypos2, TbPixel colour
   if (wgpu_primitive(primitive, KFX_WGPU_DRAW_RECT, xpos1, ypos1,
       xpos2 == xpos1 ? 1 : xpos2 - xpos1 + 1,
       xpos2 == xpos1 ? (ypos2 >= ypos1 ? ypos2 - ypos1 + 1 : 1) : 1, 0)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
   //And now to drawing
   unsigned char *screen_ptr = SwTargetGraphicsWindowPtr() + xpos1 +
           SwTargetScanline() * ypos1;
@@ -344,6 +345,7 @@ void LbDrawBoxClip(long x, long y, unsigned long width, unsigned long height, Tb
       return;
   if (wgpu_primitive(primitive, KFX_WGPU_DRAW_RECT, xpos,
       ypos / SwTargetScanline() - SwTargetWindowY(), width, height, 0)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
   //And now let's start drawing
   unsigned char *screen_ptr = &SwTargetWScreen()[SwTargetWindowX()] + xpos + ypos;
   unsigned long idxh = height;
@@ -1132,6 +1134,7 @@ TbResult LbSpriteDrawImmediate(long x, long y, const struct TbSprite *spr)
     if (ret != Lb_SUCCESS)
         return ret;
     if (kfx_wgpu_sprite(x, y, NULL, spr, NULL, 0, 4)) return Lb_SUCCESS;
+    if (!kfx_wgpu_native_cpu_barrier()) return Lb_FAIL;
     if ((RendererGetDrawFlags() & (Lb_SPRITE_TRANSPAR4|Lb_SPRITE_TRANSPAR8)) != 0)
         return LbSpriteDrawTranspr(spd.sp,spd.Wd,spd.Ht,spd.r,spd.nextRowDelta,spd.startShift,spd.mirror);
     else
@@ -1421,6 +1424,7 @@ TbResult LbSpriteDrawOneColourImmediate(long x, long y, const struct TbSprite *s
     if (ret != Lb_SUCCESS)
         return ret;
     if (kfx_wgpu_sprite(x, y, NULL, spr, NULL, colour, 5)) return Lb_SUCCESS;
+    if (!kfx_wgpu_native_cpu_barrier()) return Lb_FAIL;
     if ((RendererGetDrawFlags() & (Lb_SPRITE_TRANSPAR4|Lb_SPRITE_TRANSPAR8)) != 0) {
         return LbSpriteDrawTrOneColour(spd.sp,spd.Wd,spd.Ht,spd.r,colour,spd.nextRowDelta,spd.startShift,spd.mirror);
     } else
@@ -1933,6 +1937,7 @@ void LbDrawPixel(long x, long y, TbPixel colour)
 {
     if (wgpu_primitive((struct WgpuPrimitive){WgpuPixel, x, y, 0, 0, colour},
         KFX_WGPU_DRAW_RECT, x, y, 1, 1, 0)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     SwTargetGraphicsWindowPtr()[x + SwTargetScanline() * y] = colour;
 }
 
@@ -1944,6 +1949,7 @@ void LbDrawPixelClip(long x, long y, TbPixel colour)
         return;
     if (wgpu_primitive((struct WgpuPrimitive){WgpuPixelClip, x, y, 0, 0, colour},
         KFX_WGPU_DRAW_RECT, x, y, 1, 1, 0)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     TbPixel *buf;
     int val;
     buf = SwTargetGraphicsWindowPtr() + SwTargetScanline() * y + x;
@@ -1970,6 +1976,7 @@ void LbDrawCircleFilled(long x, long y, long radius, TbPixel colour)
         (struct WgpuPrimitive){WgpuCircleFill, x, y, radius, 0, colour},
         KFX_WGPU_DRAW_CIRCLE_FILLED, x - gpu_radius, y - gpu_radius,
         2 * gpu_radius + 1, 2 * gpu_radius + 1, gpu_radius)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     long r;
     long i;
     long n;
@@ -2073,6 +2080,7 @@ void LbDrawCircleOutline(long x, long y, long radius, TbPixel colour)
         (struct WgpuPrimitive){WgpuCircleOutline, x, y, radius, 0, colour},
         KFX_WGPU_DRAW_CIRCLE_OUTLINE, x - gpu_radius, y - gpu_radius,
         2 * gpu_radius + 1, 2 * gpu_radius + 1, gpu_radius)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     int na;
     int nb;
     int n;

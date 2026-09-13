@@ -1,4 +1,5 @@
 #pragma once
+#include "kfx/renderer/WgpuTerrainBridge.h"
 #include "bflib_vidraw.h"
 #include "bflib_sprite.h"
 

@@ -39,6 +39,9 @@ int kfx_wgpu_map_row(uint8_t *dst, int pitch, int height, int x, int y, int bloc
         count < 1 || count > 2048 || block_size < 1 || block_size > 2048 ||
         x < 0 || y < 0 || (int64_t)x + count * block_size > pitch ||
         (int64_t)y + block_size > height) return 0;
+    if (!kfx_wgpu_native_read_barrier(styles, count * sizeof(*styles)) ||
+        !kfx_wgpu_native_read_barrier(ghost, 65536) ||
+        !kfx_wgpu_native_read_barrier(abyss, 256)) return 0;
     uint8_t bytes[2048 * 2 + 1280];
     for (int i = 0; i < count; i++) {
         if (styles[i] < 0 || styles[i] > 262) return 0;
@@ -62,6 +65,8 @@ int kfx_wgpu_map_texture(uint8_t *dst, int pitch, int width, int height, int x, 
     if (!ready(dst,pitch,width,height) || !texture || dw < 1 || dh < 1 ||
         dw > 640 || dh > 480 || x < -8192 || y < -8192 || x > 8192 || y > 8192 ||
         flags < 0 || flags > 0x70 || (flags & 15)) return 0;
+    if (!kfx_wgpu_native_read_barrier(texture, 31*256+32) ||
+        !kfx_wgpu_native_read_barrier(fade, fade ? 256 : 0)) return 0;
     uint8_t bytes[32*256+256];
     memset(bytes,0,32*256);
     memcpy(bytes,texture,31*256+32);
@@ -95,6 +100,7 @@ int kfx_wgpu_map_marker(uint8_t *dst, int pitch, int height, int x, int y,
     if (!ready(dst,pitch,pitch,height) || !pattern || count < 1 || count > 36 ||
         spread < -4096 || spread > 4096 || cross < 0 || cross > 1 ||
         x < -16384 || x > 16384 || y < -16384 || y > 16384) return 0;
+    if (!kfx_wgpu_native_read_barrier(pattern, count * 2 * sizeof(*pattern))) return 0;
     uint8_t bytes[36*8];
     for (int i=0;i<count;i++) {
         int32_t dx=pattern[2*i],dy=pattern[2*i+1];

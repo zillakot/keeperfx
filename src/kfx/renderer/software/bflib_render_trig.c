@@ -4460,6 +4460,7 @@ void trig_render_md26(struct TrigLocalRend *tlr)
 void trig(struct PolyPoint *point_a, struct PolyPoint *point_b, struct PolyPoint *point_c)
 {
     if (wgpu_trig(point_a, point_b, point_c)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     struct PolyPoint *opt_a;
     struct PolyPoint *opt_b;
     struct PolyPoint *opt_c;

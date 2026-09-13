@@ -31,6 +31,9 @@ uint64_t shadow_hash;
 static void word(FILE *f, uint32_t n) { unsigned char b[] = {n,n>>8,n>>16,n>>24}; if(fwrite(b,1,4,f)!=4)abort(); }
 #ifndef KFX_SHADOW_NATIVE
 int kfx_wgpu_native_enabled(void) { return !fixture_disabled; }
+int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
+void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
+int kfx_wgpu_native_cpu_barrier(void) { return 1; }
 void kfx_wgpu_terrain_boundary(int allow) { (void)allow; }
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target, const struct KfxWgpuDrawCommand *command,
     const struct KfxWgpuNativeResource *source, const struct KfxWgpuNativeResource *table,

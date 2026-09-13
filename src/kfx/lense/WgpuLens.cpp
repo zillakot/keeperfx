@@ -71,6 +71,8 @@ void Oracle(uint8_t* pixels, uint32_t pitch, void* context)
         std::memcpy(storage.data(), e.dst, dl);
         e.dst = storage.data();
     }
+    for (long y = 0; y < e.height; ++y)
+        std::memcpy(e.dst + y * e.dp, pixels + y * pitch, e.width);
     Software(e);
     for (long y = 0; y < e.height; ++y)
         std::memcpy(pixels + y * pitch, e.dst + y * e.dp, e.width);
@@ -79,7 +81,7 @@ void Oracle(uint8_t* pixels, uint32_t pitch, void* context)
 bool Gpu(Effect& e)
 {
     if (!kfx_wgpu_native_enabled()) return false;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
     if (!e.dst || !e.src || !e.asset || e.width <= 0 || e.height <= 0 ||
         e.width > 8192 || e.height > 8192 || e.sp < e.width || e.dp < e.width ||
         e.sp > 1048576 || e.dp > 1048576) return false;
@@ -89,6 +91,7 @@ bool Gpu(Effect& e)
     size_t al;
     if (e.kind == 0) {
         al = e.width * e.height * sizeof(KfxLensLookup);
+        if (!kfx_wgpu_native_read_barrier(e.asset, al)) return false;
         for (long i = 0; i < e.width * e.height; ++i) {
             KfxLensLookup p;
             std::memcpy(&p, e.asset + i * sizeof(p), sizeof(p));
@@ -119,6 +122,9 @@ bool Gpu(Effect& e)
         static_cast<uint32_t>(e.px | (e.py << 8) | (e.sx << 16) | (e.sy << 24)),
         64, static_cast<uint32_t>(64 + sl), static_cast<uint32_t>(64 + sl + al),
         static_cast<uint32_t>(e.aw), static_cast<uint32_t>(e.ah)};
+    if (!kfx_wgpu_native_read_barrier(e.src, sl) ||
+        !kfx_wgpu_native_read_barrier(e.asset, al) ||
+        !kfx_wgpu_native_read_barrier(e.fade, e.kind == 1 ? 33 * 256 : 0)) return false;
     try {
         std::vector<uint8_t> packed(64 + sl + al + (e.kind == 1 ? 33 * 256 : 0));
         for (size_t i = 0; i < 16; ++i)
@@ -147,7 +153,7 @@ bool Gpu(Effect& e)
     } catch (...) { return false; }
 }
 
-void Render(Effect& e) { if (!Gpu(e)) Software(e); }
+void Render(Effect& e) { if (!Gpu(e) && kfx_wgpu_native_cpu_barrier()) Software(e); }
 }
 
 void KfxLensRemap(uint8_t* dst, long dp, const uint8_t* src, long sp, long w, long h, const void* map)

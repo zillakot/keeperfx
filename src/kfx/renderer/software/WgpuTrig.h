@@ -24,7 +24,7 @@ static void wgpu_trig_oracle(uint8_t *pixels, uint32_t pitch, void *context)
 static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint *c)
 {
     if (sizeof(long) != 8 || wgpu_trig_oracle_active || !kfx_wgpu_native_enabled()) return 0;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
     const int textured = vec_mode == 2 || vec_mode == 3 || vec_mode == 7 || vec_mode == 8 ||
         vec_mode == 11 || vec_mode == 12 || vec_mode == 13 || vec_mode == 18 || vec_mode == 19 ||
         vec_mode == 22 || vec_mode == 23 || vec_mode == 5 || vec_mode == 6 || vec_mode == 9 ||
@@ -57,6 +57,9 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
         texture_length = sizeof(block_mem) - (address - base);
         if (texture_length > 65536) texture_length = 65536;
     }
+    if (!kfx_wgpu_native_read_barrier(vec_map, texture_length) ||
+        !kfx_wgpu_native_read_barrier(pixmap.fade_tables, 16384) ||
+        !kfx_wgpu_native_read_barrier(pixmap.ghost, 65536)) return 0;
     uint8_t *source = malloc(60 + texture_length);
     uint8_t *tables = malloc(81920);
     if (source == NULL || tables == NULL) { free(source); free(tables); return 0; }

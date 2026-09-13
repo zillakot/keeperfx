@@ -32,6 +32,7 @@
 #include "bflib_vidsurface.h"
 #include "bflib_vidraw.h"
 #include "kfx/renderer/WgpuCursor.h"
+#include "kfx/renderer/WgpuTerrainBridge.h"
 
 #include "post_inc.h"
 /******************************************************************************/
@@ -109,9 +110,10 @@ static long PointerDraw(long x, long y, const struct TbSprite *spr, TbPixel *out
     int32_t *xstep = cursor_xsteps_array;
     int32_t *ystep = cursor_ysteps_array;
     if (gpu) {
-        const KfxGpolyTarget target = {outbuf, static_cast<uint32_t>(scanline),
+        const KfxGpolyTarget target = {outbuf, static_cast<uint32_t>(lbDisplay.MouseWindowWidth),
             static_cast<uint32_t>(lbDisplay.MouseWindowHeight), static_cast<uint32_t>(scanline)};
         if (kfx_wgpu_cursor_direct(target, spr, xstep, ystep)) return 0;
+        if (!kfx_wgpu_native_cpu_barrier()) return 1;
     }
     outbuf = &outbuf[xstep[0] + scanline * ystep[0]];
     const struct TbSourceBuffer buffer = {
@@ -217,7 +219,7 @@ void LbI_PointerHandler::Initialise(const struct TbSprite *spr, struct TbPoint *
         return;
     }
     buf = (TbPixel *)surfbuf;
-    gpu_cursor = new WgpuCursor;
+    gpu_cursor = new WgpuCursor(kfx_wgpu_native_context());
     if (!PointerScaling(0, 0, sprite) ||
         !gpu_cursor->Initialise(surf1, sprite, cursor_xsteps_array, cursor_ysteps_array)) {
         delete gpu_cursor;
@@ -242,6 +244,7 @@ void LbI_PointerHandler::Initialise(const struct TbSprite *spr, struct TbPoint *
 void LbI_PointerHandler::Draw(bool a1)
 {
     if (gpu_cursor && gpu_cursor->Compose(draw_pos_x, draw_pos_y, rect_1038, false)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     kfx_wgpu_cursor_software(CursorSoftwareCompose);
     unsigned long flags;
     flags = 0x10 | 0x08 | 0x04;
@@ -254,6 +257,7 @@ void LbI_PointerHandler::Backup(bool a1)
 {
     this->needs_redraw = false;
     if (gpu_cursor && gpu_cursor->Backup(surf2, draw_pos_x, draw_pos_y, rect_1038)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     kfx_wgpu_cursor_software(CursorSoftwareBackup);
     unsigned long flags;
     flags = 0x10;
@@ -265,6 +269,7 @@ void LbI_PointerHandler::Backup(bool a1)
 void LbI_PointerHandler::Undraw(bool a1)
 {
     if (gpu_cursor && gpu_cursor->Compose(draw_pos_x, draw_pos_y, rect_1038, true)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     kfx_wgpu_cursor_software(CursorSoftwareCompose);
     unsigned long flags;
     flags = 0x10 | 0x08;

@@ -30,8 +30,9 @@ int kfx_wgpu_bitmap_huge(uint8_t *dst, int pitch, int height, const int32_t *xs,
     KfxWgpuNativeOracle oracle, void *context)
 {
     if (!kfx_wgpu_native_enabled()) return 0;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
     struct KfxGpolyTarget target = {dst, pitch, height, pitch};
+    if (!kfx_wgpu_native_read_barrier(s, sizeof(*s))) return 0;
     if (!valid_target(&target) || !s ||
         !separate(s, sizeof(*s), dst, (size_t)pitch * height)) return 0;
     if (!s->Data || !s->Lines || !xs || !ys || !oracle ||
@@ -44,6 +45,10 @@ int kfx_wgpu_bitmap_huge(uint8_t *dst, int pitch, int height, const int32_t *xs,
         !separate(s->Lines, s->SHeight * sizeof(*s->Lines), dst, capacity) ||
         !separate(xs, (s->SWidth + 1) * sizeof(*xs) * 2, dst, capacity) ||
         !separate(ys, s->SHeight * sizeof(*ys) * 2, dst, capacity)) return 0;
+    if (!kfx_wgpu_native_read_barrier(s->Data, bound) ||
+        !kfx_wgpu_native_read_barrier(s->Lines, s->SHeight * sizeof(*s->Lines)) ||
+        !kfx_wgpu_native_read_barrier(xs, (s->SWidth + 1) * sizeof(*xs) * 2) ||
+        !kfx_wgpu_native_read_barrier(ys, s->SHeight * sizeof(*ys) * 2)) return 0;
     size_t records_base = s->SHeight * 16;
     uint8_t *asset = malloc(records_base + s->SWidth * s->SHeight * 12);
     if (!asset) return 0;
@@ -112,7 +117,7 @@ int kfx_wgpu_bitmap_font(const struct KfxGpolyTarget *target, int wx, int wy,
     KfxWgpuNativeOracle oracle, void *context)
 {
     if (!kfx_wgpu_native_enabled()) return 0;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
     if (!valid_target(target) || !bits || !oracle || wx < 0 || wy < 0 || ww < 1 || wh < 1 ||
         (int64_t)wx + ww > target->width || (int64_t)wy + wh > target->height ||
         sw < 1 || sw > 256 || sh < 1 || sh > 256 || dw < 0 || dh < 0 || (int64_t)dw * dh > 8192 ||
@@ -120,6 +125,7 @@ int kfx_wgpu_bitmap_font(const struct KfxGpolyTarget *target, int wx, int wy,
     if (dw == 0 || dh == 0) return 1;
     size_t bytes = ((sw + 7) / 8) * sh;
     if (!separate(bits, bytes, target->pixels, (size_t)target->pitch * target->height)) return 0;
+    if (!kfx_wgpu_native_read_barrier(bits, bytes)) return 0;
     uint8_t *asset = malloc(bytes + 12);
     if (!asset) return 0;
     word(asset, (foreground & 0xff00) ? 256 : foreground);

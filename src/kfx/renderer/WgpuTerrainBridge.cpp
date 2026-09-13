@@ -10,6 +10,8 @@
 #include <limits>
 
 static WgpuTerrainBridge* active_bridge = nullptr;
+static void (*context_cleanup)(void*) = nullptr;
+extern "C" void kfx_wgpu_native_context_cleanup(void (*cleanup)(void*)) { context_cleanup = cleanup; }
 
 extern "C" int kfx_wgpu_native_enabled(void)
 { return active_bridge != nullptr && !active_bridge->Failed() && !active_bridge->IsOracleActive(); }
@@ -27,7 +29,7 @@ extern "C" void kfx_wgpu_native_flush(void)
 { if (active_bridge != nullptr && !active_bridge->IsOracleActive()) active_bridge->Flush(); }
 
 extern "C" void* kfx_wgpu_native_context(void)
-{ return active_bridge && !active_bridge->Failed() ? active_bridge->Context() : nullptr; }
+{ return active_bridge && !active_bridge->Failed() ? active_bridge->CursorContext() : nullptr; }
 
 extern "C" uint64_t kfx_wgpu_native_target(const KfxGpolyTarget* target)
 { return active_bridge && target ? active_bridge->BorrowTarget(*target) : 0; }
@@ -133,6 +135,7 @@ WgpuTerrainBridge::WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool v
 WgpuTerrainBridge::~WgpuTerrainBridge()
 {
     EndFrame(true);
+    if (m_context && context_cleanup) context_cleanup(m_context);
     ReleaseViews();
     if (active_bridge == this) active_bridge = nullptr;
     if (kfx_gpoly_sink_context == this) kfx_gpoly_set_sink(nullptr, nullptr);
@@ -178,6 +181,10 @@ bool WgpuTerrainBridge::BeginFrame(const KfxGpolyTarget& target, bool discard)
     if (m_failed || !target.pixels || !target.width || !target.height || target.width > target.pitch)
         return false;
     if (!EndFrame(false)) return false;
+    if (m_context && context_cleanup && m_frame_target.pixels &&
+        (target.pixels != m_frame_target.pixels || target.width != m_frame_target.width ||
+        target.height != m_frame_target.height || target.pitch != m_frame_target.pitch))
+        context_cleanup(m_context);
     m_gpu_valid = false;
     m_resident_lease = false;
     m_frame_target = target;
@@ -348,6 +355,7 @@ void WgpuTerrainBridge::DetachPresenter()
 {
     if (!m_borrowed_context) return;
     EndFrame(true);
+    if (m_context && context_cleanup) context_cleanup(m_context);
     ReleaseViews();
     for (const auto& resource : m_textures)
         kfx_wgpu_draw_resource_release(m_context, resource.handle, m_error.data(), m_error.size());
@@ -376,9 +384,12 @@ uint64_t WgpuTerrainBridge::ResidentTarget(const KfxGpolyTarget& target)
 
 uint64_t WgpuTerrainBridge::BorrowTarget(const KfxGpolyTarget& target)
 {
-    const uint64_t handle = ResidentTarget(target);
-    if (handle) m_gpu_dirty = true;
-    return handle;
+    Flush();
+    if (m_failed || m_frame_invalid || !m_resident_lease || !m_gpu_valid ||
+        target.pixels != m_gpu_native_target.pixels || target.width != m_width ||
+        target.height != m_height || target.pitch != m_gpu_native_target.pitch) return 0;
+    m_gpu_dirty = true;
+    return m_target;
 }
 
 void WgpuTerrainBridge::Boundary(bool allow_terrain)
@@ -885,6 +896,7 @@ extern "C" void kfx_wgpu_native_snapshot_release(uint64_t) {}
 extern "C" int kfx_wgpu_native_shadow(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
     const KfxWgpuNativeResource*, const KfxWgpuNativeResource*, uint8_t*, KfxWgpuNativeOracle, void*) { return 0; }
 extern "C" void* kfx_wgpu_native_context(void) { return nullptr; }
+extern "C" void kfx_wgpu_native_context_cleanup(void (*)(void*)) {}
 extern "C" uint64_t kfx_wgpu_native_target(const KfxGpolyTarget*) { return 0; }
 extern "C" int kfx_wgpu_native_enabled(void) { return 0; }
 extern "C" int kfx_wgpu_native_cpu_barrier(void) { return 1; }

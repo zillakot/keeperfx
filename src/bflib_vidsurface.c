@@ -19,6 +19,7 @@
 /******************************************************************************/
 #include "pre_inc.h"
 #include "bflib_vidsurface.h"
+#include "kfx/renderer/WgpuTerrainBridge.h"
 
 #include "bflib_basics.h"
 #include "globals.h"
@@ -82,7 +83,10 @@ TbResult LbScreenSurfaceRelease(struct SSurface *surf)
 TbResult LbScreenSurfaceBlit(struct SSurface *surf, unsigned long x, unsigned long y,
     struct TbRect *rect, unsigned long blflags)
 {
-    // Convert TbRect to SDL rectangles
+    if (!lbDrawSurface || !surf->surf_data) return Lb_FAIL;
+    if ((blflags & 0x08) ? !kfx_wgpu_native_cpu_barrier() :
+        !kfx_wgpu_native_read_barrier(lbDrawSurface->pixels,
+            (size_t)lbDrawSurface->pitch * lbDrawSurface->h)) return Lb_FAIL;
     SDL_Rect srcRect;
 
     srcRect.x = rect->left;
@@ -157,6 +161,7 @@ void *LbScreenSurfaceLock(struct SSurface *surf)
         return NULL;
     }
 
+    if (surf->surf_data == lbDrawSurface && !kfx_wgpu_native_cpu_barrier()) return NULL;
     if (!SDL_LockSurface(surf->surf_data)) {
         ERRORLOG("Failed to lock surface");
         return NULL;

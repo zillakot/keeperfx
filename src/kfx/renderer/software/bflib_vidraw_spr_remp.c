@@ -1249,6 +1249,7 @@ TbResult LbSpriteDrawRemapUsingScalingDownDataSolidLR(uchar *outbuf, int scanlin
 TbResult LbSpriteDrawRemapUsingScalingData(long posx, long posy, const struct TbSourceBuffer * src_buf, const TbPixel *cmap)
 {
     if (kfx_wgpu_sprite(posx, posy, src_buf, NULL, cmap, 0, 1)) return 0;
+    if (!kfx_wgpu_native_cpu_barrier()) return Lb_FAIL;
     SYNCDBG(17,"Drawing at (%ld,%ld)",posx,posy);
     int32_t *xstep;
     int32_t *ystep;

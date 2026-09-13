@@ -225,6 +225,10 @@ static void map_command(uint32_t *h)
             h[15] = NumBackColours*PnC_End;
             length = h[14]+h[15];
         }
+        if (!kfx_wgpu_native_read_barrier(draw_square, 36 * sizeof(*draw_square)) ||
+            (h[0] == 0 && (!kfx_wgpu_native_read_barrier(MapBackColours, 256) ||
+            !kfx_wgpu_native_read_barrier(PanelMap, h[14] - h[13]) ||
+            !kfx_wgpu_native_read_barrier(PanelColours, h[15])))) return;
         uint8_t *bytes = malloc(length);
         if (bytes != NULL)
         {
@@ -254,7 +258,7 @@ static void map_command(uint32_t *h)
             if (accepted) return;
         }
     }
-    map_command_native(h);
+    if (kfx_wgpu_native_cpu_barrier()) map_command_native(h);
 }
 
 static void map_pattern(long x, long y, int count, int spread, TbPixel colour)
@@ -946,7 +950,8 @@ short do_right_map_click(long start_x, long start_y, long curr_mx, long curr_my,
 
 void setup_background(long units_per_px)
 {
-    if (!kfx_wgpu_native_cpu_barrier())
+    if (!kfx_wgpu_native_read_barrier(lbDisplay.WScreen,
+        (size_t)lbDisplay.GraphicsScreenWidth * lbDisplay.GraphicsScreenHeight))
     {
         MapDiagonalLength = 0;
         return;

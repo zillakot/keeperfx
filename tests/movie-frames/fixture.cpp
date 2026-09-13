@@ -16,6 +16,9 @@ static void require(bool condition, const char *message)
     if (!condition) { std::fprintf(stderr, "%s\n", message); std::exit(1); }
 }
 extern "C" int kfx_wgpu_native_enabled(void) { return enabled; }
+extern "C" int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
+extern "C" void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
+extern "C" int kfx_wgpu_native_cpu_barrier(void) { return 1; }
 extern "C" void kfx_wgpu_terrain_boundary(int allow)
 {
     require(allow == 0, "movie allowed pending terrain"); boundaries++;

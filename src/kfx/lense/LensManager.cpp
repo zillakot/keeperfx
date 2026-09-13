@@ -1,3 +1,4 @@
+#include "kfx/renderer/WgpuTerrainBridge.h"
 /******************************************************************************/
 // Free implementation of Bullfrog's Dungeon Keeper strategy game.
 /******************************************************************************/
@@ -594,6 +595,8 @@ void LensManager::CopyBuffer(unsigned char* dstbuf, long dstpitch,
                             unsigned char* srcbuf, long srcpitch,
                             long width, long height)
 {
+    if (dstbuf == srcbuf && dstpitch == srcpitch) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
     unsigned char* dst = dstbuf;
     unsigned char* src = srcbuf;
     for (long i = 0; i < height; i++)

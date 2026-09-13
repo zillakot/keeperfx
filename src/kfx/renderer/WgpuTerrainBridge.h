@@ -12,6 +12,7 @@ int kfx_wgpu_native_read_barrier(const void* bytes, size_t length);
 void kfx_wgpu_native_invalidate_frame(void);
 void kfx_wgpu_native_flush(void);
 void* kfx_wgpu_native_context(void);
+void kfx_wgpu_native_context_cleanup(void (*cleanup)(void*));
 uint64_t kfx_wgpu_native_target(const struct KfxGpolyTarget* target);
 struct KfxWgpuNativeResource {
     const uint8_t* bytes;
@@ -74,6 +75,7 @@ public:
     uint64_t ResidentTarget(const KfxGpolyTarget& target);
     uint64_t BorrowTarget(const KfxGpolyTarget& target);
     void* Context() const { return m_context; }
+    void* CursorContext() const { return m_verify ? nullptr : m_context; }
     bool UsesPresenter() const { return m_borrowed_context; }
     uint64_t Snapshot(const KfxGpolyTarget& target, uint32_t width, uint32_t height,
         uint32_t pitch, uint8_t* checkpoint);

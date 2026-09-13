@@ -8541,6 +8541,7 @@ static int draw_keepsprite_unscaled_in_buffer(unsigned short kspr_n, short angle
     memcpy(oracle.vertices, vertices, sizeof(oracle.vertices));
     oracle.scratch = outbuf;
     if (kfx_wgpu_shadow_sprite(&oracle.sprite, vertices, outbuf, shadow_oracle, &oracle)) return 1;
+    if (!kfx_wgpu_native_cpu_barrier()) return 1;
     shadow_native_mask(&oracle.sprite, outbuf);
     return 0;
 }

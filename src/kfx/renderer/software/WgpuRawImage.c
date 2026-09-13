@@ -46,7 +46,7 @@ int kfx_wgpu_raw_image(uint8_t *dst, int pitch, int height, int dw, int dh, int 
     const uint8_t *source, int sw, int sh, KfxWgpuNativeOracle oracle, void *context)
 {
     if (oracle_active || !kfx_wgpu_native_enabled()) return 0;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
     if (!target_valid(dst, pitch, pitch, height) ||
         dw <= 0 || dh <= 0 || dw > 16384 || dh > 16384 || x < -16384 || x > pitch ||
         y < -16384 || y > height || (int64_t)x + dw < 0 || (int64_t)y + dh < 0) return 0;
@@ -65,7 +65,7 @@ int kfx_wgpu_raw_tile(uint8_t *dst, int pitch, int height, int x, int y, int wid
     const uint8_t *source, int size, KfxWgpuNativeOracle oracle, void *context)
 {
     if (oracle_active || !kfx_wgpu_native_enabled()) return 0;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
     if (!target_valid(dst, pitch, pitch, height) ||
         x < 0 || y < 0 || width <= 0 || rows <= 0 || (int64_t)x + width > pitch ||
         (int64_t)y + rows > height) return 0;
@@ -85,7 +85,7 @@ static void clear_oracle(uint8_t *pixels, uint32_t pitch, void *context)
 int kfx_wgpu_raw_clear(uint8_t *dst, int pitch, int width, int height, uint8_t colour)
 {
     if (oracle_active || !kfx_wgpu_native_enabled()) return 0;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
     if (!target_valid(dst, pitch, width, height)) return 0;
     struct KfxGpolyTarget target = {dst, width, height, pitch};
     struct KfxWgpuDrawCommand command = {0};

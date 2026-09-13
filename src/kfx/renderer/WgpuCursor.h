@@ -16,6 +16,7 @@ struct KfxWgpuCursorCounters {
     KfxWgpuTargetResourceCounters copies;
 };
 KfxWgpuCursorCounters kfx_wgpu_cursor_counters();
+void kfx_wgpu_cursor_detach_context(void* context);
 enum KfxWgpuCursorSoftware { CursorSoftwareSprite, CursorSoftwareBackup, CursorSoftwareCompose };
 void kfx_wgpu_cursor_software(KfxWgpuCursorSoftware operation);
 int kfx_wgpu_cursor_direct(const KfxGpolyTarget& target, const TbSprite* sprite,
@@ -39,6 +40,7 @@ public:
     bool ComposeTarget(uint64_t target, uint32_t width, uint32_t height,
         int x, int y, const TbRect& rect, bool restore);
 private:
+    friend void kfx_wgpu_cursor_detach_context(void* context);
     struct State;
     State* state;
 };

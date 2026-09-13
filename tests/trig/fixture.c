@@ -11,6 +11,9 @@ struct TbColorTables pixmap;
 unsigned char block_mem[TEXTURE_VARIATIONS_COUNT * TEXTURE_BLOCKS_STAT_COUNT * 32 * 32];
 #ifndef KFX_TRIG_NATIVE
 int kfx_wgpu_native_enabled(void) { return 0; }
+int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
+void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
+int kfx_wgpu_native_cpu_barrier(void) { return 1; }
 void kfx_wgpu_terrain_boundary(int allow) { (void)allow; }
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target, const struct KfxWgpuDrawCommand *command,
     const struct KfxWgpuNativeResource *source, const struct KfxWgpuNativeResource *table,

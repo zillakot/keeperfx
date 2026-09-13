@@ -60,7 +60,9 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
     const struct TbSprite *sprite, const TbPixel *remap, TbPixel colour, unsigned mode)
 {
     if (oracle_active || !kfx_wgpu_native_enabled()) return 0;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
+    if (!kfx_wgpu_native_read_barrier(sprite, sprite ? sizeof(*sprite) : 0) ||
+        !kfx_wgpu_native_read_barrier(source, source ? sizeof(*source) : 0)) return 0;
     struct TbSourceBuffer converted;
     if (sprite) {
         converted = (struct TbSourceBuffer){sprite->Data, sprite->SWidth, sprite->SHeight, sprite->SWidth};
@@ -89,6 +91,10 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
     size_t axis = (size_t)w * h * 2;
     size_t length = axis + (w + h) * 8 + 256;
     if (length > 16 * 1024 * 1024) return 0;
+    if (!kfx_wgpu_native_read_barrier(remap, remap ? 256 : 0) ||
+        !kfx_wgpu_native_read_barrier(table, blend ? 65536 : 0) ||
+        (mode < 4 && (!kfx_wgpu_native_read_barrier(xsteps_array + posx * 2, w * 8) ||
+        !kfx_wgpu_native_read_barrier(ysteps_array + posy * 2, h * 8)))) return 0;
     uint8_t *asset = calloc(length, 1);
     if (!asset) return 0;
     int valid = 1;
@@ -120,10 +126,12 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
     for (unsigned y = 0; valid && y < h; y++) {
         unsigned x = 0;
         for (;;) {
+            if (!kfx_wgpu_native_read_barrier(rle, 1)) { valid = 0; break; }
             int run = (int8_t)*rle++;
             if (!run) break;
             unsigned n = run < 0 ? -run : run;
             if (n > w - x) { valid = 0; break; }
+            if (run > 0 && !kfx_wgpu_native_read_barrier(rle, n)) { valid = 0; break; }
             if (run > 0) for (unsigned i = 0; i < n; i++) {
                 asset[2 * (y * w + x + i)] = *rle++;
                 asset[2 * (y * w + x + i) + 1] = ordered && i + 1 == n ? 2 : 1;

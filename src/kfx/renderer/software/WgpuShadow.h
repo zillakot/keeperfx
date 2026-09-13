@@ -17,7 +17,7 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
     KfxWgpuNativeOracle oracle, void *context)
 {
     if (!kfx_wgpu_native_enabled() || sizeof(long) != 8) return 0;
-    kfx_wgpu_terrain_boundary(0);
+    kfx_wgpu_native_flush();
     if (!sprite->data || !scratch || !poly_screen || sprite->width <= 0 || sprite->width > 256 ||
         sprite->height <= 0 || sprite->height > 256 || sprite->clear_width <= 0 ||
         sprite->clear_width > 256 || sprite->clear_height <= 0 || sprite->clear_height > 256 ||
@@ -31,6 +31,7 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
     for (unsigned y = 0; y < sprite->height; y++) {
         unsigned x = 0;
         for (;;) {
+            if (!kfx_wgpu_native_read_barrier(end, 1)) return 0;
             int run = (int8_t)*end++;
             if (!run) break;
             unsigned n = run < 0 ? -run : run;
@@ -41,6 +42,10 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
     }
     if ((uintptr_t)sprite->data < (uintptr_t)scratch + 65536 && (uintptr_t)scratch < (uintptr_t)end) return 0;
     size_t rle_length = end - sprite->data;
+    if (!kfx_wgpu_native_read_barrier(sprite->data, rle_length) ||
+        !kfx_wgpu_native_read_barrier(scratch, 65536) ||
+        !kfx_wgpu_native_read_barrier(pixmap.fade_tables, 16384) ||
+        !kfx_wgpu_native_read_barrier(pixmap.ghost, 65536)) return 0;
     size_t length = 65688 + rle_length;
     uint8_t *asset = malloc(length), *tables = malloc(81920);
     if (!asset || !tables) { free(asset); free(tables); return 0; }

@@ -34,6 +34,8 @@ static uint8_t initial[MAX],expected[MAX],screen[MAX],first[MAX],second[MAX],fad
 static int fw,fh,fp,progress,sx,sy,sw,sh;
 static void word(uint32_t n){uint8_t b[]={n,n>>8,n>>16,n>>24};if(fwrite(b,1,4,output)!=4)abort();}
 int kfx_wgpu_native_enabled(void){return enabled;}
+int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
+void kfx_wgpu_native_flush(void) {}
 int kfx_wgpu_native_cpu_barrier(void){return barrier;}
 void kfx_wgpu_native_invalidate_frame(void){invalid_frames++;frame_valid=0;}
 uint64_t kfx_wgpu_native_snapshot(const struct KfxGpolyTarget* target,uint32_t width,uint32_t height,uint32_t pitch,uint8_t* checkpoint)

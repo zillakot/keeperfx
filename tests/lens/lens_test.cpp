@@ -39,6 +39,9 @@ static void native_oracle(int kind, uint8_t* dst, int dp, const uint8_t* src, in
 static bool capture = false;
 static std::vector<uint8_t> captured_source, captured_initial;
 extern "C" int kfx_wgpu_native_enabled(void) { return capture; }
+extern "C" int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
+extern "C" void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
+extern "C" int kfx_wgpu_native_cpu_barrier(void) { return 1; }
 extern "C" void kfx_wgpu_terrain_boundary(int) {}
 extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget* target, const KfxWgpuDrawCommand*,
     const KfxWgpuNativeResource* source, const KfxWgpuNativeResource*, KfxWgpuNativeOracle, void*)

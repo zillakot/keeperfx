@@ -18,6 +18,8 @@ int kfx_wgpu_map_fade(uint8_t* dst, int pitch, int width, int height,
     size_t size=(size_t)width*height,outsize=(size_t)pitch*(height-1)+width;
     if (overlap(dst,outsize,first,size) || overlap(dst,outsize,second,size) ||
         overlap(dst,outsize,fade,33*256) || overlap(dst,outsize,ghost,65536)) return 0;
+    if (!kfx_wgpu_native_read_barrier(fade, 33*256) ||
+        !kfx_wgpu_native_read_barrier(ghost, 65536)) return 0;
     int own_first=!first_snapshot,own_second=!second_snapshot;
     struct KfxGpolyTarget target={dst,width,height,pitch};
     struct KfxGpolyTarget a={(uint8_t*)first,width,height,width};

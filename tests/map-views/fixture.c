@@ -42,6 +42,8 @@ static uint32_t seed=73;
 static uint8_t random_byte(void){seed=1664525u*seed+1013904223u;return seed>>24;}
 static void word(uint32_t n){uint8_t b[]={n,n>>8,n>>16,n>>24};if(fwrite(b,1,4,output)!=4)abort();}
 int kfx_wgpu_native_enabled(void){return enabled;}
+int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
+void kfx_wgpu_native_flush(void) {}
 int kfx_wgpu_native_cpu_barrier(void){return barrier;}
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,const struct KfxWgpuDrawCommand *command,
     const struct KfxWgpuNativeResource *source,const struct KfxWgpuNativeResource *table,KfxWgpuNativeOracle oracle,void *context)

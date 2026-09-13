@@ -140,6 +140,7 @@ TbBool copy_raw8_image_buffer(unsigned char *dst_buf,const int scanline,const in
     struct RawImageOracle oracle = {nlines, dst_width, dst_height, spw, sph, src_width, src_height, src_buf};
     if (kfx_wgpu_raw_image(dst_buf, scanline, nlines, dst_width, dst_height, spw, sph,
         src_buf, src_width, src_height, raw_image_oracle, &oracle)) return true;
+    if (!kfx_wgpu_native_cpu_barrier()) return false;
     unsigned char* dst;
     SYNCDBG(18, "Starting; screen buf %d,%d screen size %d,%d dst pos %d,%d src %d,%d", (int)scanline, (int)nlines, (int)dst_width, (int)dst_height, (int)spw, (int)sph, (int)src_width, (int)src_height);
     // Source pixel coords
