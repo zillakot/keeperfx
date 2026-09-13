@@ -959,6 +959,20 @@ pub unsafe extern "C" fn kfx_wgpu_draw_prepare_present(
                 &view,
             )?;
             presenter.renderer.check_status()?;
+            if presenter.verify {
+                let (width, height) = presenter.drawing()?.target_dimensions(target)?;
+                let indices = presenter.drawing()?.readback(target)?;
+                verify_surface(
+                    &presenter.renderer,
+                    &presenter.pending.as_ref().unwrap().texture,
+                    &indices,
+                    width,
+                    height,
+                    width,
+                    std::slice::from_raw_parts(palette, palette_length),
+                )?;
+                presenter.verified_frames += 1;
+            }
             Ok(Some(1))
         });
         if result.is_none() && !handle.is_null() {
