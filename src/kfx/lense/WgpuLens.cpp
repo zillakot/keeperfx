@@ -19,34 +19,78 @@ struct Effect {
     unsigned fade_rows = 33;
 };
 
-void Software(const Effect& e)
+void SoftwareRemap(const Effect& e)
 {
-    const unsigned scale_x = e.kind == 0 ? 0 : ((e.kind == 2 ? e.aw : 640) << 16) / e.width;
-    const unsigned scale_y = e.kind == 0 ? 0 : ((e.kind == 2 ? e.ah : 480) << 16) / e.height;
-    const int alpha = std::clamp(e.alpha, 0, 256);
-    for (long y = 0; y < e.height; ++y) {
-        for (long x = 0; x < e.width; ++x) {
-            uint8_t value;
-            if (e.kind == 0) {
-                KfxLensLookup point;
-                std::memcpy(&point, e.asset + (y * e.width + x) * sizeof(point), sizeof(point));
-                value = e.src[point.y * e.sp + point.x];
-            } else if (e.kind == 1) {
-                const int vx = (x * scale_x) >> 16;
-                const int vy = (y * scale_y) >> 16;
-                const int a = e.asset[(((e.py + vy) & 255) << 8) + ((e.px + vx) & 255)];
-                const int b = e.asset[(((e.sy + 65536 - vx) & 255) << 8) + ((e.sx + 65536 - vy) & 255)];
-                value = e.fade[(std::min((a + b) >> 3, 32) << 8) + e.src[y * e.sp + x]];
-            } else {
-                const int ox = std::min<int>((x * scale_x) >> 16, e.aw - 1);
-                const int oy = std::min<int>((y * scale_y) >> 16, e.ah - 1);
-                const uint8_t pixel = e.asset[oy * e.aw + ox];
-                const uint8_t source = e.src[y * e.sp + x];
-                value = pixel == 255 ? source : (pixel * alpha + source * (256 - alpha)) >> 8;
-            }
-            e.dst[y * e.dp + x] = value;
+    const uint8_t* const src = e.src;
+    uint8_t* const dst = e.dst;
+    const long sp = e.sp, dp = e.dp, width = e.width, height = e.height;
+    const uint8_t* entry = e.asset;
+    for (long y = 0; y < height; ++y) {
+        uint8_t* const drow = dst + y * dp;
+        for (long x = 0; x < width; ++x, entry += sizeof(KfxLensLookup)) {
+            KfxLensLookup point;
+            std::memcpy(&point, entry, sizeof(point));
+            drow[x] = src[point.y * sp + point.x];
         }
     }
+}
+
+void SoftwareMist(const Effect& e)
+{
+    const uint8_t* const src = e.src;
+    uint8_t* const dst = e.dst;
+    const uint8_t* const texture = e.asset;
+    const uint8_t* const fade = e.fade;
+    const long sp = e.sp, dp = e.dp, width = e.width, height = e.height;
+    const unsigned scale_x = (640 << 16) / width;
+    const unsigned scale_y = (480 << 16) / height;
+    const int px = e.px, py = e.py, sx = e.sx, sy = e.sy;
+    for (long y = 0; y < height; ++y) {
+        const int vy = (y * scale_y) >> 16;
+        const int primary_row = ((py + vy) & 255) << 8;
+        const int secondary_column = (sx + 65536 - vy) & 255;
+        const uint8_t* const srow = src + y * sp;
+        uint8_t* const drow = dst + y * dp;
+        for (long x = 0; x < width; ++x) {
+            const int vx = (x * scale_x) >> 16;
+            const int a = texture[primary_row + ((px + vx) & 255)];
+            const int b = texture[(((sy + 65536 - vx) & 255) << 8) + secondary_column];
+            drow[x] = fade[(std::min((a + b) >> 3, 32) << 8) + srow[x]];
+        }
+    }
+}
+
+void SoftwareOverlay(const Effect& e)
+{
+    const uint8_t* const src = e.src;
+    uint8_t* const dst = e.dst;
+    const uint8_t* const overlay = e.asset;
+    const long sp = e.sp, dp = e.dp, width = e.width, height = e.height;
+    const int aw = e.aw, ah = e.ah;
+    const unsigned scale_x = (aw << 16) / width;
+    const unsigned scale_y = (ah << 16) / height;
+    const int alpha = std::clamp(e.alpha, 0, 256);
+    const int inverse = 256 - alpha;
+    for (long y = 0; y < height; ++y) {
+        const int oy = std::min<int>((y * scale_y) >> 16, ah - 1);
+        const uint8_t* const orow = overlay + static_cast<long>(oy) * aw;
+        const uint8_t* const srow = src + y * sp;
+        uint8_t* const drow = dst + y * dp;
+        for (long x = 0; x < width; ++x) {
+            const int ox = std::min<int>((x * scale_x) >> 16, aw - 1);
+            const uint8_t pixel = orow[ox];
+            const uint8_t source = srow[x];
+            drow[x] = pixel == 255 ? source : (pixel * alpha + source * inverse) >> 8;
+        }
+    }
+}
+
+void Software(const Effect& e)
+{
+    if (e.width <= 0 || e.height <= 0) return;
+    if (e.kind == 0) SoftwareRemap(e);
+    else if (e.kind == 1) SoftwareMist(e);
+    else SoftwareOverlay(e);
 }
 
 void Oracle(uint8_t* pixels, uint32_t pitch, void* context)

@@ -108,7 +108,7 @@ static void wgpu_primitive_oracle(uint8_t *pixels, uint32_t pitch, void *context
 static int wgpu_primitive(struct WgpuPrimitive primitive, uint32_t kind,
     long x, long y, long width, long height, long radius)
 {
-    if (wgpu_primitive_oracle_active) return 0;
+    if (wgpu_primitive_oracle_active || !kfx_wgpu_native_enabled()) return 0;
     int32_t pitch = SwTargetScanline();
     int32_t screen_height = SwTargetScreenHeight();
     if (pitch <= 0 || screen_height <= 0 || !SwTargetWScreen()
