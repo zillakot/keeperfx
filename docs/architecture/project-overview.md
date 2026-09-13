@@ -1,6 +1,6 @@
 ---
 type: architecture
-description: Explains KeeperFX's game loop, shared world state, rendering, content, and platform support, including this fork's Mac port and standalone Rust tooling.
+description: Explains KeeperFX's game loop, shared world state, rendering, content, and platform support, including this fork's Mac port and optional live Rust presentation.
 ---
 
 # Understanding KeeperFX
@@ -28,14 +28,16 @@ sprites and textures as the reference appearance.
 | Native Apple Silicon game | CMake builds the C/C++ engine; a local `.app` uses Homebrew libraries. See [Mac development](../macos.md). |
 | Rust graphics | The same wgpu palette pipeline handles offline replay and optional live surface presentation. See [live Rust presentation](../live-rust-presentation.md). |
 | Live gameplay rendering | The existing CPU software renderer draws the world; SDL presents by default. An opt-in Rust/wgpu adapter presents those indexed pixels directly to a Metal surface. |
-| Performance | [Paired live measurements](../performance-baselines.md) compare the two presenters in the same binary. Offline replay timings remain development feedback, not gameplay FPS. |
+| Performance | [Final paired live measurements](../performance-baselines.md#recorded-live-presentation-result) establish no reliable overall performance win; SDL already used Metal. Offline replay timings remain development feedback, not gameplay FPS. |
+| Repeatable game checks | [Native game control](../native-game-control.md) drives normal in-process input handlers and real SDL window operations in isolated sessions; it does not prove physical OS input delivery. |
 
 The [Rust port plan](../product/rust-port-plan.md) proposes the migration sequence
 and validation criteria. A GPU world renderer or broader Rust migration would be
-additional work.
-Before pursuing performance changes, measure simulation, drawing and presentation
-separately. Reproducing the current pixels is a correctness milestone, not an FPS
-benchmark.
+additional work. The [next graphics investigation](../product/rust-port-plan.md#next-session-measure-cpu-drawing-and-define-one-extraction-boundary)
+will break down CPU drawing and evaluate a bounded source of commands before
+rasterization. AI, pathfinding and gameplay simulation remain separate CPU work.
+Measure simulation, drawing and presentation separately. Reproducing the current
+pixels is a correctness milestone, not an FPS benchmark.
 
 ## Startup and the game loop
 
