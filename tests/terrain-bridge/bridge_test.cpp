@@ -1,5 +1,6 @@
 #include "kfx/renderer/WgpuTerrainBridge.h"
 #include "kfx/renderer/WgpuShadow.h"
+#include "kfx/renderer/KfxWgpuFrame.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -12,7 +13,21 @@ struct FakeResource { std::vector<uint8_t> bytes; uint32_t width, height, pitch;
 struct FakeContext {
     uint64_t next = 1;
     std::map<uint64_t, FakeResource> resources, targets;
+    struct View { uint64_t root; uint32_t x, y, width, height; };
+    std::map<uint64_t, View> views;
 };
+extern "C" int32_t kfx_wgpu_draw_frame_begin(void*, uint64_t, char*, size_t) { return 1; }
+extern "C" int32_t kfx_wgpu_draw_frame_flush(void*, char*, size_t) { return 1; }
+extern "C" int32_t kfx_wgpu_draw_frame_end(void*, char*, size_t) { return 1; }
+extern "C" int32_t kfx_wgpu_draw_frame_abort(void*, char*, size_t) { return 1; }
+extern "C" uint64_t kfx_wgpu_draw_target_view(void* handle, uint64_t root, uint32_t x, uint32_t y,
+    uint32_t width, uint32_t height, char*, size_t)
+{
+    auto& context = *static_cast<FakeContext*>(handle);
+    const uint64_t id = context.next++;
+    context.views[id] = {root, x, y, width, height};
+    return id;
+}
 extern "C" void* kfx_wgpu_draw_context(void* presenter, char*, size_t) { return presenter; }
 extern "C" int32_t kfx_wgpu_draw_submit_shadow(void*, uint64_t, const KfxWgpuDrawCommand*, uint8_t*, size_t, char*, size_t) { return -1; }
 extern "C" uint64_t kfx_wgpu_draw_target_snapshot(void*, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, char*, size_t) { return 0; }
@@ -43,7 +58,7 @@ extern "C" uint64_t kfx_wgpu_draw_target_create(void* handle, uint32_t width, ui
     return id;
 }
 extern "C" int32_t kfx_wgpu_draw_target_release(void* handle, uint64_t id, char*, size_t)
-{ return static_cast<FakeContext*>(handle)->targets.erase(id) == 1 ? 1 : -1; }
+{ auto& context = *static_cast<FakeContext*>(handle); return context.targets.erase(id) + context.views.erase(id) == 1 ? 1 : -1; }
 extern "C" uint64_t kfx_wgpu_draw_resource_create(void* handle, const uint8_t* bytes, size_t length,
     uint32_t width, uint32_t height, uint32_t pitch, char*, size_t)
 {
@@ -58,13 +73,20 @@ extern "C" int32_t kfx_wgpu_draw_submit(void* handle, uint64_t id, const KfxWgpu
     size_t count, char*, size_t)
 {
     auto& context = *static_cast<FakeContext*>(handle);
-    auto& target = context.targets.at(id);
+    const auto view = context.views.find(id);
+    auto& target = context.targets.at(view == context.views.end() ? id : view->second.root);
+    const size_t offset = view == context.views.end() ? 0 : view->second.y * target.pitch + view->second.x;
     for (size_t i = 0; i < count; ++i) {
         const auto& c = commands[i];
+        if (c.kind == KFX_WGPU_DRAW_CLEAR) {
+            for (uint32_t y = 0; y < c.height; ++y)
+                std::fill_n(target.bytes.data() + offset + y * target.pitch, c.width, c.colour);
+            continue;
+        }
         const auto& source = context.resources.at(c.source);
         if (c.kind == KFX_WGPU_DRAW_IMAGE) {
             for (uint32_t y = 0; y < c.height; ++y)
-                std::memcpy(target.bytes.data() + y * target.pitch, source.bytes.data() + y * source.pitch, c.width);
+                std::memcpy(target.bytes.data() + offset + y * target.pitch, source.bytes.data() + y * source.pitch, c.width);
         } else {
             assert(c.kind == KFX_WGPU_DRAW_GPOLY_SPAN);
             const auto& table = context.resources.at(c.table);
@@ -73,7 +95,7 @@ extern "C" int32_t kfx_wgpu_draw_submit(void* handle, uint64_t id, const KfxWgpu
             for (uint32_t x = 0; x < c.width; ++x, value += step) {
                 const uint32_t high = value >> 32;
                 const uint32_t uv = ((high << 8) | (high >> 24)) & 0x1f1f;
-                target.bytes[c.y * target.pitch + c.x + x] = table.bytes[(value & 0xff00) | source.bytes[uv]];
+                target.bytes[offset + c.y * target.pitch + c.x + x] = table.bytes[(value & 0xff00) | source.bytes[uv]];
             }
         }
     }
@@ -278,6 +300,65 @@ int main()
         assert(bridge.GetCounters().target_alias_barriers == 1);
         assert(bridge.FrameValid() && !bridge.Failed());
     }
+    for (bool verify : {false, true}) {
+        std::vector<uint8_t> frame_pixels(24 * 10, 0x6a), independent = frame_pixels;
+        KfxGpolyTarget frame = {frame_pixels.data(), 20, 10, 24};
+        KfxGpolyTarget view = {frame_pixels.data() + 2 * 24 + 3, 12, 6, 24};
+        WgpuTerrainBridge bridge(0, false, verify, true);
+        assert(bridge.BeginFrame(frame));
+        std::vector<uint8_t> source_pixels(12 * 6, 17);
+        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 12, 6, 12};
+        KfxWgpuDrawCommand image = {};
+        image.abi_version = 1;
+        image.kind = KFX_WGPU_DRAW_IMAGE;
+        image.width = image.clip_width = image.source_width = 12;
+        image.height = image.clip_height = image.source_height = 6;
+        image.transparent = KFX_WGPU_DRAW_OPAQUE;
+        for (int i = 0; i < 5; ++i) {
+            bridge.Boundary(false);
+            source_pixels[0] = 17 + i;
+            assert(bridge.SubmitNative(view, image, &source, nullptr, copy_oracle, &source) == 1);
+            copy_oracle(independent.data() + 2 * 24 + 3, 24, &source);
+            bridge.Boundary(true);
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &frame, &a, texture.data(), fade.data()) == 1);
+            oracle(independent, 24, a, texture, fade);
+            bridge.Flush();
+        }
+        std::fill(source_pixels.begin(), source_pixels.end(), 99);
+        assert(bridge.GetCounters().target_creations == 1);
+        assert(bridge.GetCounters().target_alias_barriers == 0);
+        assert(bridge.GetCounters().bridge_initial_index_bytes == 236);
+        assert(bridge.GetCounters().native_copy_bytes == 0);
+        assert(bridge.GetCounters().bridge_readbacks == (verify ? 10 : 0));
+        assert(bridge.EndFrame(true));
+        assert(frame_pixels == independent);
+        assert(bridge.GetCounters().barrier_readbacks == 1);
+        assert(bridge.GetCounters().native_copy_bytes == 200);
+        assert(bridge.BeginFrame(frame, true));
+        std::vector<uint8_t> clear_pixels(200, 144);
+        KfxWgpuNativeResource clear_reference = {clear_pixels.data(), clear_pixels.size(), 20, 10, 20};
+        KfxWgpuDrawCommand clear = {};
+        clear.abi_version = 1;
+        clear.kind = KFX_WGPU_DRAW_CLEAR;
+        clear.colour = 144;
+        clear.width = clear.clip_width = 20;
+        clear.height = clear.clip_height = 10;
+        clear.transparent = KFX_WGPU_DRAW_OPAQUE;
+        assert(bridge.SubmitNative(frame, clear, nullptr, nullptr, copy_oracle, &clear_reference) == 1);
+        copy_oracle(independent.data(), 24, &clear_reference);
+        assert(bridge.GetCounters().bridge_initial_index_bytes == 236);
+        assert(bridge.GetCounters().target_creations == 1);
+        const auto before_read = bridge.GetCounters().barrier_readbacks;
+        assert(bridge.ReadBarrier(clear_pixels.data(), clear_pixels.size()));
+        assert(bridge.GetCounters().barrier_readbacks == before_read);
+        assert(bridge.ReadBarrier(view.pixels, 12));
+        assert(frame_pixels == independent && bridge.ResidentTarget(frame) != 0);
+        assert(bridge.GetCounters().barrier_readbacks == before_read + 1);
+        assert(bridge.SubmitNative(frame, clear, nullptr, nullptr, copy_oracle, &clear_reference) == 1);
+        assert(bridge.GetCounters().bridge_initial_index_bytes == 236);
+        assert(bridge.EndFrame(true));
+        assert(frame_pixels == independent);
+    }
     {
         std::vector<uint8_t> resident_pixels(240, 0x6a), checkpoint = resident_pixels;
         KfxGpolyTarget resident = {resident_pixels.data(), 20, 10, 24};
@@ -291,6 +372,8 @@ int main()
         assert(bridge.Failed() && !bridge.FrameValid());
         assert(!bridge.CpuBarrier() && bridge.ResidentTarget(resident) == 0);
         assert(resident_pixels == checkpoint && bridge.GetCounters().invalid_frames == 1);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
+        assert(resident_pixels == checkpoint && bridge.GetCounters().cpu_gpoly_spans == 0);
         std::fill(resident_pixels.begin(), resident_pixels.end(), 0);
         bridge.FullRedraw();
         assert(bridge.FrameValid() && bridge.Failed());

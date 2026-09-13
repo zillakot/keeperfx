@@ -8,8 +8,11 @@ extern "C" {
 void kfx_wgpu_terrain_boundary(int allow_terrain);
 int kfx_wgpu_native_enabled(void);
 int kfx_wgpu_native_cpu_barrier(void);
+int kfx_wgpu_native_read_barrier(const void* bytes, size_t length);
 void kfx_wgpu_native_invalidate_frame(void);
 void kfx_wgpu_native_flush(void);
+void* kfx_wgpu_native_context(void);
+uint64_t kfx_wgpu_native_target(const struct KfxGpolyTarget* target);
 struct KfxWgpuNativeResource {
     const uint8_t* bytes;
     size_t length;
@@ -56,7 +59,11 @@ public:
     void Flush();
     // CPU pixels are unavailable inside a resident lease until this succeeds.
     bool CpuBarrier();
+    bool ReadBarrier(const void* bytes, size_t length);
     void BeginResident();
+    bool BeginFrame(const KfxGpolyTarget& target, bool discard = false);
+    bool EndFrame(bool materialize);
+    bool OwnsFrame(const KfxGpolyTarget& target) const;
     void InvalidateFrame();
     bool FrameValid() const { return !m_frame_invalid; }
     // Call only after a successful full CPU overwrite, before the next frame draws.
@@ -65,7 +72,9 @@ public:
     bool AttachPresenter(void* presenter);
     void DetachPresenter();
     uint64_t ResidentTarget(const KfxGpolyTarget& target);
+    uint64_t BorrowTarget(const KfxGpolyTarget& target);
     void* Context() const { return m_context; }
+    bool UsesPresenter() const { return m_borrowed_context; }
     uint64_t Snapshot(const KfxGpolyTarget& target, uint32_t width, uint32_t height,
         uint32_t pitch, uint8_t* checkpoint);
     void ReleaseSnapshot(uint64_t snapshot);
@@ -85,6 +94,7 @@ private:
     struct Resource {
         uint64_t handle;
         std::vector<uint8_t> bytes;
+        uint32_t width, height, pitch;
     };
     static int Sink(void* context, const KfxGpolyTarget* target,
         const KfxGpolySpan* span, const uint8_t* texture, const uint8_t* fade);
@@ -102,11 +112,19 @@ private:
     bool PrepareNativeTarget();
     bool ExecutePending(KfxWgpuNativeOracle oracle = nullptr, void* oracle_context = nullptr);
     bool SameTarget(const KfxGpolyTarget& target) const;
+    bool FrameView(const KfxGpolyTarget& target, uint32_t& x, uint32_t& y) const;
+    uint64_t SubmissionTarget();
+    void ReleaseViews();
+    size_t ExpectedOffset() const;
     bool Materialize();
     bool ValidateCpuLease();
     bool m_resident_enabled = false, m_resident_lease = false, m_gpu_valid = false, m_gpu_dirty = false;
     bool m_frame_invalid = false, m_borrowed_context = false;
     KfxGpolyTarget m_gpu_native_target = {};
+    KfxGpolyTarget m_frame_target = {};
+    bool m_frame_active = false, m_queue_active = false, m_discard_initial = false;
+    struct View { uint32_t x, y, width, height; uint64_t handle; };
+    std::vector<View> m_views;
     std::vector<uint8_t> m_expected, m_cpu_checkpoint;
     bool m_oracle_active = false;
     uint8_t* m_shadow_scratch = nullptr;
