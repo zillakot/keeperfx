@@ -6,7 +6,7 @@
   "counts": {
     "cues_by_category": {
       "creature": 417,
-      "effect": 108,
+      "effect": 115,
       "music": 2,
       "speech": 125
     },
@@ -15,7 +15,7 @@
       "config_field": 468,
       "source_call": 318
     },
-    "tracked_media_files": 0
+    "tracked_media_files": 22
   },
   "input_sha256": {
     "campgns/ami2019/map00002.txt": "19cdde2efb55aadf40ac8c158511158a1ea08e7b77f752ce81a7b610e042fee9",
@@ -78,6 +78,7 @@
     "config/fxdata/terrain.cfg": "d60db88724d07207b97c490f77c22908504bbc696c861f848624e78d12af7cf6",
     "config/fxdata/trapdoor.cfg": "41834275b03415d43d43c1a001ecae5b5a3af2d751f8b74eb61ef1c5bef16649",
     "config/keeperfx.cfg": "4bc9e29d8a66e4383b678b9c746bdc2d6e61018745c539b930e09062304f4f50",
+    "config/mods/audio_audition/fxdata/sounds.cfg": "fb975c5eadaab5f485f5f51d3f7bf90b351d54afb5206bcec56ec52e9616163c",
     "config/mods/tunneller_imp_swap/creatrs/imp.cfg": "c043065b17c5602f7c31022046c15f67fd97fc758f194f5eecc04eb32d384eae",
     "config/mods/tunneller_imp_swap/creatrs/tunneller.cfg": "0a01b60c03c4a14a8bf9cb7112872e389c932976c86b92b6e1c714c078483793",
     "config/mods/tunneller_imp_swap/fxdata/magic.cfg": "eeee91e71429ab10b9c890eb9176cd4679952a3b38d5a2f0323bf6c077f0c850",
@@ -161,7 +162,118 @@
     "lang/speech_rus.po",
     "lang/speech_spa.po"
   ],
-  "tracked_media": [],
+  "tracked_media": [
+    {
+      "path": "config/mods/audio_audition/masters/audition_build.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_button.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_dig1.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_dig2.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_dig3.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_refusal.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_sell.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_tab.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_wall1.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_wall2.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/masters/audition_wall3.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_build.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_button.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_dig1.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_dig2.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_dig3.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_refusal.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_sell.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_tab.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_wall1.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_wall2.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    },
+    {
+      "path": "config/mods/audio_audition/sound/audition_wall3.wav",
+      "format_hint": "wav",
+      "redistribution": "unknown"
+    }
+  ],
   "cues": [
     {"cue_key": "config:config/creatrs/archer.cfg:sounds:Foot", "category": "creature", "trigger": "Foot", "source": {"path": "config/creatrs/archer.cfg", "line": 134}, "definition": "1 4", "legacy_bank": "sound", "legacy_ids": [1, 2, 3, 4], "variant_count": 4, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": null, "channels": null, "language": null, "override_rule": "creature_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": null},
     {"cue_key": "config:config/creatrs/archer.cfg:sounds:Hit", "category": "creature", "trigger": "Hit", "source": {"path": "config/creatrs/archer.cfg", "line": 135}, "definition": "643 3", "legacy_bank": "sound", "legacy_ids": [643, 644, 645], "variant_count": 3, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": null, "channels": null, "language": null, "override_rule": "creature_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": null},
@@ -666,6 +778,13 @@
     {"cue_key": "named:TORCH_AMBIENCE", "category": "effect", "trigger": "TORCH_AMBIENCE", "source": {"path": "config/fxdata/sounds.cfg", "line": 287}, "definition": "78", "legacy_bank": "sound", "legacy_ids": [78], "variant_count": 1, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": null, "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
     {"cue_key": "named:DUNGEON_HEART_BEAM", "category": "effect", "trigger": "DUNGEON_HEART_BEAM", "source": {"path": "config/fxdata/sounds.cfg", "line": 292}, "definition": "157", "legacy_bank": "sound", "legacy_ids": [157], "variant_count": 1, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": null, "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
     {"cue_key": "named:HERO_GATE_AMBIENCE", "category": "effect", "trigger": "HERO_GATE_AMBIENCE", "source": {"path": "config/fxdata/sounds.cfg", "line": 294}, "definition": "973", "legacy_bank": "sound", "legacy_ids": [973], "variant_count": 1, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": null, "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
+    {"cue_key": "config:config/mods/audio_audition/fxdata/sounds.cfg:sounds:TAB_CLICK", "category": "effect", "trigger": "TAB_CLICK", "source": {"path": "config/mods/audio_audition/fxdata/sounds.cfg", "line": 2}, "definition": "audition_tab.wav 1", "legacy_bank": null, "legacy_ids": [], "variant_count": 1, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": "wav", "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
+    {"cue_key": "config:config/mods/audio_audition/fxdata/sounds.cfg:sounds:BUTTON_CLICK2", "category": "effect", "trigger": "BUTTON_CLICK2", "source": {"path": "config/mods/audio_audition/fxdata/sounds.cfg", "line": 3}, "definition": "audition_button.wav 1", "legacy_bank": null, "legacy_ids": [], "variant_count": 1, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": "wav", "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
+    {"cue_key": "config:config/mods/audio_audition/fxdata/sounds.cfg:sounds:REFUSAL", "category": "effect", "trigger": "REFUSAL", "source": {"path": "config/mods/audio_audition/fxdata/sounds.cfg", "line": 4}, "definition": "audition_refusal.wav 1", "legacy_bank": null, "legacy_ids": [], "variant_count": 1, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": "wav", "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
+    {"cue_key": "config:config/mods/audio_audition/fxdata/sounds.cfg:sounds:ROOM_BUILD", "category": "effect", "trigger": "ROOM_BUILD", "source": {"path": "config/mods/audio_audition/fxdata/sounds.cfg", "line": 5}, "definition": "audition_build.wav 1", "legacy_bank": null, "legacy_ids": [], "variant_count": 1, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": "wav", "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
+    {"cue_key": "config:config/mods/audio_audition/fxdata/sounds.cfg:sounds:TILE_SELL", "category": "effect", "trigger": "TILE_SELL", "source": {"path": "config/mods/audio_audition/fxdata/sounds.cfg", "line": 6}, "definition": "audition_sell.wav 1", "legacy_bank": null, "legacy_ids": [], "variant_count": 1, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": "wav", "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
+    {"cue_key": "config:config/mods/audio_audition/fxdata/sounds.cfg:sounds:DIG_IMPACT", "category": "effect", "trigger": "DIG_IMPACT", "source": {"path": "config/mods/audio_audition/fxdata/sounds.cfg", "line": 7}, "definition": "audition_dig1.wav 3", "legacy_bank": null, "legacy_ids": [], "variant_count": 3, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": "wav", "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
+    {"cue_key": "config:config/mods/audio_audition/fxdata/sounds.cfg:sounds:STRIKE_WALL", "category": "effect", "trigger": "STRIKE_WALL", "source": {"path": "config/mods/audio_audition/fxdata/sounds.cfg", "line": 8}, "definition": "audition_wall1.wav 3", "legacy_bank": null, "legacy_ids": [], "variant_count": 3, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": "wav", "channels": null, "language": null, "override_rule": "named_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": "default_once_per_audio_tick"},
     {"cue_key": "config:config/mods/tunneller_imp_swap/creatrs/imp.cfg:sounds:Foot", "category": "creature", "trigger": "Foot", "source": {"path": "config/mods/tunneller_imp_swap/creatrs/imp.cfg", "line": 44}, "definition": "1 4", "legacy_bank": "sound", "legacy_ids": [1, 2, 3, 4], "variant_count": 4, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": null, "channels": null, "language": null, "override_rule": "creature_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": null},
     {"cue_key": "config:config/mods/tunneller_imp_swap/creatrs/imp.cfg:sounds:Hit", "category": "creature", "trigger": "Hit", "source": {"path": "config/mods/tunneller_imp_swap/creatrs/imp.cfg", "line": 45}, "definition": "677 3", "legacy_bank": "sound", "legacy_ids": [677, 678, 679], "variant_count": 3, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": null, "channels": null, "language": null, "override_rule": "creature_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": null},
     {"cue_key": "config:config/mods/tunneller_imp_swap/creatrs/imp.cfg:sounds:Happy", "category": "creature", "trigger": "Happy", "source": {"path": "config/mods/tunneller_imp_swap/creatrs/imp.cfg", "line": 46}, "definition": "675 1", "legacy_bank": "sound", "legacy_ids": [675], "variant_count": 1, "duration_seconds": null, "loop_points_frames": null, "source_format": null, "source_format_hint": null, "channels": null, "language": null, "override_rule": "creature_custom", "production_decision": "unassessed", "provenance": {"audio_source": null, "creator": null, "license": null, "permission": null, "redistribution": "unknown", "editable_master": null, "export_recipe": null}, "stack_policy": null},

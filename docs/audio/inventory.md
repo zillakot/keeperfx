@@ -10,16 +10,17 @@ The [machine-readable manifest](cue-inventory.json) starts A1 of the
 tracked definitions and selected playback references. It does not measure sound,
 load original banks, resolve an active campaign, or prove runtime compatibility.
 
-The first snapshot, based on `ccaff3f52`, contains 108 named effect definitions,
-417 creature definitions and 125 speech bank slots, plus two music resolution
-entry points. Counts describe definitions, not unique recordings: aliases share
+The integrated snapshot contains 115 named effect definitions (108 base and
+seven audition-mod definitions), 417 creature definitions and 125 speech bank
+slots, plus two music resolution entry points. Counts describe definitions, not unique recordings: aliases share
 bank IDs and campaign definitions can override base creatures. The manifest's
 `counts` is authoritative after regeneration.
 
-No audio media files are tracked under the scanned `src`, `config`, `campgns` and
-`lang` directories. This does not establish whether a local game installation has
-assets. Original bank contents, decoded properties, external mods, localized
-recordings and rights still require the local asset audit and listening work.
+The scanned `src`, `config`, `campgns` and `lang` directories contain 22 tracked
+audio files: eleven new procedural audition exports and eleven editable masters.
+The [audition guide](../audio-audition.md) records their provenance and validation.
+Original bank contents, external mods, localized recordings and their rights
+still require the local asset audit and listening work.
 
 ## Generate and inspect
 
