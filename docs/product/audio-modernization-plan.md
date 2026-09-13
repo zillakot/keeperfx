@@ -35,10 +35,12 @@ Delivery records are [PR #11](https://github.com/zillakot/keeperfx/pull/11)
 (inventory) and [PR #13](https://github.com/zillakot/keeperfx/pull/13)
 (audition assets). Issues are disabled and no GitHub Project is attached;
 implementation and listening evidence belong in the fork's PRs.
-[PR #14](https://github.com/zillakot/keeperfx/pull/14) is under review for
-same-name override precedence and atomic variant loading; the current source
-defect and outstanding runtime checks remain documented in the inventory and
-audition guides until that fix lands.
+[PR #14](https://github.com/zillakot/keeperfx/pull/14) fixes same-name override
+precedence and atomic named/creature variant loading. Its
+[production registry regression](../../tests/sound_manager_registry.md) covers
+mapping, cache, family and snapshot behavior with deterministic loader boundaries;
+complete campaign parsing, real decoder rollback and listening remain separate
+runtime checks.
 
 ## Intended experience
 
@@ -74,6 +76,7 @@ mix, especially for mentor speech and frequent UI feedback.
 | Speech | [gui_soundmsgs.cpp](../../src/gui_soundmsgs.cpp) handles queue limits, duplicate/recent-message suppression and file lookup. Banked speech and streamed speech follow different playback and volume paths. |
 | Content and scripting | [sounds.cfg](../../config/fxdata/sounds.cfg), [config_sounds.c](../../src/config_sounds.c) and [lua_api_sound.c](../../src/lua_api_sound.c) already support named cues, numeric redirects, variants, stacking rules and custom files. Extend this system instead of creating a competing asset registry. |
 | Facade | [SoundManager](../../src/sound_manager.cpp) remains a partial wrapper. `playEffect()` ignores its priority and volume parameters and returns the shared `Non3DEmitter`; `stopEffect()` destroys that emitter and its samples. Capture current behavior, then fix these contracts explicitly. |
+| Override precedence | The latest successful named declaration supplies its ID and variant count. Named and creature families publish contiguous IDs atomically; failed families preserve prior mappings and roll back unpublished buffers. See [registry regression scope](../../tests/sound_manager_registry.md); full campaign/mod runtime coverage remains open. |
 | Asset lifetime | Campaign snapshots, map overrides and [save loading](../../src/game_saves.c) rebuild custom sound state. A playback handle must never become a persistent asset identity. |
 | Movies | [bflib_fmvids.cpp](../../src/bflib_fmvids.cpp) decodes with FFmpeg and owns a separate SDL audio stream. Include it in device/shutdown tests; migrate its output only with A/V timing evidence. |
 

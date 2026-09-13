@@ -104,13 +104,12 @@ winning active definition. Duplicate definition keys fail for explicit review.
 
 ## Resolution rules
 
-These are source observations at the snapshot revision, with separate rules for
-config layering and file lookup. They require dedicated runtime coverage before
+These source observations separate config layering from file lookup. They require dedicated runtime coverage before
 an audition pack can promise campaign compatibility.
 
 - **Config layering:** base fxdata, after-base mods, campaign config,
   after-campaign mods, per-map config, then after-map mods. See
-  [config.c](../../src/config.c), `load_config` (line 2275). The default
+  [config.c](../../src/config.c), `load_config`. The default
   `sounds.cfg` header omits the final after-map tier.
 - **`named_custom`:** extension-first search (`.wav`, `.mp3`, `.ogg`, `.flac`
   when omitted), then each tier in priority order: after-map mods' `sound/`,
@@ -119,30 +118,29 @@ an audition pack can promise campaign compatibility.
   WAV can precede a higher tier's OGG when the extension is omitted. Explicit
   filenames avoid this ambiguity. ZIP lookup follows filesystem lookup. See
   [sound_manager.cpp](../../src/sound_manager.cpp),
-  `resolve_sounds_cfg_sound_path` (line 662) and `load_named_sound_fs_or_zip`
-  (line 732).
+  `resolve_sounds_cfg_sound_path` and `load_named_sound_fs_or_zip`.
 - **`creature_custom`:** the corresponding creature search also includes campaign
   creature and base creature directories; see `resolve_creature_sound_path`
-  (line 608) in the same file.
+  in the same file.
 - **Custom variants:** named `hit.wav 3` expands to `hit1.wav`, `hit2.wav`,
   `hit3.wav`; trailing digits preserve their width and increment. Creature paths
-  without trailing digits instead repeat the same path. Both expansion paths cap
-  at 32. See `sound_manager_load_named_sound` (line 772) and
+  without trailing digits instead repeat the same path. Sequential loading supports
+  at most 32 variants; invalid families fail without replacing the prior mapping.
+  See `sound_manager_load_named_sound` and
   [config_crtrmodel.c](../../src/config_crtrmodel.c),
-  `expand_numbered_sound_paths` (line 2286). Do not infer filenames from the
+  `expand_numbered_sound_paths`. Do not infer filenames from the
   `sounds.cfg` example's prose or assume named and creature expansion is identical.
 - **`speech_bank_or_override`:** banked speech uses `speech_<language>.dat`, then
   `speech.dat`, then English bank fallback. An explicit `[speech]` override
   switches to path lookup; `none`, `null` and `0` silence it. See
-  [bflib_sndlib.cpp](../../src/bflib_sndlib.cpp), `load_sound_banks` (around line
-  502), and [gui_soundmsgs.cpp](../../src/gui_soundmsgs.cpp), `output_message`
-  (line 342).
+  [bflib_sndlib.cpp](../../src/bflib_sndlib.cpp), `load_sound_banks`, and
+  [gui_soundmsgs.cpp](../../src/gui_soundmsgs.cpp), `output_message`.
 - **`speech_path`:** language variant, English variant, base path, then first
   available language directory. Each filesystem phase searches campaign config,
   campaign levels, campaign media and main. Finally the current map ZIP tries
   `speech/<language>/`, `speech/eng/`, then `speech/`. The arbitrary-language
   filesystem fallback is enumeration-dependent. See `resolve_speech_path`
-  (line 216) in `gui_soundmsgs.cpp`; English precedes the base path, unlike the
+  in `gui_soundmsgs.cpp`; English precedes the base path, unlike the
   default config's explanatory text.
 - **`music_resolution`:** numbered tracks begin at 2 and select from the first
   available format class in FLAC, WAV, OGG, MP3 priority, using the resolver's
@@ -150,25 +148,32 @@ an audition pack can promise campaign compatibility.
   track is not an immutable filename. Filename playback via `play_music_fgroup`
   searches enabled music mods after-map, after-campaign, then after-base in
   reverse list order before the requested game directory. See
-  `play_music_fgroup` (line 736) and `resolve_track_music_path` (line 782) in
+  `play_music_fgroup` and `resolve_track_music_path` in
   `bflib_sndlib.cpp`.
 
-A source-level precedence defect remains at this snapshot:
-`SoundManager::loadCustomSound` (line 157 in `sound_manager.cpp`) returns an
-already loaded same-name custom asset without comparing paths, and `getSoundId`
-(line 331) prefers custom assets over numeric registry entries. Later custom or
-numeric definitions can therefore fail to replace an earlier custom definition.
-This inventory records the intended ordering and the conflicting implementation;
-it does not mark the defect fixed or claim an in-game reproduction. Resolve and
-validate it before relying on remastered pack fallbacks or override guarantees.
+The same-name precedence defect is fixed in
+[PR #14](https://github.com/zillakot/keeperfx/pull/14): the latest successful
+numeric/custom/ZIP named declaration supplies the active ID and variant count.
+Source reuse republishes that mapping; filesystem reuse compares resolved paths,
+while ZIP reuse compares source audio bytes. Same-path filesystem byte edits are
+outside the hot-reload contract.
+
+Named and creature families reuse IDs only when contiguous, otherwise build a
+contiguous range, and publish only after every variant loads. Failure restores
+prior mappings and rolls back new unpublished bank buffers. Campaign snapshots
+restore named mappings and source caches. The
+[production regression guide](../../tests/sound_manager_registry.md) records
+coverage and limits: deterministic loader/ZIP/decoder boundaries prove registry
+contracts, not full campaign parsing, real OpenAL rollback or listening quality.
+Resolver tier order and raw numeric redirect semantics remain unchanged.
 
 ## Remaining A1 evidence
 
 The custom decoder accepts RIFF/WAV, MP3, BMU-wrapped MP3 and SDL-decoded formats
-including OGG/FLAC (`decode_audio_buffer_and_store`, `bflib_sndlib.cpp`, around line
-1366). Original banks use legacy WAV parsing, including a special conversion from the
-legacy MSADPCM-tagged data to mono 8-bit output for `heart6a.wav` (around line 353). Decoder support does not
-establish the format or channel layout of every cue. Movie sound remains in the
+including OGG/FLAC (`decode_audio_buffer_and_store`, `bflib_sndlib.cpp`).
+Original banks use legacy WAV parsing, including a special conversion from the
+legacy MSADPCM-tagged data to mono 8-bit output for `heart6a.wav`. Decoder support
+does not establish the format or channel layout of every cue. Movie sound remains in the
 separate FFmpeg/SDL path in [bflib_fmvids.cpp](../../src/bflib_fmvids.cpp) and is
 outside this cue extractor.
 
