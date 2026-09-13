@@ -20,6 +20,7 @@ void performance_begin(enum PerformanceScope scope);
 void performance_end(enum PerformanceScope scope);
 void performance_renderer_info(const char* renderer, const char* driver, int width, int height,
     int output_width, int output_height, int vsync);
+void performance_renderer_details(const char* details);
 
 #ifdef __cplusplus
 }

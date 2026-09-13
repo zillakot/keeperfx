@@ -55,3 +55,27 @@ foreach(_t IN LISTS KFX_TARGETS)
 endforeach()
 
 kfx_status("BUILD" "${CMAKE_CXX_COMPILER_ID} -> keeperfx, keeperfx_hvlog")
+
+option(KFX_RUST_PRESENTER "Build optional live Rust/wgpu Metal presentation" OFF)
+if(KFX_RUST_PRESENTER)
+    if(NOT APPLE)
+        message(FATAL_ERROR "Live Rust presentation is currently supported only on macOS")
+    endif()
+    find_program(KFX_CARGO cargo REQUIRED)
+    set(KFX_RUST_TARGET "${CMAKE_BINARY_DIR}/rust-target" CACHE PATH "Cargo build output directory")
+    set(KFX_RUST_LIBRARY "${KFX_RUST_TARGET}/release/libkeeperfx_frame_replay.a")
+    file(GLOB KFX_RUST_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/frame-replay/src/*")
+    add_custom_command(OUTPUT "${KFX_RUST_LIBRARY}"
+        COMMAND ${CMAKE_COMMAND} -E env "CARGO_TARGET_DIR=${KFX_RUST_TARGET}"
+            ${KFX_CARGO} build --locked --release --features live-surface --lib
+            --manifest-path "${CMAKE_SOURCE_DIR}/tools/frame-replay/Cargo.toml"
+        DEPENDS ${KFX_RUST_SOURCES} "${CMAKE_SOURCE_DIR}/tools/frame-replay/Cargo.toml"
+            "${CMAKE_SOURCE_DIR}/tools/frame-replay/Cargo.lock"
+        VERBATIM)
+    add_custom_target(kfx_rust_presenter DEPENDS "${KFX_RUST_LIBRARY}")
+    foreach(_t IN LISTS KFX_TARGETS)
+        add_dependencies(${_t} kfx_rust_presenter)
+        target_compile_definitions(${_t} PRIVATE KFX_RUST_PRESENTER=1)
+        target_link_libraries(${_t} PRIVATE "${KFX_RUST_LIBRARY}" "-framework Metal" "-framework QuartzCore" "-framework Foundation" "-framework AppKit" "-framework IOKit" "-framework CoreGraphics")
+    endforeach()
+endif()

@@ -14,7 +14,7 @@ spec.loader.exec_module(profile)
 
 
 def arguments(**changes):
-    values = dict(headless=True, scene="quiet", warmup_turns=40, turns=20, resolution=(640, 480))
+    values = dict(headless=True, backend="original", scene="quiet", warmup_turns=40, turns=20, resolution=(640, 480))
     values.update(changes)
     return argparse.Namespace(**values)
 
@@ -28,7 +28,11 @@ def engine_output(output, args=None):
                 "end": dict(snapshot, turn=end), "renderer": "software", "video_driver": "dummy",
                 "width": 640, "height": 480, "output_width": 640, "output_height": 480,
                 "vsync_actual": 0, "turns_per_second": 20, "fps_limit": 60, "interpolation": True,
-                "scene": "dungeon", "view": "dungeon_top"}
+                "scene": "dungeon", "view": "dungeon_top",
+                "resources": {"wall_ns": 1_000_000_000,
+                              "process_cpu": {"available": True, "source": "getrusage(RUSAGE_SELF)",
+                                              "user_ns": 200_000_000, "system_ns": 100_000_000},
+                              "rust_allocations": {"available": True, "calls": 10, "requested_bytes": 2000}}}
     rows = ["kind,turn,wall_ns"]
     for turn in range(start, end):
         rows += [f"{kind},{turn},{(turn - start + 1) * 1000000}" for kind in profile.KINDS
@@ -54,8 +58,61 @@ class ProfileTests(unittest.TestCase):
             self.assertAlmostEqual(stats["p99"], 19.81)
             self.assertEqual(stats["max"], 20)
             self.assertEqual((output / "raw.csv").read_bytes(), raw)
-            self.assertTrue(any("CPU time is not collected" in item for item in report["limitations"]))
+            self.assertTrue(any("not CPU-time counters" in item for item in report["limitations"]))
+            self.assertEqual(report["resources"]["process_cpu"]["total_ms"], 300)
+            self.assertEqual(report["resources"]["process_cpu"]["ms_per_turn"], 15)
+            self.assertEqual(report["resources"]["process_cpu"]["core_equivalents"], 0.3)
+            self.assertEqual(report["resources"]["rust_allocations"]["calls_per_presentation"], 0.5)
             self.assertTrue(any("HEADLESS" in item for item in report["limitations"]))
+
+    def test_legacy_wall_report_does_not_invent_cpu_or_allocation_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            metadata = engine_output(output)
+            del metadata["resources"]
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            report = profile.summarize(output, arguments())
+            self.assertIsNone(report["resources"]["process_cpu"])
+            self.assertIsNone(report["resources"]["rust_allocations"])
+            self.assertIn("Process CPU time is not available in this run.", report["limitations"])
+
+    def test_resource_counters_reject_invalid_values_and_keep_unavailable_distinct(self):
+        resources = {"wall_ns": 1000, "process_cpu": {"available": False}, "rust_allocations": {"available": False}}
+        report = profile.summarize_resources(resources, 20, 60)
+        self.assertIsNone(report["process_cpu"])
+        self.assertIsNone(report["rust_allocations"])
+        for value in (0, -1, "1000", True):
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                profile.summarize_resources(dict(resources, wall_ns=value), 20, 60)
+        resources["process_cpu"] = {"available": True, "source": "steady_clock", "user_ns": 2, "system_ns": 1}
+        with self.assertRaisesRegex(RuntimeError, "CPU counters"):
+            profile.summarize_resources(resources, 20, 60)
+        resources["process_cpu"] = {"available": False}
+        resources["rust_allocations"] = {"available": True, "calls": -1, "requested_bytes": 20}
+        with self.assertRaisesRegex(RuntimeError, "allocation counters"):
+            profile.summarize_resources(resources, 20, 60)
+
+    def test_rust_requires_actual_native_adapter_and_non_vsync_mode(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(profile.sys, "platform", "darwin"):
+            output = Path(temporary)
+            args = arguments(headless=False, backend="rust")
+            metadata = engine_output(output, args)
+            metadata.update(renderer="wgpu-metal", video_driver="cocoa",
+                            renderer_details=json.dumps({"adapter": 'Apple "Test" GPU', "backend": "Metal",
+                                                         "present_mode": "Immediate", "format": "Bgra8Unorm"}))
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            self.assertIn("presentation", profile.summarize(output, args)["wall_ms"])
+            for field, value in (("renderer", "metal"), ("video_driver", "dummy"),
+                                 ("renderer_details", "{}"), ("renderer_details", "[]"),
+                                 ("renderer_details", metadata["renderer_details"].replace("Immediate", "Fifo")),
+                                 ("renderer_details", metadata["renderer_details"].replace("Metal", "Vulkan"))):
+                with self.subTest(field=field, value=value):
+                    (output / "raw.csv.json").write_text(json.dumps(dict(metadata, **{field: value})))
+                    with self.assertRaises(RuntimeError):
+                        profile.summarize(output, args)
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(RuntimeError, "native macOS"):
+                profile.summarize(output, arguments(backend="rust"))
 
     def test_non_mac_native_rejects_headless_backend(self):
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(profile.sys, "platform", "linux"):
@@ -117,7 +174,8 @@ class ProfileTests(unittest.TestCase):
     def test_environment_is_opt_in_and_native_by_default(self):
         inherited = {"KFX_FRAME_CAPTURE": "bad", "KFX_FRAME_CAPTURE_COUNT": "32",
                      "KFX_PERF_UNKNOWN": "bad", "SDL_VIDEODRIVER": "dummy",
-                     "SDL_RENDER_DRIVER": "software", "SDL_RENDER_VSYNC": "1", "PATH": "/bin"}
+                     "SDL_RENDER_DRIVER": "software", "SDL_RENDER_VSYNC": "1", "PATH": "/bin",
+                     "KFX_PRESENT_BACKEND": "wgpu", "KFX_WGPU_FAIL_INIT": "1"}
         with mock.patch.dict(os.environ, inherited, clear=True), mock.patch.object(profile.sys, "platform", "darwin"):
             environment = profile.environment_for(arguments(headless=False), Path("/output"))
             self.assertEqual(environment["SDL_VIDEODRIVER"], "cocoa")
@@ -125,7 +183,11 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(environment["SDL_RENDER_VSYNC"], "0")
             self.assertFalse(any(key.startswith("KFX_FRAME_CAPTURE") for key in environment))
             self.assertNotIn("KFX_PERF_UNKNOWN", environment)
+            self.assertNotIn("KFX_WGPU_FAIL_INIT", environment)
+            self.assertEqual(environment["KFX_PRESENT_BACKEND"], "sdl")
             self.assertEqual(environment["KFX_PERF_TURNS"], "20")
+            rust_environment = profile.environment_for(arguments(headless=False, backend="rust"), Path("/output"))
+            self.assertEqual(rust_environment["KFX_PRESENT_BACKEND"], "wgpu")
             environment = profile.environment_for(arguments(scene="possession"), Path("/output"))
             self.assertEqual(environment["KFX_PERF_SCENE"], "possession")
             self.assertEqual(environment["SDL_VIDEODRIVER"], "dummy")
@@ -182,6 +244,8 @@ class ProfileTests(unittest.TestCase):
             report = json.loads((output / "report.json").read_text())
             self.assertEqual(report["status"], "complete")
             self.assertEqual(report["request"]["level"], 20)
+            self.assertEqual(report["request"]["backend"], "original")
+            self.assertEqual(report["environment"]["KFX_PRESENT_BACKEND"], "sdl")
             self.assertEqual((output / "keeperfx.log").read_text(), "engine log")
             self.assertIn("HEADLESS SOFTWARE SMOKE TEST", (output / "report.md").read_text())
             self.assertEqual((root / "keeperfx.cfg").read_text(), "DELTA_TIME=OFF\nVSYNC=ON\n")

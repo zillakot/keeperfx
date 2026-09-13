@@ -7,8 +7,8 @@ description: Capture game frames headlessly and compare standalone Rust/wgpu out
 
 For live original-engine timing, use the separate [performance baseline runner](performance-baselines.md).
 
-The standalone Rust/wgpu tool replays the existing indexed framebuffer. It does
-not replace the game's renderer or change its artwork. Reference and replay must
+The standalone Rust/wgpu tool replays the existing indexed framebuffer. It uses the same palette pipeline as the [optional live presenter](live-rust-presentation.md).
+It does not change the game's artwork. Reference and replay must
 match every RGBA byte, including alpha.
 
 ## Quick feedback on macOS
@@ -161,8 +161,9 @@ is not uploaded by CI.
 
 The Rust package exposes `frame::Frame` and `gpu::Renderer` as a library.
 The offline CLI creates one renderer per invocation, including all entries in a
-sequence. A future adapter can select a surface-compatible device and queue and
-pass them to `Renderer::new`; surface and window integration remain separate work.
+sequence. The live adapter selects a surface-compatible device and queue, constructs
+`Renderer::with_format` for a non-sRGB surface format and calls `render_into`
+with borrowed rows and the acquired surface view. Window ownership remains in SDL.
 
 `Renderer::render(&Frame, scale)` copies the input bytes, submits GPU work and
 returns a borrowed `Rgba8Unorm` texture. It does not wait for completion or map a
@@ -185,8 +186,8 @@ limits before changing retained resources. Rejected inputs leave the renderer
 usable. It owns the supplied device's error/loss callbacks and records the first
 GPU error as terminal. `check_status()` reports errors delivered so far; a future
 adapter must drive device polling and handle polling failures as well as late
-callbacks, then replace the device and renderer after failure. This extraction
-does not implement automatic device recovery or a live fallback.
+callbacks, then replace the device and renderer after failure. The live adapter polls nonblocking each frame and falls back to SDL after a terminal
+error; its surface recovery and fault hooks are described in the live guide.
 
 Only the binary's `offline` module allocates/maps readback buffers. It checks the
 device buffer limit, bounds completion waits and unmaps even on readback failure.

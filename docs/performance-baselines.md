@@ -1,9 +1,9 @@
 ---
 type: guide
-description: Collect bounded, isolated wall-time baselines of the original game simulation, CPU drawing and SDL presentation.
+description: Collect isolated native presentation comparisons, wall-time distributions, process CPU time and scoped Rust allocation counts.
 ---
 
-# Original game performance baselines
+# Game performance measurements
 
 Build the engine and prepare assets as described in [Mac development](macos.md).
 Then run each scenario separately from the repository root:
@@ -13,6 +13,13 @@ python3 scripts/profile-game.py --scene quiet --out out/perf-quiet
 python3 scripts/profile-game.py --scene busy --out out/perf-busy
 python3 scripts/profile-game.py --scene possession --out out/perf-possession
 ```
+
+The original presenter is selected explicitly by default. With the optional Rust
+presenter built on macOS, add `--backend rust` for live Rust/wgpu measurements.
+The runner requires Cocoa/Metal and rejects a fallback to SDL in a requested Rust
+run. Actual Rust adapter, surface format and present mode are recorded separately
+from requested settings. Rust measurements require a native window; headless
+smoke tests support only the original presenter.
 
 These commands open a native game window and exit after the bounded sample.
 Keep the window visible during measurement. In an opted-in local game the hook
@@ -46,7 +53,7 @@ show the actual loaded and evolved workload. Campaign and level overrides must
 be reported as different scenarios, with their resulting population and view.
 
 Each run records engine and asset identities, isolated configuration, command,
-requested settings, actual SDL backend, video driver, VSync, framebuffer/output
+requested settings, actual presentation backend, video driver, VSync, framebuffer/output
 sizes and engine frame limit. Start/end snapshots record simulation turn, creature
 and total thing counts, active camera position/angles/zoom, controlled thing index
 and the five game RNG states. These seeds are observations after startup; this
@@ -66,17 +73,31 @@ and drawing run at different rates.
 | --- | --- |
 | `simulation` | One `update()` call; excludes input polling, packet exchange and turn pacing |
 | `draw` | One `keeper_screen_redraw()` call drawing world and HUD into CPU pixels; excludes light-area setup, focus waiting, direct-message overlays and presentation |
-| `presentation` | Original software renderer's texture lock, cursor composition, indexed-to-RGBA blit, texture unlock/upload and SDL clear/draw/present submission, through cursor cleanup; excludes present-target setup and metadata queries |
-| `present_wait` | Nested `SDL_RenderPresent()` call, including any CPU/driver work and blocking inside that call; **already included in presentation** |
+| `presentation` | Per-frame cursor composition, palette/pixel processing and upload, rendering/present submission and cursor cleanup. Original SDL includes texture lock, indexed-to-RGBA blit, texture unlock/upload and clear/draw/present. Rust includes its surface acquisition, uploads, submission and polling. Excludes target setup and metadata queries. |
+| `present_wait` | Nested SDL or Rust present call, including host work and blocking inside that call; **already included in presentation**. Backend implementations distribute work differently, so this is a diagnostic, not a common GPU/VSync-cost measurement. |
 | `frame_interval` | Time between starts of successive measured presentation calls; includes simulation, drawing, event handling, pacing and scheduling between them |
 
 All series measure elapsed **wall time**, including descheduling or waiting.
 `draw` measures work implemented on the CPU, but is not a thread/process CPU-time
 counter. `present_wait` is not a pure VSync wait: drivers can also block on texture
-lock/upload or elsewhere. No GPU timestamps, GPU completion latency, process CPU
-time, allocation counts or total memory measurements are collected. Do not add
-nested series or call them GPU benchmarks. Additional counters are needed before
-making CPU-utilization, GPU-cost or memory-regression claims.
+lock/upload or elsewhere. No GPU timestamps or GPU completion latency are
+collected. Do not add nested series or call them GPU benchmarks.
+
+Separate measured-window counters record process user and system CPU time using
+`getrusage(RUSAGE_SELF)` on macOS/Linux or `GetProcessTimes` on Windows. They include
+worker threads and exclude startup, warmup, sample-file output and shutdown. Reports
+include CPU milliseconds per turn and presentation and average core equivalents
+(process CPU time divided by measured wall time). These are process-wide counters,
+not component CPU costs; they do not relabel the per-scope wall-time samples. Older
+reports without these counters retain an explicit unavailable value.
+
+Builds with live Rust support also record successful Rust global-allocator
+allocation/reallocation calls and requested bytes over that window. They exclude
+C/C++, SDL and driver/GPU allocations and do not measure retained memory. The
+original backend normally does not activate Rust allocation paths; zero Rust
+allocations there cannot establish a total-process memory advantage. Full heap
+allocation and memory comparisons require additional measurement with explicit
+coverage. Resource counter snapshots themselves add small unquantified overhead.
 
 The existing on-screen timing display remains unchanged. Its logic scope includes
 input and pacing (and can invoke drawing), while its draw scope includes
@@ -88,7 +109,8 @@ are not reused as component baselines.
 The hook is inactive unless `KFX_PERF_OUTPUT` names a new CSV file whose parent
 exists. The runner sets `KFX_PERF_TURN`, `KFX_PERF_TURNS` and
 `KFX_PERF_SCENE=dungeon|possession` only for its child. It strips inherited capture
-and profiling options; simultaneous frame capture is rejected by the engine.
+and profiling options, backend selectors and Rust fault/verification hooks;
+simultaneous frame capture is rejected by the engine.
 The runner rejects existing output directories and output outside ignored `out`.
 
 The hook reserves at most 100,000 records (about 2.4 MB on a 64-bit build), takes
@@ -111,6 +133,49 @@ results for later comparison; original game data and captured results stay under
 ignored `out`. PRs may record aggregate timings and conditions without uploading
 original assets.
 
+## Repeated native A/B comparison
+
+After all builds and other performance work stop, collect five serial pairs for
+each scene with one executable containing both presenters:
+
+```sh
+python3 scripts/benchmark-presenters.py --out out/presentation-ab \
+  --conditions 'Record display/scaling, power mode, window visibility and background load here'
+```
+
+Replace the conditions text with actual observations. The driver runs 30 separate
+processes, alternates original/Rust order between pairs and rotates scene order.
+Every run uses the same default warmup, duration and settings; optional
+`--warmup-turns`, `--turns` and `--resolution` apply to both paths. Keep the window
+visible and unobscured throughout. Never run simultaneous benchmark windows.
+
+The driver rejects mismatched binary, asset, configuration, host or actual output
+identities within each scene. It preserves raw per-run artifacts beneath `runs/`
+and records order and conditions in `manifest.json`. Failures stop collection and
+remain in place. Inspect state/population snapshots for workload differences;
+the runner does not make startup randomness deterministic.
+
+`comparison.json` and `comparison.md` give each run equal weight. They report the
+median and range of run medians and run p95s, and paired percentage changes.
+The median of run p95s is labelled as such; it is not a pooled p95. With original
+duration O and Rust duration R, time saved is `100 * (O - R) / O` and speedup factor
+is `O / R`. Negative time saved means a regression. Keep absolute milliseconds
+beside percentages and report scenes separately. Five pairs support descriptive
+results; varied signs or wide ranges warrant an inconclusive result or further
+complete rounds, not a significance claim.
+
+Both paths remain capped at 60 FPS. Lower presentation duration means reduced
+host overhead; 60 versus 60 FPS does not prove an uncapped gameplay speedup.
+An uncapped comparison would need a separately validated matched configuration
+and a new complete matrix. Rust VSync-off measurements require actual Immediate
+or Mailbox present mode; silent FIFO fallback is rejected.
+
+The timing matrix does not replace the live milestone's pixel, lifecycle,
+gameplay, audio and save/reload checks in the [Rust port plan](product/rust-port-plan.md).
+The profiling runner disables sound and gameplay commands, so run those checks
+separately. Scoped Rust allocation counts also leave total-process allocation
+and memory comparisons outstanding.
+
 ## Asset-free checks and headless validation
 
 ```sh
@@ -121,6 +186,6 @@ python3 scripts/profile-game.py --headless --scene quiet --turns 20 --out out/pe
 Unit tests use synthetic CSV and fake engines. The second command needs local
 original assets and validates the collection pipeline using SDL dummy/software;
 its report is explicitly labelled headless. It is **not native window performance**
-and must not be compared to a live SDL/Metal or future Rust surface baseline.
+and must not be compared to a live SDL/Metal or Rust surface baseline.
 CI runs redistributable checks without original game assets. Native performance
 runs remain local, and their results are not CI performance thresholds.

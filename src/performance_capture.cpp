@@ -1,4 +1,10 @@
 #include "pre_inc.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <sys/resource.h>
+#endif
 #include "performance_capture.h"
 #include "keeperfx.hpp"
 #include "creature_states.h"
@@ -17,10 +23,59 @@
 #include <vector>
 #include "post_inc.h"
 
+#ifdef KFX_RUST_PRESENTER
+extern "C" void kfx_wgpu_allocation_counts(uint64_t* allocations, uint64_t* requested_bytes);
+#endif
+
 namespace {
 using Clock = std::chrono::steady_clock;
 struct Sample { int scope; unsigned long turn; uint64_t ns; };
 struct Scope { Clock::time_point start; unsigned long turn; bool active = false; };
+struct Resources {
+    Clock::time_point wall;
+    uint64_t user_ns = 0, system_ns = 0, allocations = 0, allocated_bytes = 0;
+    bool cpu_available = false;
+};
+
+Resources resources()
+{
+    Resources r;
+    r.wall = Clock::now();
+#ifdef _WIN32
+    FILETIME created, exited, kernel, user;
+    r.cpu_available = GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user) != 0;
+    if (r.cpu_available) {
+        r.user_ns = ((static_cast<uint64_t>(user.dwHighDateTime) << 32) | user.dwLowDateTime) * 100;
+        r.system_ns = ((static_cast<uint64_t>(kernel.dwHighDateTime) << 32) | kernel.dwLowDateTime) * 100;
+    }
+#else
+    struct rusage usage;
+    r.cpu_available = getrusage(RUSAGE_SELF, &usage) == 0;
+    if (r.cpu_available) {
+        r.user_ns = static_cast<uint64_t>(usage.ru_utime.tv_sec) * 1000000000 + usage.ru_utime.tv_usec * 1000;
+        r.system_ns = static_cast<uint64_t>(usage.ru_stime.tv_sec) * 1000000000 + usage.ru_stime.tv_usec * 1000;
+    }
+#endif
+#ifdef KFX_RUST_PRESENTER
+    kfx_wgpu_allocation_counts(&r.allocations, &r.allocated_bytes);
+#endif
+    return r;
+}
+
+std::string json_quote(const std::string& value)
+{
+    std::string result = "\"";
+    for (unsigned char c : value) {
+        if (c == '"' || c == '\\') result += std::string("\\") + static_cast<char>(c);
+        else if (c < 0x20) {
+            char escaped[7];
+            std::snprintf(escaped, sizeof(escaped), "\\u%04x", c);
+            result += escaped;
+        } else result += static_cast<char>(c);
+    }
+    return result + '"';
+}
+
 struct Profile {
     const char* output = std::getenv("KFX_PERF_OUTPUT");
     unsigned long warmup = 40, turns = 200, start_turn = 0;
@@ -31,7 +86,8 @@ struct Profile {
     std::vector<Sample> samples;
     std::array<Scope, PerfScopeCount> scopes;
     Clock::time_point last_present;
-    std::string start_state, renderer, driver;
+    std::string start_state, renderer, driver, renderer_details;
+    Resources start_resources;
     int width = 0, height = 0, output_width = 0, output_height = 0, vsync = -2;
 };
 Profile& profile() { static Profile p; return p; }
@@ -85,6 +141,9 @@ void fail(Profile& p, const char* reason)
 void finish(Profile& p)
 {
     p.active = false;
+    const Resources end_resources = resources();
+    const bool cpu_available = p.start_resources.cpu_available && end_resources.cpu_available;
+    const uint64_t wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_resources.wall - p.start_resources.wall).count();
     const char* names[] = {"simulation", "draw", "presentation", "present_wait", "frame_interval"};
     std::fprintf(p.file, "kind,turn,wall_ns\n");
     for (const Sample& s : p.samples)
@@ -98,13 +157,30 @@ void finish(Profile& p)
     if (!info) { fail(p, "metadata already exists or cannot be created"); return; }
     std::fprintf(info,
         "{\"format\":\"KFXPERF01\",\"complete\":true,\"start\":%s,\"end\":%s,"
-        "\"scene\":\"%s\",\"view\":\"%s\",\"renderer\":\"%s\",\"video_driver\":\"%s\","
+        "\"scene\":\"%s\",\"view\":\"%s\",\"renderer\":%s,\"video_driver\":%s,\"renderer_details\":%s,"
         "\"width\":%d,\"height\":%d,\"output_width\":%d,\"output_height\":%d,"
-        "\"vsync_actual\":%d,\"turns_per_second\":%ld,\"fps_limit\":%d,\"interpolation\":%s}\n",
+        "\"vsync_actual\":%d,\"turns_per_second\":%ld,\"fps_limit\":%d,\"interpolation\":%s,"
+        "\"resources\":{\"wall_ns\":%llu,\"process_cpu\":{\"available\":%s,\"source\":\"%s\",\"user_ns\":%llu,\"system_ns\":%llu},"
+        "\"rust_allocations\":{\"available\":%s,\"calls\":%llu,\"requested_bytes\":%llu}}}\n",
         p.start_state.c_str(), state().c_str(), p.possession ? "possession" : "dungeon",
-        p.possession ? "creature" : "dungeon_top", p.renderer.c_str(), p.driver.c_str(),
+        p.possession ? "creature" : "dungeon_top", json_quote(p.renderer).c_str(), json_quote(p.driver).c_str(), json_quote(p.renderer_details).c_str(),
         p.width, p.height, p.output_width, p.output_height, p.vsync,
-        static_cast<long>(turns_per_second), fps_limit_current, is_feature_on(Ft_DeltaTime) ? "true" : "false");
+        static_cast<long>(turns_per_second), fps_limit_current, is_feature_on(Ft_DeltaTime) ? "true" : "false",
+        static_cast<unsigned long long>(wall_ns), cpu_available ? "true" : "false",
+#ifdef _WIN32
+        "GetProcessTimes",
+#else
+        "getrusage(RUSAGE_SELF)",
+#endif
+        static_cast<unsigned long long>(cpu_available ? end_resources.user_ns - p.start_resources.user_ns : 0),
+        static_cast<unsigned long long>(cpu_available ? end_resources.system_ns - p.start_resources.system_ns : 0),
+#ifdef KFX_RUST_PRESENTER
+        "true",
+#else
+        "false",
+#endif
+        static_cast<unsigned long long>(end_resources.allocations - p.start_resources.allocations),
+        static_cast<unsigned long long>(end_resources.allocated_bytes - p.start_resources.allocated_bytes));
     failed = std::ferror(info) != 0;
     failed = std::fclose(info) != 0 || failed;
     if (failed) { std::remove(path.c_str()); fail(p, "writing metadata"); return; }
@@ -166,6 +242,7 @@ void performance_prepare_turn(void)
     } else if (player->view_type != PVT_DungeonTop) return;
     p.start_state = state();
     p.start_turn = get_gameturn();
+    p.start_resources = resources();
     p.active = true;
 }
 
@@ -213,6 +290,17 @@ void performance_renderer_info(const char* renderer, const char* driver, int wid
     p.driver = driver ? driver : "unknown";
     p.width = width; p.height = height;
     p.output_width = output_width; p.output_height = output_height; p.vsync = vsync;
+}
+
+void performance_renderer_details(const char* details)
+{
+    Profile& p = profile();
+    if (!p.active) return;
+    const char* value = details ? details : "";
+    if (!p.renderer_details.empty() && p.renderer_details != value) {
+        fail(p, "renderer details changed during capture"); return;
+    }
+    p.renderer_details = value;
 }
 
 int performance_requested(void) { return profile().output && *profile().output; }

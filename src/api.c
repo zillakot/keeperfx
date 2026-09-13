@@ -26,6 +26,8 @@
 #endif
 
 #include "api.h"
+#include "game_control.h"
+#include <SDL3/SDL_timer.h>
 #include <json.h>
 #include <json-dom.h>
 #include "config_keeperfx.h"
@@ -46,6 +48,10 @@
 
 #define API_SERVER_BUFFER 4096
 
+static char control_buffer[API_SERVER_BUFFER];
+static size_t control_buffer_used = 0;
+static uint64_t control_client_activity = 0;
+
 #define API_SUBSCRIBE_LIST_SIZE 256
 
 #define API_SUBSCRIBE_INACTIVE 0
@@ -63,6 +69,17 @@ struct ApiGlobals
     kfx_socket_t serverSocket;  // Server socket for API communication
     kfx_socket_t activeSocket;  // Active client socket (only one client at a time)
 } api = { KFX_INVALID_SOCKET, KFX_INVALID_SOCKET }; // sockets start invalid, not 0 (0 is a valid fd)
+
+void api_clear_all_subscriptions(void);
+
+static void api_drop_client(void)
+{
+    api_clear_all_subscriptions();
+    if (game_control_enabled()) game_control_disconnect();
+    if (api.activeSocket != KFX_INVALID_SOCKET) kfx_closesocket(api.activeSocket);
+    api.activeSocket = KFX_INVALID_SOCKET;
+    control_buffer_used = 0;
+}
 
 /**
  * Structure representing a subscribed variable.
@@ -190,8 +207,13 @@ static void api_send(const char *data, int len)
                 fd_set wfds;
                 FD_ZERO(&wfds);
                 FD_SET(api.activeSocket, &wfds);
-                if (select((int)(api.activeSocket + 1), NULL, &wfds, NULL, NULL) > 0)
+                struct timeval timeout = {0, 10000};
+                if (select((int)(api.activeSocket + 1), NULL, &wfds, NULL,
+                    game_control_enabled() ? &timeout : NULL) > 0)
                     continue;
+                if (game_control_enabled()) {
+                    api_drop_client();
+                }
             }
         }
         break;
@@ -862,8 +884,7 @@ int api_unsubscribe_var(PlayerNumber plyr_idx, unsigned char valtype, short vali
 
 void api_check_var_update()
 {
-    // Do nothing if API server is not active
-    if (!api.activeSocket)
+    if (api.activeSocket == KFX_INVALID_SOCKET)
     {
         return;
     }
@@ -911,6 +932,7 @@ void api_check_var_update()
                 api_subscriptions[i].var.player_id,
                 api_subscriptions[i].var.name,
                 api_subscriptions[i].var.val);
+            if (api.activeSocket == KFX_INVALID_SOCKET) return;
         }
     }
 }
@@ -1071,11 +1093,34 @@ static void api_process_buffer(const char *buffer, size_t buf_size)
     // Get ack ID of the packet
     ack_id = value_dict_get(value, "ack");
 
+    if (game_control_enabled()) {
+        if (ack_id && value_type(ack_id) != VALUE_INT32) {
+            api_err("CONTROL_ACK_MUST_BE_INT32", NULL);
+            value_fini(&json_data);
+            return;
+        }
+        const char *token = value_string(value_dict_get(value, "token"));
+        if (!token || strcmp(token, game_control_token())) {
+            api_err("CONTROL_UNAUTHORIZED", ack_id);
+            value_fini(&json_data);
+            return;
+        }
+    }
+
     // Get the action the user wants to do
     const char *action = value_string(value_dict_get(value, "action"));
     if (action == NULL)
     {
         api_err("MISSING_ACTION", ack_id);
+        value_fini(&json_data);
+        return;
+    }
+
+    if (!strcmp(action, "control")) {
+        VALUE response;
+        const char *error = game_control_request(value, &response);
+        if (error) api_err(error, ack_id);
+        else api_return_data(true, response, ack_id);
         value_fini(&json_data);
         return;
     }
@@ -1643,6 +1688,8 @@ void api_update_server()
                 fcntl(client, F_SETFL, flags | O_NONBLOCK);
 #endif
                 api.activeSocket = client;
+                control_buffer_used = 0;
+                control_client_activity = SDL_GetTicks();
                 JUSTLOG("Client connected");
             }
         }
@@ -1657,25 +1704,39 @@ void api_update_server()
         int received = (int)recv(api.activeSocket, buffer, API_SERVER_BUFFER - 1, 0);
         if (received > 0)
         {
+            control_client_activity = SDL_GetTicks();
             // TODO: non nullbyte terminated buffers can crash
             // For example: when pressing Ctrl C when conneted over telnet
 
             // Remove any possible trailing newline from the data
             // This makes it work with a Telnet connection as well
-            if (strlen(buffer) > 0 && buffer[strlen(buffer) - 1] == '\n')
+            if (!game_control_enabled() && strlen(buffer) > 0 && buffer[strlen(buffer) - 1] == '\n')
             {
                 buffer[strlen(buffer) - 1] = '\0';
             }
 
-            // Process all JSON objects in the buffer
-            api_process_multipart_json(buffer, strlen(buffer));
+            if (game_control_enabled()) {
+                for (int i = 0; i < received && api.activeSocket != KFX_INVALID_SOCKET; ++i) {
+                    if (buffer[i] == '\n') {
+                        control_buffer[control_buffer_used] = 0;
+                        if (control_buffer_used)
+                            api_process_buffer(control_buffer, control_buffer_used);
+                        control_buffer_used = 0;
+                    } else if (control_buffer_used + 1 < sizeof(control_buffer)) {
+                        control_buffer[control_buffer_used++] = buffer[i];
+                    } else {
+                        api_drop_client();
+                        break;
+                    }
+                }
+            } else {
+                api_process_multipart_json(buffer, strlen(buffer));
+            }
         }
         else if (received == 0)
         {
             // Graceful disconnect
-            api_clear_all_subscriptions();
-            kfx_closesocket(api.activeSocket);
-            api.activeSocket = KFX_INVALID_SOCKET;
+            api_drop_client();
             JUSTLOG("API connection closed");
         }
         else
@@ -1688,12 +1749,15 @@ void api_update_server()
             if (errno != EAGAIN && errno != EWOULDBLOCK)
 #endif
             {
-                api_clear_all_subscriptions();
-                kfx_closesocket(api.activeSocket);
-                api.activeSocket = KFX_INVALID_SOCKET;
+                api_drop_client();
                 JUSTLOG("API connection closed");
             }
         }
+    }
+
+    if (game_control_enabled() && api.activeSocket != KFX_INVALID_SOCKET &&
+        SDL_GetTicks() - control_client_activity > 3000) {
+        api_drop_client();
     }
 
     // Handle variable subscriptions

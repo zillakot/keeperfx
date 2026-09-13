@@ -59,6 +59,11 @@ void RendererShutdown(void)
     s_active_type     = RENDERER_INVALID;
 }
 
+const char* RendererGetPresenterName(void)
+{
+    return s_active_renderer ? s_active_renderer->GetPresenterName() : "uninitialized";
+}
+
 RendererType RendererGetActiveType(void)
 {
     return s_active_type;
