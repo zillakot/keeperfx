@@ -1,14 +1,15 @@
 ---
 type: guide
-description: Build, select and validate optional live Rust/wgpu presentation on Apple Silicon while preserving SDL input and CPU gameplay drawing.
+description: Build, select and validate optional Rust/wgpu presentation and partial GPU drawing on Apple Silicon, including ownership, synchronization and fallback.
 ---
 
 # Live Rust presentation
 
 The optional presenter runs the existing indexed-frame palette shader directly
-on a Metal window surface. Terrain, creatures, effects, menus, HUD and the software
-cursor are still drawn by the existing C/C++ CPU renderer. SDL owns the window,
-events, mouse and keyboard. The default presenter remains SDL.
+on a Metal window surface. Drawing defaults to the C/C++ CPU renderer; the
+separate opt-in [partial GPU drawing path](#partial-gpu-drawing) replaces selected
+terrain and 2D pixel loops. SDL owns the window, events, mouse and keyboard.
+The default presenter remains SDL.
 
 ## Build and select
 
@@ -76,10 +77,11 @@ sampling, matching the existing SDL full-window presentation. Integer scales
 replicate pixels exactly; arbitrary window sizes necessarily produce uneven pixel
 widths. Monitor color management remains outside byte comparison.
 
-Indices/palette are uploaded and one pass renders directly into the acquired
+For framebuffer presentation, indices/palette are uploaded and one pass renders directly into the acquired
 surface. Indexed texture and binding change only when input dimensions change;
 there is no retained offscreen output texture in the live path. There is no routine
-readback or GPU completion wait. wgpu/driver submission and staging allocations
+readback or GPU completion wait in this presenter path. The partial drawing bridge
+below does require synchronous readback. wgpu/driver submission and staging allocations
 still occur; retained resources do not imply allocation-free presentation.
 
 `presentation` covers cursor composition, acquisition, polling/reconfiguration,
@@ -115,3 +117,95 @@ The profile runner removes inherited verification/fault flags and rejects a Rust
 run that actually presents through SDL. Keep lifecycle and interactive gameplay
 findings alongside paired measurements in the delivery PR; unit tests cannot
 establish successful input, audio, save/reload or window behavior.
+
+## Partial GPU drawing
+
+Build with `KFX_RUST_PRESENTER=ON` as above. Set `KFX_DRAW_BACKEND=wgpu` to
+route the implemented terrain and 2D families through compute drawing;
+`KFX_DRAW_BACKEND=software` or leaving it unset keeps CPU drawing. This selector
+is independent of `KFX_PRESENT_BACKEND=sdl|wgpu`: GPU drawing can feed either
+presenter through the synchronized native image. Unsupported platforms retain
+software drawing. The [canonical coverage ledger](product/rust-port-plan.md#execution-and-coverage-ledger)
+records exactly which paths are implemented and validated. Full GPU drawing and
+a speedup are not established.
+
+The [indexed backend](../tools/frame-replay/src/draw.rs) stores one `u32` palette
+index per pixel. CPU binning preserves command order within 16×16 tiles; each GPU
+invocation owns one destination pixel and evaluates its ordered commands. Exact
+integer operations preserve texture/shade lookup and destination-index palette
+composition. The [drawing C ABI](../src/kfx/renderer/WgpuDraw.h) owns copied,
+immutable resource versions and validates complete batches before submission.
+Its direct GPU-target palette presentation API is tested offscreen, but the game
+still presents the synchronized native framebuffer.
+
+[WgpuTerrainBridge](../src/kfx/renderer/WgpuTerrainBridge.cpp) batches selected
+terrain between audited world-dispatch boundaries. In the validated native slice,
+C computes triangle setup, clipping and spans; GPU commands fetch texels, apply
+shade and write indices. Other bucket entries flush terrain first. GPU preparation
+from original vertices is separately tested in [gpoly.rs](../tools/frame-replay/src/gpoly.rs);
+its native integration is in progress. Pixel, box, HV-line and circle hooks in
+[bflib_vidraw.c](../src/kfx/renderer/software/bflib_vidraw.c) use the same bridge.
+Circles execute their integer coverage recurrence on GPU; general-line coverage,
+sprites, text and direct image/effect writers remain unfinished. Circle radii
+above 8,191 and other unsupported input ranges decline to CPU.
+
+At each CPU composition boundary, the bridge supplies the current CPU target as
+an initial indexed image, executes owned GPU commands, reads the complete result
+back, and commits it to the native target. This preserves interleaved CPU drawing,
+cursor composition and existing screenshot/recording behavior. It also incurs
+full-target transfers and waits. Resource versions are repacked/uploaded per
+batch; the path has no measured performance benefit.
+
+The native destination changes only after successful execution/readback and any
+enabled comparison. Failure reconstructs already accepted terrain spans from
+immutable inputs through a CPU interpreter, then disables GPU consumption for the
+bridge lifetime. A declined 2D command runs its legacy pixel loop once. Neither
+path reruns gameplay or picking wrappers. Resource/target changes and cache limits
+also flush pending work. Complete GPU target ownership will require equivalent
+same-frame recovery for every new command and persistent effect target.
+
+### Drawing validation and counters
+
+`KFX_WGPU_DRAW_VERIFY=1` compares bridge output with a separate CPU oracle before
+committing it. This verifies indexed drawing; `KFX_WGPU_VERIFY=1` separately checks
+acquired wgpu presentation surfaces. A screenshot of the synchronized native
+image does not prove a window surface was acquired or displayed. Visible surface
+validation for this drawing candidate is pending an unlocked display; the current
+native evidence and its source/binary limits are in the coverage ledger.
+
+`KFX_WGPU_DRAW_FAIL_INIT=1` injects drawing initialization failure;
+`KFX_WGPU_DRAW_FAIL_AFTER=N` injects failure after N successful drawing batches.
+`KFX_WGPU_DRAW_STATS` accepts an output JSON path for cumulative counts:
+
+- `gpu_spans` / `gpu_pixels`: terrain work; `native_commands`: generic primitive submissions.
+- `cpu_gpoly_spans`: declined terrain sink calls only; `cpu_replayed_spans`: failure reconstruction.
+- `verification_cpu_spans` / `verification_cpu_commands`: explicitly enabled comparison work.
+- `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers.
+
+Zero declined spans is not a whole-renderer CPU-drawing count. These counters
+measure work and transfers, not elapsed GPU time or whole-process memory. Keep
+verification, fault injection, control and capture separate from performance runs.
+The current bridge's routine readbacks cannot simply be disabled for a benchmark;
+removing them requires the remaining composition migration.
+
+Asset-free native fixtures and explicit GPU tests reproduce bounded correctness:
+
+```sh
+cmake -S tests/gpoly -B out/gpoly-tests -DKFX_GPOLY_ASAN=ON
+cmake --build out/gpoly-tests
+ctest --test-dir out/gpoly-tests --output-on-failure
+KFX_GPOLY_TRIANGLE_FIXTURE="$PWD/out/gpoly-tests/triangles.bin" \
+  cargo test --locked --manifest-path tools/frame-replay/Cargo.toml \
+  --test gpoly_gpu -- --ignored --test-threads=1
+cmake -S tests/primitives -B out/primitive-tests -DKFX_PRIMITIVE_ASAN=ON
+cmake --build out/primitive-tests
+ctest --test-dir out/primitive-tests --output-on-failure
+KFX_PRIMITIVE_FIXTURE="$PWD/out/primitive-tests/primitives.bin" \
+  cargo test --locked --manifest-path tools/frame-replay/Cargo.toml \
+  --lib gpu_actual_legacy_primitives -- --ignored --test-threads=1
+```
+
+These tests need SDL3 headers and a working GPU adapter; they use synthetic assets.
+The [workflow](../.github/workflows/frame-replay.yml) also generates native fixtures
+for required software-Vulkan checks. A local Metal pass does not establish remote
+CI success, native gameplay coverage or exact-head delivery validation.

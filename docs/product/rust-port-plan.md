@@ -145,8 +145,12 @@ and threading changes must not silently change simulation order.
 Preserve the original sprites, textures, palette lookup, nearest sampling, draw
 order and pixel coverage. GPU world drawing needs scene or draw-command data
 **before rasterization**. Replaying the finished framebuffer only changes
-presentation; it cannot remove CPU terrain or sprite drawing. No GPU world drawing
-has been implemented, and no new renderer architecture has been selected.
+presentation; it cannot remove CPU terrain or sprite drawing. The implemented
+foundation uses ordered indexed commands and integer compute drawing, with one
+GPU-owned `u32` palette index per pixel. CPU tile lists retain submission order;
+each GPU invocation exclusively owns a destination pixel. The live integration
+currently synchronizes that target with remaining CPU drawing. Full GPU target
+ownership across the game frame remains open.
 
 ### Active delivery: full wgpu drawing
 
@@ -220,31 +224,64 @@ portable procedures, aggregate evidence and redistributable fixtures.
 
 ### Execution and coverage ledger
 
-All entries start open. Replace status with source-backed implementation and
-validation evidence as work lands; a fallback invocation remains uncovered GPU
-work. Record separate exact-pixel, native runtime and performance results.
+This ledger records the completed 2026-09-13 implementation slices and their
+separate validation identities. It does not certify the combined development head.
+The [live guide](../live-rust-presentation.md#partial-gpu-drawing) describes selection,
+ownership, synchronization, counters and failure behavior.
 
-| Gate | Status | Required evidence |
+| Gate | Status | Evidence and remaining work |
 | --- | --- | --- |
-| Inventory and measurement | Open | Complete drawing call graph, coverage families, measured scene preparation/rasterization/UI costs and instrumentation overhead; preserve distinct simulation, process CPU and GPU measurements. |
-| Extract commands | Open | Immutable inputs before rasterization, bounded ABI/resource lifetimes and explicit ordering; synthetic fixtures and unchanged reference pixels; C/C++ retains simulation authority. |
-| Implement GPU drawing | Open | wgpu draws commands directly for each family, with exact clipping, coverage, transparency, palette/shade and integer-scaling comparisons; account for extraction, upload, composition and synchronization. |
-| Cover every drawing path | Open | Complete the family matrix below and audit framebuffer writes/callers for unlisted paths; no silent CPU drawing in the claimed full GPU mode. |
-| Native validation | Open | Same-input pixel comparisons plus isolated gameplay, save/reload, view transitions, menus, window lifecycle and recovery; verify final source/binary and distinguish native control from physical OS input. |
-| Performance and delivery | Open | Serial matched baseline/candidate runs, absolute costs and tails, settings and source identities; full uncapped matrix before FPS claims; exact-head CI and final merge verification after required work is complete. |
+| Inventory and measurement | Inventoried; measurement incomplete | Drawing families and source boundaries below; opt-in coarse timing at `02f4587bc`. Native quiet/possession/default hook smokes passed. Instrumentation overhead, busy/front-view coverage, resolution matrix and matched measurements remain open. |
+| Extract commands | Partial | [Gpoly capture](../../src/kfx/renderer/GpolyCapture.h) owns span/resource snapshots; reviewed CPU oracle at `beec45800`: 615 fixtures and 20,389 spans matched native indices. Original-vertex GPU setup is tested separately; native routing is in progress. Other families need immutable commands. |
+| Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h): ordered clear/rectangle/image/span commands, palette lookup composition and nearest palette presentation; reviewed at `c2e594d95`. Original-vertex setup at `f0c719bc6` matches native results for 1,225 triangles. Native 2D hooks at `e203dbd25` have 1,072 exact GPU fixture cases; independent review is pending. |
+| Cover every drawing path | Open | Terrain and bounded 2D hooks suppress selected CPU pixel loops. The remaining families below, CPU terrain setup in the validated live path, and routine upload/readback bridges prevent complete GPU coverage. |
+| Native validation | Partial | Terrain-span binary from `7fde9463f`/`489c2e888` passed isolated gameplay, exact indexed batches and failure reconstruction. Visible wgpu surface proof for this drawing candidate requires an unlocked display; combined-head gameplay, all views, save/reload and lifecycle coverage remain open. |
+| Performance and delivery | Open | No drawing speedup measured. Correctness bridge readbacks remain mandatory. Collect final serial matched runs and absolute costs/tails after coverage and synchronization work; exact-head CI and final merge verification remain required. |
 
-| Drawing family | Inventory | GPU implementation | Exact-pixel/native validation |
-| --- | --- | --- | --- |
-| Dungeon terrain, walls and textured polygons | Open | Open | Open |
-| World sprites, creatures, objects, effects and shadows | Open | Open | Open |
-| Possession and front-view drawing | Open | Open | Open |
-| Menus, text, HUD, panels and overlays | Open | Open | Open |
-| Cursor, minimap, map and other direct framebuffer writes | Open | Open | Open |
-| Palette/shade changes, transparency, clipping and scaling across families | Open | Open | Open |
+| Drawing family and source boundary | Implemented coverage | Remaining GPU work / validation |
+| --- | --- | --- |
+| Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Span shading/stores for `QK_PolygonStandard`, `QK_PolyMode5`, near-FP textured subtypes 0–11; immutable texture/fade snapshots | Native original-vertex routing; other polygon modes and near-FP solid subtypes 12–23; broader scene/resource coverage |
+| Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` terrain batching is wired | Independent front-view runtime proof; sprites and interleaved overlays |
+| General triangles and creature shadows: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | CPU reference | All modes, destination-dependent blending and GPU shadow-mask generation |
+| World sprites, creatures, objects and effects: [sprite rasterizers](../../src/kfx/renderer/software/bflib_vidraw_spr_norm.c) | CPU reference | Scaling, flips, water clipping, remap/fade/ghost/alpha, custom assets; preserve CPU picking side effects once |
+| Pixels, boxes, HV lines and circles: [bflib_vidraw.c](../../src/kfx/renderer/software/bflib_vidraw.c) | Native GPU hooks; circles use original center/radius and preserve repeated blend hits | Independent review and combined-head native checks; circle radii above 8,191 and other unsupported inputs decline to CPU |
+| General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level pixel hooks only | General-line coverage/color selection and sprite commands; retain interleaving with world drawing |
+| Text, including Asian fonts: [bflib_sprfnt.c](../../src/bflib_sprfnt.c) | CPU reference | Glyph/mask draws, scaling, clipping, underline/shadow and direct DBC writes; CPU layout may remain |
+| Raw/tiled images, frontend backgrounds, landview/torture/zoom: [gui_draw.c](../../src/gui_draw.c), [front_landview.c](../../src/front_landview.c), [front_simple.c](../../src/front_simple.c), [front_torture.c](../../src/front_torture.c) | Generic GPU image command tested; these callers remain CPU | Source-asset image/huge-sprite commands and exact scaling/clipping |
+| Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | CPU reference | Semantic map commands, rotation/masks and framebuffer-derived minimap background state |
+| Built-in possession lenses: [lens implementations](../../src/kfx/lense/) | CPU reference | GPU target views and indexed displacement, flyeye, mist, overlay and palette effects; preserve alias/order behavior |
+| Custom Lua lenses: [LuaLensEffect.cpp](../../src/kfx/lense/LuaLensEffect.cpp), [lua_api_lens.c](../../src/lua_api_lens.c) | CPU reference | Ordered GPU writes/copies and exact read-after-write compatibility for arbitrary pixel-dependent Lua control flow; CPU-script readback is explicit, never hidden CPU-rendered lens upload |
+| Smoothing and map fades/transitions: [engine_redraw.c](../../src/engine_redraw.c) | CPU reference | GPU target snapshots and exact indexed effects, including traversal/truncation quirks |
+| Movies: [bflib_fmvids.cpp](../../src/bflib_fmvids.cpp) | CPU decode and screen drawing | Upload decoded source assets; GPU centering/scaling/interlace and palette timing |
+| Cursor, clears, screenshots and recording: [bflib_mspointer.cpp](../../src/bflib_mspointer.cpp), [RendererSoftware.cpp](../../src/kfx/renderer/RendererSoftware.cpp), [scrcapt.c](../../src/scrcapt.c) | CPU composition/capture of the synchronized native image | Final GPU cursor/clear; authoritative GPU capture with matching frame/palette/cursor semantics |
+| Cross-family palette, transparency, clipping and scaling | Bounded command and offscreen palette-output fixtures pass | Full-family index/RGBA comparisons; table versions, target aliases and strict CPU-writer/readback audit |
 
-The inventory must extend this matrix for additional discovered paths. Unsupported
-input may use the preserved reference fallback during migration, but each use must
-be visible in validation and cannot count as complete GPU coverage.
+The reviewed original-vertex [GPU preparation test](../../tools/frame-replay/tests/gpoly_gpu.rs)
+compared 597,800 setup words and 6,202,175 palette indices, including pitch padding,
+against independent native output on Metal. It consumes GPU-produced rows directly
+in a subsequent GPU pass. This establishes bounded terrain setup and pixel
+exactness, not native scene routing, whole-frame ordering or a performance gain.
+The 2D [native fixture generator](../../tests/primitives/fixture.c) compares actual
+legacy output for the supported primitives; it does not establish full HUD/text
+coverage.
+
+The terrain-span native smoke used a 640×480 indexed target and SDL presentation:
+381 exact GPU batches, 356,372 spans and 5,237,097 shaded pixels, with zero declined
+gpoly spans, recovery spans or failures. A separate injected-failure run
+reconstructed 110 accepted spans on CPU without repeating gameplay wrappers.
+The evidence binary SHA-256 was
+`da428a86f6c5aae579b26217f937654d09a2920d602980e0b3151e728fd36a2f`;
+it predates the 2D hooks. A separate wgpu-presenter run performed exact offscreen
+drawing but acquired/presented zero surface frames while the display was locked.
+That result cannot prove visible wgpu output. Prior PR #9 surface evidence remains
+separate from these drawing changes.
+
+Each fallback or unsupported input remains uncovered GPU work. Zero declined
+gpoly spans measures one sink, not every software writer. Completion requires
+an audit of all targets and aliases, no routine built-in CPU rasterization or
+completed-frame upload in GPU mode, and explicit handling of CPU pixel reads.
+Keep original assets, raw captures and private session descriptors outside the PR;
+publish synthetic fixtures, source identities and portable aggregate evidence.
 
 Keep exact presentation comparisons unchanged. Define each drawing family's visual
 acceptance before implementation and investigate any rasterization differences;
