@@ -13,6 +13,7 @@ practical guide for the work you want to do.
 | --- | --- |
 | [Understanding KeeperFX](architecture/project-overview.md) | Engine structure, game loop, shared state, graphics, content and the role of Rust |
 | [Rust port plan](product/rust-port-plan.md) | Proposed migration phases, delivered live presentation, active graphics migration and migration gates |
+| [Single-stream wgpu renderer](architecture/wgpu-single-stream-renderer.md) | Target wgpu drawing architecture, per-frame acceptance counters, C ABI changes, fixtures and the PR-sized migration sequence |
 | [Audio modernization plan](product/audio-modernization-plan.md) | Sound remastering and replacement, Rust audio ownership, audition pack and compatibility criteria |
 | [Audio cue inventory](audio/inventory.md) | Reproducible definitions, playback references, override rules and unresolved source evidence |
 | [Audio command references](audio-reference.md) | Isolated audio-enabled scenes, bounded playback tracing and remaining baseline checks |
