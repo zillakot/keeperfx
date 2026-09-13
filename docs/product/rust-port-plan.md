@@ -49,7 +49,7 @@ independently if platform integration delays phase 2. Later phases require their
 own scoped designs; success with frame replay is not evidence that the whole port
 will be small or quick.
 
-## Next milestone: optional live Rust presentation
+## Current milestone: optional live Rust presentation
 
 Ordered fixtures now cover palette and alpha changes, transparent RGB, interface
 screens, resolutions and possession. The [reusable Rust renderer](../../tools/frame-replay/src/gpu.rs)
@@ -58,16 +58,11 @@ frames. Its library submits rendering without readback; the offline comparison
 adapter handles readback separately. The [frame-feedback guide](../frame-feedback.md#reusable-renderer)
 defines ownership, reuse, limits and failure behavior.
 
-The next step is a live adapter with surface/window ownership and lifecycle
-handling. Avoid routine GPU-to-CPU readback in that path. Continue drawing the
-world with the existing CPU renderer and upload its indexed pixels and palette.
-The retained offscreen renderer does not establish live presentation correctness
-or a performance improvement.
-
-Use the [renderer interfaces](../../src/kfx/renderer/IRenderer.h) and
-[SDL window implementation](../../src/kfx/platform/WindowSystemSDL.cpp) to define
-ownership of the native window and presentation surface. Keep SDL input handling
-in place. The two presentation backends must not compete for the same window.
+The [optional live adapter](../live-rust-presentation.md) now connects that shared
+pipeline to an SDL-owned Metal view through a narrow C ABI. It retains SDL input
+and CPU world drawing; SDL remains the default and fallback presenter. Routine
+presentation does not allocate a readback buffer. The live validation record and
+paired measurements must cover the criteria below before this phase is complete.
 
 Completion criteria for this milestone:
 

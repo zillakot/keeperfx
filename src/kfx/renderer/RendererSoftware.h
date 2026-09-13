@@ -5,6 +5,7 @@
 #include "kfx/renderer/backends/SoftwareUIRenderer.h"
 #include "kfx/renderer/backends/SoftwareTextRenderer.h"
 
+struct SDL_Window;
 struct SDL_Renderer;
 struct SDL_Texture;
 struct SDL_Surface;
@@ -29,6 +30,17 @@ public:
 private:
     bool ensure_present_target();
     void destroy_present_target();
+#ifdef KFX_RUST_PRESENTER
+    bool try_rust_presenter();
+    bool present_rust_frame();
+    void destroy_rust_presenter();
+    void* m_rust = nullptr;
+    void* m_metal_view = nullptr;
+    SDL_Window* m_rust_window = nullptr;
+    bool m_rust_attempted = false;
+    unsigned long m_rust_frames = 0;
+    char m_rust_details[1024] = {};
+#endif
 
     SDL_Renderer* m_renderer = nullptr;
     SDL_Texture*  m_texture  = nullptr;

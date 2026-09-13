@@ -8,7 +8,8 @@ description: Explains KeeperFX's game loop, shared world state, rendering, conte
 KeeperFX contains both the rules of Dungeon Keeper and a custom engine that runs
 those rules. The engine is predominantly C, with C++ used for parts of the platform,
 rendering, audio and other systems. Lua extends gameplay scripting. This fork also
-contains a standalone Rust tool for graphics development.
+contains a Rust indexed-frame renderer used by offline comparison and optional live
+Metal presentation on Apple Silicon.
 
 Start with the [documentation index](../README.md) for setup instructions and
 references. The engine, game content and operating-system support are useful
@@ -25,9 +26,9 @@ sprites and textures as the reference appearance.
 | Capability | Implementation and boundary |
 | --- | --- |
 | Native Apple Silicon game | CMake builds the C/C++ engine; a local `.app` uses Homebrew libraries. See [Mac development](../macos.md). |
-| Rust graphics prototype | wgpu replays captured indexed frames offscreen and checks them against SDL. See [frame feedback](../frame-feedback.md). |
-| Live gameplay rendering | The existing CPU software renderer draws the world; SDL presents it. Rust is not in this path. |
-| Performance | No gameplay speedup has been demonstrated by the replay tooling. It accelerates development feedback. |
+| Rust graphics | The same wgpu palette pipeline handles offline replay and optional live surface presentation. See [live Rust presentation](../live-rust-presentation.md). |
+| Live gameplay rendering | The existing CPU software renderer draws the world; SDL presents by default. An opt-in Rust/wgpu adapter presents those indexed pixels directly to a Metal surface. |
+| Performance | [Paired live measurements](../performance-baselines.md) compare the two presenters in the same binary. Offline replay timings remain development feedback, not gameplay FPS. |
 
 The [Rust port plan](../product/rust-port-plan.md) proposes the migration sequence
 and validation criteria. A GPU world renderer or broader Rust migration would be
@@ -61,7 +62,7 @@ flowchart LR
     state --> simulation
     state --> draw[CPU drawing]
     draw --> pixels[Indexed framebuffer]
-    pixels --> display[SDL presentation]
+    pixels --> display[SDL or optional Rust presentation]
     display --> window[Game window]
     state --> audio[Audio systems]
 ```
@@ -94,7 +95,9 @@ and other scene elements into an indexed framebuffer. Each pixel selects one
 entry from a 256-color display palette.
 
 [RendererSoftware.cpp](../../src/kfx/renderer/RendererSoftware.cpp) converts that
-image to RGBA and presents it through SDL. On the tested Mac build SDL selected
+image to RGBA and presents it through SDL by default. The optional Rust path uploads
+indices and palette and runs the shared palette shader directly into its surface.
+On the tested Mac build SDL selected
 Metal for presentation; the world itself was still drawn on the CPU. Higher output
 resolution cannot add detail to the original artwork.
 

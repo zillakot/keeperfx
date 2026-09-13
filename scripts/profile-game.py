@@ -26,11 +26,13 @@ SETTINGS = {
     "CURSOR_EDGE_CAMERA_PANNING": "OFF", "LOCK_CURSOR_IN_POSSESSION": "OFF",
 }
 LIMITATIONS = [
-    "All timings are monotonic wall-clock durations, including scheduling and blocking; CPU time is not collected.",
+    "Per-scope timings are monotonic wall-clock durations, including scheduling and blocking; they are not CPU-time counters.",
     "GPU execution time is not collected. Presentation and present_wait are host-side durations, not GPU timings.",
     "Presentation includes present_wait; these overlapping scopes must not be added together.",
     "Frame intervals measure observed presentation pacing; simulation samples count actual game updates.",
     "Seeds and population snapshots are observations, not a guarantee of deterministic replay.",
+    "The 60 FPS cap limits observed frame rate; lower presentation duration is not an uncapped gameplay FPS speedup.",
+    "Rust allocation counts cover successful Rust global-allocator alloc/realloc calls and requested bytes only; C/C++, SDL and driver/GPU allocations are excluded. SDL zeros do not establish a total-heap advantage.",
 ]
 
 
@@ -70,12 +72,14 @@ def configure(work):
 def environment_for(args, output):
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(("KFX_PERF_", "KFX_FRAME_CAPTURE"))
-                   and key not in ("SDL_VIDEODRIVER", "SDL_VIDEO_DRIVER", "SDL_RENDER_DRIVER", "SDL_RENDER_VSYNC")}
+                   and not key.startswith("KFX_WGPU_")
+                   and key not in ("KFX_PRESENT_BACKEND", "SDL_VIDEODRIVER", "SDL_VIDEO_DRIVER", "SDL_RENDER_DRIVER", "SDL_RENDER_VSYNC")}
     if args.headless:
         environment.update(SDL_VIDEODRIVER="dummy", SDL_VIDEO_DRIVER="dummy", SDL_RENDER_DRIVER="software")
     elif sys.platform == "darwin":
         environment.update(SDL_VIDEODRIVER="cocoa", SDL_VIDEO_DRIVER="cocoa", SDL_RENDER_DRIVER="metal")
-    environment.update(SDL_RENDER_VSYNC="0", KFX_PERF_OUTPUT=str(output / "raw.csv"),
+    environment.update(KFX_PRESENT_BACKEND="wgpu" if args.backend == "rust" else "sdl",
+                       SDL_RENDER_VSYNC="0", KFX_PERF_OUTPUT=str(output / "raw.csv"),
                        KFX_PERF_TURN=str(args.warmup_turns), KFX_PERF_TURNS=str(args.turns),
                        KFX_PERF_SCENE="possession" if args.scene == "possession" else "dungeon")
     return environment
@@ -108,13 +112,23 @@ def summarize(output, args):
     if (metadata["vsync_actual"] != 0 or metadata["turns_per_second"] != 20
             or metadata["fps_limit"] != 60 or metadata["interpolation"] not in (True, 1)):
         raise RuntimeError("engine did not apply the requested VSync, turn rate, frame cap or interpolation")
-    expected_backend = ("dummy", "software") if args.headless else (("cocoa", "metal") if sys.platform == "darwin" else None)
+    if args.backend == "rust" and (args.headless or sys.platform != "darwin"):
+        raise RuntimeError("Rust measurements require a native macOS window")
+    expected_backend = (("cocoa", "wgpu-metal") if args.backend == "rust" else
+                        (("dummy", "software") if args.headless else (("cocoa", "metal") if sys.platform == "darwin" else None)))
     if expected_backend and (metadata["video_driver"], metadata["renderer"]) != expected_backend:
         raise RuntimeError(f"engine backend does not match requested {expected_backend}")
     if metadata["output_width"] <= 0 or metadata["output_height"] <= 0:
         raise RuntimeError("engine did not report a valid presentation output size")
     if not args.headless and metadata["video_driver"] in ("dummy", "offscreen", "unknown", ""):
         raise RuntimeError("native baseline requires a window-system video driver")
+    if args.backend == "original" and str(metadata["renderer"]).startswith("wgpu"):
+        raise RuntimeError("actual renderer does not match requested original backend")
+    if args.backend == "rust":
+        details = json.loads(metadata.get("renderer_details", "{}"))
+        if (not isinstance(details, dict) or details.get("backend") != "Metal" or not details.get("adapter")
+                or details.get("present_mode") not in ("Immediate", "Mailbox") or not details.get("format")):
+            raise RuntimeError("Rust backend did not confirm its adapter, format and actual non-VSync present mode")
     samples = {kind: [] for kind in KINDS}
     sample_turns = {kind: [] for kind in KINDS}
     with (output / "raw.csv").open(newline="") as stream:
@@ -140,9 +154,43 @@ def summarize(output, args):
         raise RuntimeError("frame intervals must be positive")
     if any(wait > present for wait, present in zip(samples["present_wait"], samples["presentation"])):
         raise RuntimeError("present_wait cannot exceed its enclosing presentation duration")
+    resource_report = summarize_resources(metadata.get("resources"), args.turns, len(presentations))
+    limitations = LIMITATIONS + ([] if resource_report["process_cpu"] is not None else ["Process CPU time is not available in this run."])
     return {"engine": metadata, "wall_ms": {kind: distribution(values) for kind, values in samples.items()},
+            "resources": resource_report,
             "percentile_method": "linear interpolation at (sample_count - 1) * percentile / 100",
-            "limitations": LIMITATIONS + (["HEADLESS SOFTWARE SMOKE TEST: not a native presentation baseline."] if args.headless else [])}
+            "limitations": limitations + (["HEADLESS SOFTWARE SMOKE TEST: not a native presentation baseline."] if args.headless else [])}
+
+
+def summarize_resources(resources, turns, presentations):
+    result = {"scope": "active measurement window; excludes startup, warmup, sample output and shutdown",
+              "process_cpu": None, "rust_allocations": None}
+    if resources is None:
+        return result
+    wall = resources["wall_ns"]
+    if type(wall) is not int or wall <= 0:
+        raise RuntimeError("invalid resource measurement wall duration")
+    result["wall_ms"] = wall / 1_000_000
+    cpu = resources["process_cpu"]
+    if cpu["available"]:
+        if cpu["source"] not in ("GetProcessTimes", "getrusage(RUSAGE_SELF)") or any(
+                type(cpu[key]) is not int or cpu[key] < 0 for key in ("user_ns", "system_ns")):
+            raise RuntimeError("invalid process CPU counters")
+        total = cpu["user_ns"] + cpu["system_ns"]
+        result["process_cpu"] = {"source": cpu["source"], "user_ms": cpu["user_ns"] / 1_000_000,
+                                 "system_ms": cpu["system_ns"] / 1_000_000, "total_ms": total / 1_000_000,
+                                 "ms_per_turn": total / 1_000_000 / turns,
+                                 "ms_per_presentation": total / 1_000_000 / presentations,
+                                 "core_equivalents": total / wall}
+    allocations = resources["rust_allocations"]
+    if allocations["available"]:
+        if any(type(allocations[key]) is not int or allocations[key] < 0 for key in ("calls", "requested_bytes")):
+            raise RuntimeError("invalid Rust allocation counters")
+        result["rust_allocations"] = {"calls": allocations["calls"], "requested_bytes": allocations["requested_bytes"],
+                                      "calls_per_presentation": allocations["calls"] / presentations,
+                                      "requested_bytes_per_presentation": allocations["requested_bytes"] / presentations,
+                                      "scope": "Rust global allocator; excludes C/C++, SDL, driver/GPU; not total process allocations or retained memory"}
+    return result
 
 
 def write_json(path, value):
@@ -167,6 +215,19 @@ def write_report(output, report):
     interval = report["wall_ms"]["frame_interval"]["mean"]
     if interval:
         lines += ["", f"Observed presentation rate from mean frame interval: {1000 / interval:.2f} frames/s."]
+    details = actual.get("renderer_details")
+    if details:
+        lines += ["", f"Actual renderer details: `{details}`."]
+    resources = report["resources"]
+    cpu, allocations = resources["process_cpu"], resources["rust_allocations"]
+    if cpu:
+        lines += ["", f"Measured-window process CPU ({cpu['source']}): {cpu['total_ms']:.3f} ms "
+                  f"({cpu['user_ms']:.3f} user + {cpu['system_ms']:.3f} system), "
+                  f"{cpu['ms_per_turn']:.3f} ms/turn, {cpu['ms_per_presentation']:.3f} ms/presentation, "
+                  f"{cpu['core_equivalents']:.3f} CPU cores on average."]
+    if allocations:
+        lines += ["", f"Rust global-allocator calls: {allocations['calls']}; requested bytes: {allocations['requested_bytes']}. "
+                  "This excludes C/C++, SDL, driver/GPU allocations and does not measure retained memory."]
     lines += ["", *[f"- {item}" for item in report["limitations"]], "",
               f"Engine SHA256: `{report['engine_sha256']}`", f"Asset content SHA256: `{report['assets']['sha256']}`", "",
               "Exact request, platform, content identities, seeds and actual settings: report.json. Samples: raw.csv."]
@@ -179,6 +240,7 @@ def main():
     parser.add_argument("--engine", type=Path, default=ROOT / "out/macos/keeperfx")
     parser.add_argument("--out", type=Path, required=True, help="new directory beneath the repository's ignored out directory")
     parser.add_argument("--scene", choices=("quiet", "busy", "possession"), default="quiet")
+    parser.add_argument("--backend", choices=("original", "rust"), default="original")
     parser.add_argument("--campaign", default="keeporig")
     parser.add_argument("--level", type=int, help="override the preset map (quiet/possession: 1; busy: 20)")
     parser.add_argument("--resolution", type=capture.resolution, default=(640, 480))
@@ -186,6 +248,8 @@ def main():
     parser.add_argument("--turns", type=int, default=200, help="actual simulation updates to measure (20..1200)")
     parser.add_argument("--headless", action="store_true", help="dummy/software smoke test, not a native performance baseline")
     args = parser.parse_args()
+    if args.backend == "rust" and (args.headless or sys.platform != "darwin"):
+        parser.error("--backend rust requires native macOS; --headless is only for the original backend")
     if args.level is None:
         args.level = 20 if args.scene == "busy" else 1
     if not 1 <= args.warmup_turns <= 600 or not 20 <= args.turns <= 1200:
@@ -221,7 +285,7 @@ def main():
                            "-campaign", args.campaign, "-level", str(args.level)]
                 environment = environment_for(args, output)
                 report.update(command=command, environment={key: value for key, value in environment.items()
-                              if key.startswith(("KFX_PERF_", "SDL_"))},
+                              if key.startswith(("KFX_PERF_", "SDL_")) or key == "KFX_PRESENT_BACKEND"},
                               timeout_seconds=120 + math.ceil((args.warmup_turns + args.turns) / 20), status="running")
                 write_json(output / "report.json", report)
                 result = subprocess.run(command, cwd=work, env=environment, capture_output=True,

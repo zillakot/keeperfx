@@ -28,6 +28,15 @@ pub struct Renderer {
 impl Renderer {
     /// Takes ownership of error and device-loss callbacks on this device.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self> {
+        Self::with_format(device, queue, wgpu::TextureFormat::Rgba8Unorm)
+    }
+
+    pub fn with_format(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self> {
+        ensure!(!format.is_srgb(), "palette output requires an unorm target");
         let failure = Arc::new(Mutex::new(None));
         let errors = failure.clone();
         device.on_uncaptured_error(Arc::new(move |error| {
@@ -64,7 +73,7 @@ impl Renderer {
                 entry_point: Some("fragment"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -121,14 +130,72 @@ impl Renderer {
     pub fn render(&mut self, frame: &Frame, scale: u32) -> Result<&wgpu::Texture> {
         let (width, height) = validate(frame, scale, &self.device.limits())?;
         self.check_status()?;
+        if self.target.as_ref().is_none_or(|target| {
+            (target.texture.width(), target.texture.height()) != (width, height)
+        }) {
+            // Palette bytes are display-encoded; an sRGB attachment would encode them twice.
+            let texture = texture(
+                &self.device,
+                "output",
+                width,
+                height,
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+            );
+            self.check_status()?;
+            let view = texture.create_view(&Default::default());
+            self.check_status()?;
+            self.target = Some(Target { texture, view });
+        }
+        let view = self.target.as_ref().unwrap().view.clone();
+        self.render_into(
+            frame.width,
+            frame.height,
+            &frame.indices,
+            frame.width,
+            &frame.palette,
+            width,
+            height,
+            &view,
+        )?;
+        Ok(&self.target.as_ref().unwrap().texture)
+    }
+
+    /// Uploads borrowed rows and renders directly to the caller's unorm attachment.
+    /// The caller serializes use and keeps the attachment alive through submission.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_into(
+        &mut self,
+        width: u32,
+        height: u32,
+        indices: &[u8],
+        pitch: u32,
+        palette: &[u8],
+        output_width: u32,
+        output_height: u32,
+        view: &wgpu::TextureView,
+    ) -> Result<()> {
+        validate_rows(
+            width,
+            height,
+            indices.len(),
+            pitch,
+            palette.len(),
+            output_width,
+            output_height,
+            &self.device.limits(),
+        )?;
+        self.check_status()?;
         if self.inputs.as_ref().is_none_or(|inputs| {
-            (inputs.indices.width(), inputs.indices.height()) != (frame.width, frame.height)
+            (inputs.indices.width(), inputs.indices.height()) != (width, height)
         }) {
             let indices = texture(
                 &self.device,
                 "indices",
-                frame.width,
-                frame.height,
+                width,
+                height,
                 wgpu::TextureFormat::R8Uint,
                 wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             );
@@ -156,30 +223,10 @@ impl Renderer {
             self.check_status()?;
             self.inputs = Some(Inputs { indices, binding });
         }
-        if self.target.as_ref().is_none_or(|target| {
-            (target.texture.width(), target.texture.height()) != (width, height)
-        }) {
-            // Palette bytes are display-encoded; an sRGB attachment would encode them twice.
-            let texture = texture(
-                &self.device,
-                "output",
-                width,
-                height,
-                wgpu::TextureFormat::Rgba8Unorm,
-                wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-            );
-            self.check_status()?;
-            let view = texture.create_view(&Default::default());
-            self.check_status()?;
-            self.target = Some(Target { texture, view });
-        }
         let inputs = self.inputs.as_ref().unwrap();
-        let target = self.target.as_ref().unwrap();
         for (tex, bytes, pitch) in [
-            (&inputs.indices, &frame.indices, frame.width),
-            (&self.palette, &frame.palette, 1024),
+            (&inputs.indices, indices, pitch),
+            (&self.palette, palette, 1024),
         ] {
             self.queue.write_texture(
                 tex.as_image_copy(),
@@ -193,22 +240,21 @@ impl Renderer {
             );
         }
         let mut parameters = [0; 16];
-        for (bytes, value) in
-            parameters
-                .as_chunks_mut::<4>()
-                .0
-                .iter_mut()
-                .zip([frame.width, frame.height, scale, 0])
-        {
+        for (bytes, value) in parameters.as_chunks_mut::<4>().0.iter_mut().zip([
+            width,
+            height,
+            output_width,
+            output_height,
+        ]) {
             bytes.copy_from_slice(&value.to_le_bytes());
         }
         self.queue.write_buffer(&self.parameters, 0, &parameters);
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("frame replay"),
+                label: Some("indexed frame"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.view,
+                    view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -226,8 +272,7 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
-        self.check_status()?;
-        Ok(&self.target.as_ref().unwrap().texture)
+        self.check_status()
     }
 }
 
@@ -255,6 +300,41 @@ fn texture(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_rows(
+    width: u32,
+    height: u32,
+    length: usize,
+    pitch: u32,
+    palette_length: usize,
+    output_width: u32,
+    output_height: u32,
+    limits: &wgpu::Limits,
+) -> Result<()> {
+    dimensions(width, height)?;
+    dimensions(output_width, output_height)?;
+    ensure!(pitch >= width && pitch <= 16384, "invalid index row pitch");
+    let required = u64::from(pitch) * u64::from(height - 1) + u64::from(width);
+    ensure!(
+        length as u64 >= required && length as u64 <= 16384 * 8192,
+        "invalid index buffer length"
+    );
+    ensure!(
+        palette_length == 1024,
+        "palette must contain 256 RGBA entries"
+    );
+    ensure!(
+        width
+            .max(height)
+            .max(output_width)
+            .max(output_height)
+            .max(256)
+            <= limits.max_texture_dimension_2d,
+        "frame exceeds GPU texture limits"
+    );
+    Ok(())
+}
+
 fn validate(frame: &Frame, scale: u32, limits: &wgpu::Limits) -> Result<(u32, u32)> {
     let pixels = dimensions(frame.width, frame.height)?;
     ensure!(
@@ -279,6 +359,20 @@ fn validate(frame: &Frame, scale: u32, limits: &wgpu::Limits) -> Result<(u32, u3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_borrowed_rows_before_upload() {
+        let limits = wgpu::Limits::default();
+        assert!(validate_rows(257, 19, 264 * 19, 264, 1024, 514, 38, &limits).is_ok());
+        for (length, pitch, palette, output) in [
+            (0, 264, 1024, 514),
+            (264 * 19, 256, 1024, 514),
+            (264 * 19, 264, 1023, 514),
+            (264 * 19, 264, 1024, 0),
+        ] {
+            assert!(validate_rows(257, 19, length, pitch, palette, output, 38, &limits).is_err());
+        }
+    }
 
     #[test]
     fn rejects_bad_inputs_and_device_limits() {

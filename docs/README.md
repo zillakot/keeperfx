@@ -17,6 +17,7 @@ practical guide for the work you want to do.
 | [World-data reference](data_structure.md) | Things, creature controls, rooms, slabs, subtiles, columns and cubes |
 | [macOS development](macos.md) | Build and run the native Apple Silicon game with the required assets |
 | [Frame capture and Rust replay](frame-feedback.md) | Obtain quick visual feedback, compare exact pixels and interpret the timings |
+| [Live Rust presentation](live-rust-presentation.md) | Optional Metal surface integration, ownership and validation |
 | [Performance baselines](performance-baselines.md) | Isolated native simulation, drawing and presentation measurements and their limits |
 | [Original game files](files_required_from_original_dk.txt) | Files to copy from an original Dungeon Keeper installation |
 | [Steam Deck development](steam-deck.md) | Existing Linux build and remote deployment workflow |
@@ -33,8 +34,9 @@ The PRs are the durable records of changes and their validation:
 - [PR #2: Frame capture and Rust GPU replay](https://github.com/zillakot/keeperfx/pull/2)
   records exact image comparisons, deliberate-mismatch checks and CI coverage.
 
-The Rust tool currently renders captured frames offscreen. It does not replace
-the live game renderer or demonstrate a gameplay performance improvement.
+The shared Rust palette pipeline supports offline replay and optional live Metal
+presentation. CPU world drawing remains unchanged; use paired live measurements
+to assess presentation costs.
 
 ## Upstream resources
 
