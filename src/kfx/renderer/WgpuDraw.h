@@ -26,6 +26,8 @@ extern "C" {
 #define KFX_WGPU_DRAW_TRIG 9u
 #define KFX_WGPU_DRAW_LENS_EFFECT 10u
 #define KFX_WGPU_DRAW_MOVIE 13u
+#define KFX_WGPU_DRAW_MAP_VIEW 14u
+#define KFX_WGPU_DRAW_BITMAP 15u
 /* MOVIE source_x bits select width doubling, line doubling and interlace;
  * start is the signed native image origin. Packed doubling omits width tails. */
 /* TRIG source begins with three x/y/u/v/shade little-endian i32 vertices,

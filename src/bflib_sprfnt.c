@@ -20,6 +20,8 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
 #include "bflib_sprfnt.h"
+#include "kfx/renderer/software/WgpuBitmap.h"
+#include "kfx/renderer/software/SwDrawTarget.h"
 
 #include <stdarg.h>
 #include "bflib_basics.h"
@@ -398,6 +400,61 @@ static void set_bit_to_array(unsigned char* arrD, int iX, int iY, int iMax, int 
         *(arrD + iBytePos) &= ~(0x80 >> iModBitPos);
 }
 
+struct DbcOracle {
+    struct AsianFontWindow window;
+    struct AsianDraw draw;
+    int sw, sh, scaled;
+    long x, y;
+    short foreground, background, shadow;
+    ptrdiff_t offset;
+};
+
+static void dbc_native_bitmap(struct DbcOracle *o)
+{
+    unsigned char scaled[8192] = {0};
+    struct AsianDraw draw = o->draw;
+    if (o->scaled) {
+        float sx = (float)o->sw / (float)draw.bits_width;
+        float sy = (float)o->sh / (float)draw.bits_height;
+        for (int y = 0; y < draw.bits_height; y++)
+            for (int x = 0; x < draw.bits_width; x++)
+                set_bit_to_array(scaled, x, y, draw.bits_width,
+                    get_bit_to_array(draw.sprite_data, (int)(x * sx), (int)(y * sy), o->sw));
+        draw.sprite_data = scaled;
+    }
+    dbc_draw_font_sprite_text(&o->window, &draw, o->x, o->y,
+        o->foreground, o->background, o->shadow);
+}
+
+static void dbc_bitmap_oracle(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    struct DbcOracle oracle = *(struct DbcOracle *)context;
+    oracle.window.buf_ptr = pixels + oracle.offset;
+    oracle.window.scanline = pitch;
+    dbc_native_bitmap(&oracle);
+}
+
+static void dbc_dispatch_bitmap(struct DbcOracle *o)
+{
+    struct KfxGpolyTarget target = {o->window.buf_ptr, o->window.width,
+        o->window.height, o->window.scanline};
+    int wx = 0, wy = 0;
+    uintptr_t base = (uintptr_t)SwTargetWScreen(), ptr = (uintptr_t)o->window.buf_ptr;
+    int pitch = SwTargetScanline(), height = SwTargetScreenHeight();
+    if (base && pitch > 0 && height > 0 && o->window.scanline == pitch && ptr >= base &&
+        ptr - base < (size_t)pitch * height) {
+        wx = (ptr - base) % pitch;
+        wy = (ptr - base) / pitch;
+        target = (struct KfxGpolyTarget){SwTargetWScreen(), pitch, height, pitch};
+    }
+    o->offset = (ptrdiff_t)wy * target.pitch + wx;
+    if (kfx_wgpu_bitmap_font(&target, wx, wy, o->window.width, o->window.height,
+        o->x, o->y + o->draw.vertical_offset, o->draw.sprite_data, o->sw, o->sh,
+        o->draw.bits_width, o->draw.bits_height, o->scaled, o->foreground,
+        o->background, o->shadow, dbc_bitmap_oracle, o)) return;
+    if (kfx_wgpu_native_cpu_barrier()) dbc_native_bitmap(o);
+}
+
 static int8_t draw_dbc_char(uint32_t chr, struct AsianFontWindow *awind, long *pos_x, long pos_y, long  int units_per_px)
 {
     SYNCDBG(19,"Got needs_draw");
@@ -415,39 +472,22 @@ static int8_t draw_dbc_char(uint32_t chr, struct AsianFontWindow *awind, long *p
             shadow_colour = lbSpriteReMapPtr[shadow_colour];
         }
 
-        #define MAX_DBC_SPRITE_SIZE 8192
-        unsigned char dest_pixel[MAX_DBC_SPRITE_SIZE] = { 0 };
+        struct DbcOracle oracle = {*awind, adraw, adraw.bits_width, adraw.bits_height,
+            units_per_px != 16, *pos_x, pos_y, colour, -1, shadow_colour, 0};
         if (units_per_px != 16)
-        {            
-            // Needs to be a multiple of 8
-            int iDstSizeH = (units_per_px / 8) * 8;
-            int iDstSizeW = (units_per_px * adraw.bits_width / 16 / 8) * 8;
-            
-            float scale_factorX = (float)adraw.bits_width / (float)iDstSizeW;
-            float scale_factorY = (float)adraw.bits_height / (float)iDstSizeH;
-
-            if ((iDstSizeW * iDstSizeH) > MAX_DBC_SPRITE_SIZE)
-            {
-                ERRORLOG("DBC sprite size %d,%d exceeds max %d",iDstSizeW,iDstSizeH,MAX_DBC_SPRITE_SIZE);
+        {
+            int height = (units_per_px / 8) * 8;
+            int width = (units_per_px * adraw.bits_width / 16 / 8) * 8;
+            if (height < 0 || width < 0 || (int64_t)width * height > 8192)
                 return -1;
-            }
-            for (int sY = 0; sY < iDstSizeH; sY++)
-            {
-                for (int sX = 0; sX < iDstSizeW; sX++)
-                {
-                    set_bit_to_array(dest_pixel, sX, sY, iDstSizeW, get_bit_to_array(adraw.sprite_data, (int)(sX * scale_factorX), (int)(sY * scale_factorY), adraw.bits_width));
-                }
-            }
-
-            adraw.bits_width = iDstSizeW;
-            adraw.bits_height = iDstSizeH;
-            adraw.sprite_data = dest_pixel;
+            adraw.bits_width = width;
+            adraw.bits_height = height;
             adraw.character_spacing = adraw.character_spacing * units_per_px / 16;
             adraw.vertical_offset = adraw.vertical_offset * units_per_px / 16;
             adraw.y_spacing = adraw.y_spacing * units_per_px / 16;
         }
-
-        dbc_draw_font_sprite_text(awind, &adraw, *pos_x, pos_y, colour, -1, shadow_colour);
+        oracle.draw = adraw;
+        dbc_dispatch_bitmap(&oracle);
 
         int w;
         if (adraw.bits_height == 16)

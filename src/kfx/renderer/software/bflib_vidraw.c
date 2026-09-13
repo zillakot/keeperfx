@@ -23,6 +23,7 @@
 #include "kfx/renderer/RendererManager.h"
 #include "bflib_vidraw.h"
 #include "kfx/renderer/software/WgpuSprite.h"
+#include "kfx/renderer/software/WgpuBitmap.h"
 #include "kfx/renderer/WgpuTerrainBridge.h"
 
 #include <string.h>
@@ -1732,21 +1733,31 @@ void setup_vecs(unsigned char *screenbuf, unsigned char *nvec_map,
     vec_window_width = (long)width;
 }
 
-/**
- * Draws a scaled up big sprite on given buffer, with original colours, from left to right.
- * Requires step arrays for scaling.
- *
- * @param outbuf The output buffer.
- * @param scanline Length of the output buffer scanline.
- * @param xstep Scaling steps array, x dimension.
- * @param ystep Scaling steps array, y dimension.
- * @param sprite The source sprite.
- * @return Gives 0 on success.
- */
+static int huge_oracle_active;
+static size_t huge_asset_length;
+struct HugeOracle {
+    int height;
+    int32_t *xs, *ys;
+    const struct TbHugeSprite *sprite;
+};
+TbResult LbHugeSpriteDrawUsingScalingUpData(uchar *, int, int, int32_t *, int32_t *, const struct TbHugeSprite *);
+static void huge_oracle(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    struct HugeOracle *o = context;
+    huge_oracle_active++;
+    LbHugeSpriteDrawUsingScalingUpData(pixels, pitch, o->height, o->xs, o->ys, o->sprite);
+    huge_oracle_active--;
+}
+
 TbResult LbHugeSpriteDrawUsingScalingUpData(uchar *outbuf, int scanline, int outheight,
     int32_t *xstep, int32_t *ystep, const struct TbHugeSprite *sprite)
 {
-    SYNCDBG(17,"Drawing");
+    if (!huge_oracle_active) {
+        struct HugeOracle oracle = {outheight, xstep, ystep, sprite};
+        if (kfx_wgpu_bitmap_huge(outbuf, scanline, outheight, xstep, ystep, sprite,
+            huge_asset_length, huge_oracle, &oracle)) return Lb_SUCCESS;
+        if (!kfx_wgpu_native_cpu_barrier()) return Lb_FAIL;
+    }
     int ystep_delta;
     const unsigned char *sprdata;
     int32_t *ycurstep;
@@ -1850,7 +1861,11 @@ TbResult LbHugeSpriteDraw(const struct TbHugeSprite * spr, long sp_len,
     unsigned char *r, int r_row_delta, int r_height, short xshift, short yshift, int units_per_px)
 {
     LbSpriteSetScalingData(-xshift*units_per_px/16, -yshift*units_per_px/16, spr->SWidth, spr->SHeight, spr->SWidth*units_per_px/16, spr->SHeight*units_per_px/16);
-    return LbHugeSpriteDrawUsingScalingUpData(r, r_row_delta, r_height, xsteps_array, ysteps_array, spr);
+    size_t saved_length = huge_asset_length;
+    huge_asset_length = sp_len > 0 ? (size_t)sp_len : 0;
+    TbResult result = LbHugeSpriteDrawUsingScalingUpData(r, r_row_delta, r_height, xsteps_array, ysteps_array, spr);
+    huge_asset_length = saved_length;
+    return result;
 }
 
 /**

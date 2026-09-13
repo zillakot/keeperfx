@@ -1,3 +1,7 @@
+#[path = "draw_bitmap.rs"]
+mod bitmap;
+#[path = "draw_map_view.rs"]
+mod map_view;
 #[path = "draw_minimap.rs"]
 mod minimap;
 #[path = "draw_movie.rs"]
@@ -39,7 +43,24 @@ pub const SPRITE: u32 = 6;
 pub const RAW_IMAGE: u32 = 7;
 pub const TILED_IMAGE: u32 = 8;
 pub const MOVIE: u32 = 13;
+pub const MAP_VIEW: u32 = 14;
+pub const BITMAP: u32 = 15;
 pub const OPAQUE: u32 = 256;
+const DRAW_SHADER: &str = concat!(
+    include_str!("draw.wgsl"),
+    "\n",
+    include_str!("draw_sprites.wgsl"),
+    "\n",
+    include_str!("draw_raw.wgsl"),
+    "\n",
+    include_str!("draw_movie.wgsl"),
+    "\n",
+    include_str!("draw_bitmap.wgsl"),
+    "\n",
+    include_str!("draw_map_view.wgsl"),
+    "\n",
+    include_str!("draw_trig.wgsl")
+);
 const MAX_COMMANDS: usize = 262_144;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
@@ -155,20 +176,7 @@ impl DrawRenderer {
         let queue = renderer.queue().clone();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ordered indexed drawing"),
-            source: wgpu::ShaderSource::Wgsl(
-                concat!(
-                    include_str!("draw.wgsl"),
-                    "\n",
-                    include_str!("draw_sprites.wgsl"),
-                    "\n",
-                    include_str!("draw_raw.wgsl"),
-                    "\n",
-                    include_str!("draw_movie.wgsl"),
-                    "\n",
-                    include_str!("draw_trig.wgsl")
-                )
-                .into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(DRAW_SHADER.into()),
         });
         let compute = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("ordered indexed drawing"),
@@ -606,7 +614,7 @@ fn pack_commands(
             "invalid command ABI"
         );
         ensure!(
-            (c.kind <= TRIG || c.kind == MOVIE)
+            (c.kind <= TRIG || c.kind == MOVIE || c.kind == MAP_VIEW || c.kind == BITMAP)
                 && c.blend <= 2
                 && c.colour <= 255
                 && c.transparent <= OPAQUE,
@@ -630,7 +638,15 @@ fn pack_commands(
         let mut source_pitch = 0;
         if matches!(
             c.kind,
-            IMAGE | GPOLY_SPAN | SPRITE | RAW_IMAGE | TILED_IMAGE | TRIG | MOVIE
+            IMAGE
+                | GPOLY_SPAN
+                | SPRITE
+                | RAW_IMAGE
+                | TILED_IMAGE
+                | TRIG
+                | MOVIE
+                | MAP_VIEW
+                | BITMAP
         ) {
             let source = resources.get(&c.source).context("unknown source version")?;
             source_pitch = source.pitch;
@@ -668,6 +684,10 @@ fn pack_commands(
                         "invalid raw image scaling"
                     );
                 }
+            } else if c.kind == BITMAP {
+                bitmap::validate(c, source, width, height)?;
+            } else if c.kind == MAP_VIEW {
+                map_view::validate(c, source, width, height)?;
             } else if c.kind == MOVIE {
                 movie::validate(c, source, width, height)?;
             } else if c.kind == TRIG {
