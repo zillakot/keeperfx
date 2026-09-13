@@ -48,6 +48,7 @@ static long anim_counter;
 /******************************************************************************/
 void setup_texture_block_mem(void)
 {
+    kfx_render_asset_range(block_mem, sizeof(block_mem));
     unsigned char** dst = block_ptrs;
     unsigned char* src  = block_mem;
     for (int i = 0; i < (TEXTURE_VARIATIONS_COUNT * TEXTURE_BLOCKS_COUNT); i++)
@@ -226,6 +227,8 @@ static TbBool load_letter_one_file(unsigned long tmapidx, char letter, void *dst
 TbBool load_texture_map_file(unsigned long tmapidx, LevelNumber lvnum, short fgroup)
 {
     SYNCDBG(7,"Starting");
+    // Every exit leaves block_mem rewritten, including the failure return below.
+    kfx_render_assets_changed();
     memset(block_mem, 130, sizeof(block_mem));
     if (!load_letter_one_file(tmapidx,'a', block_mem,lvnum,fgroup))
     {

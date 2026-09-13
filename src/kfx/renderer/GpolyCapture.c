@@ -10,9 +10,34 @@ void *kfx_gpoly_sink_context;
 
 uint64_t kfx_render_asset_generation = 1;
 
+static struct { const unsigned char *base; size_t length; } asset_ranges[KFX_RENDER_ASSET_RANGES];
+
 void kfx_render_assets_changed(void)
 {
     ++kfx_render_asset_generation;
+}
+
+void kfx_render_asset_range(const void *base, size_t length)
+{
+    if (!base || !length) return;
+    for (int i = 0; i < KFX_RENDER_ASSET_RANGES; ++i) {
+        if (asset_ranges[i].base != base && asset_ranges[i].base != NULL) continue;
+        asset_ranges[i].base = (const unsigned char *)base;
+        asset_ranges[i].length = length;
+        return;
+    }
+}
+
+int kfx_render_asset_stable(const void *bytes, size_t length)
+{
+    if (!bytes || !length) return 0;
+    const unsigned char *first = (const unsigned char *)bytes;
+    for (int i = 0; i < KFX_RENDER_ASSET_RANGES; ++i) {
+        const unsigned char *base = asset_ranges[i].base;
+        if (!base || first < base || first >= base + asset_ranges[i].length) continue;
+        return (size_t)(base + asset_ranges[i].length - first) >= length;
+    }
+    return 0;
 }
 
 void kfx_gpoly_set_sink(KfxGpolySink sink, void *context)

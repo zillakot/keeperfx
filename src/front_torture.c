@@ -136,6 +136,7 @@ void fronttorture_load(void)
     frontend_load_data_from_cd();
     memcpy(frontend_backup_palette, &frontend_palette, PALETTE_SIZE);
     // Texture blocks memory isn't used here, so reuse it instead of allocating
+    // Bumped on both sides of the loads so a mid-write cache entry is invalidated too.
     kfx_render_assets_changed();
     unsigned char* ptr = block_mem;
     // Load RAW/PAL background
@@ -146,6 +147,7 @@ void fronttorture_load(void)
     fname = prepare_file_path(FGrp_LoData,"torture.pal");
     torture_palette = ptr;
     i = LbFileLoadAt(fname, ptr);
+    kfx_render_assets_changed();
     // Load DAT/TAB sprites for doors
     for (int idx = 0; idx < TORTURE_DOORS_COUNT; ++idx) {
         char tab_name[2048];

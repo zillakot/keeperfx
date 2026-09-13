@@ -520,6 +520,7 @@ TbBool init_fades_table(void)
         pixmap.map_abyss[i] = abyss_colours[pixmap.ghost[i] * 3 >> 8];
     }
     kfx_render_assets_changed();
+    kfx_render_asset_range(&pixmap, sizeof(pixmap));
     return true;
 }
 

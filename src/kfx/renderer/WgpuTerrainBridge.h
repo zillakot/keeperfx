@@ -94,6 +94,8 @@ public:
     bool IsOracleActive() const { return m_oracle_active; }
 
 private:
+    /* Bytes the 32x32 gpoly tile read actually touches at pitch 256. */
+    static constexpr size_t TEXTURE_READ_BYTES = 31 * 256 + 32;
     struct Resource {
         uint64_t handle;
         std::vector<uint8_t> bytes;
@@ -109,6 +111,7 @@ private:
         const uint8_t*, const uint8_t*, KfxGpolyRasterizer);
     int Draw(const KfxGpolyTarget& target, const KfxGpolySpan& span,
         const uint8_t* texture, const uint8_t* fade);
+    static const void* StableKey(const void* bytes, size_t length);
     uint64_t ResourceFor(std::vector<Resource>& cache, const void* key, uint64_t generation,
         const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
         size_t limit);
