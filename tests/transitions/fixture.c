@@ -145,7 +145,9 @@ static void check_failed_progress(void)
 }
 int main(int argc,char** argv)
 {
-    if(argc!=2)return 2;output=fopen(argv[1],"wb");if(!output)return 2;
+    if(argc!=2)return 2;
+    output=fopen(argv[1],"wb");
+    if(!output)return 2;
     word(0x3154464b);word(0);
     for(unsigned i=0;i<MAX;i++){first[i]=(i*29+i/317)&255;second[i]=(i*47+i/131+17)&255;}
     const int dimensions[][2]={{256,3},{319,199},{640,480}};
