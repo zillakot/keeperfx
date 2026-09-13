@@ -1,4 +1,5 @@
 #include "pre_inc.h"
+#include "kfx/renderer/software/WgpuRawImage.h"
 #include "kfx/renderer/RendererSoftware.h"
 #include "kfx/renderer/FrameCapture.h"
 #include "kfx/renderer/WgpuTerrainBridge.h"
@@ -77,6 +78,11 @@ void RendererSoftware::ClearScreen(unsigned char colour)
 {
     if (lbDrawSurface == NULL)
         return;
+    if (lbDrawSurface->clip_rect.x == 0 && lbDrawSurface->clip_rect.y == 0 &&
+        lbDrawSurface->clip_rect.w == lbDrawSurface->w && lbDrawSurface->clip_rect.h == lbDrawSurface->h &&
+        kfx_wgpu_raw_clear(static_cast<uint8_t*>(lbDrawSurface->pixels), lbDrawSurface->pitch,
+        lbDrawSurface->w, lbDrawSurface->h, colour)) return;
+    kfx_wgpu_terrain_boundary(0);
     if (!SDL_FillSurfaceRect(lbDrawSurface, NULL, colour))
         ERRORLOG("Error while clearing screen: %s", SDL_GetError());
 }

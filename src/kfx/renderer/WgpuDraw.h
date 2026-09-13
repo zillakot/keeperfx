@@ -15,6 +15,9 @@ extern "C" {
 #define KFX_WGPU_DRAW_CIRCLE_FILLED 4u
 #define KFX_WGPU_DRAW_CIRCLE_OUTLINE 5u
 #define KFX_WGPU_DRAW_SPRITE 6u
+#define KFX_WGPU_DRAW_RAW_IMAGE 7u
+#define KFX_WGPU_DRAW_TILED_IMAGE 8u
+/* RAW_IMAGE covers the target; start is signed image origin and step is destination size. */
 /* Circle radius is source_width; bounds are the inclusive diameter square. */
 #define KFX_WGPU_DRAW_REPLACE 0u
 #define KFX_WGPU_DRAW_SOURCE_DESTINATION 1u

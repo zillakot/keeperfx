@@ -17,6 +17,8 @@ pub const GPOLY_SPAN: u32 = 3;
 pub const CIRCLE_FILLED: u32 = 4;
 pub const CIRCLE_OUTLINE: u32 = 5;
 pub const SPRITE: u32 = 6;
+pub const RAW_IMAGE: u32 = 7;
+pub const TILED_IMAGE: u32 = 8;
 pub const OPAQUE: u32 = 256;
 const MAX_COMMANDS: usize = 262_144;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
@@ -130,7 +132,9 @@ impl DrawRenderer {
                 concat!(
                     include_str!("draw.wgsl"),
                     "\n",
-                    include_str!("draw_sprites.wgsl")
+                    include_str!("draw_sprites.wgsl"),
+                    "\n",
+                    include_str!("draw_raw.wgsl")
                 )
                 .into(),
             ),
@@ -522,7 +526,7 @@ fn pack_commands(
             "invalid command ABI"
         );
         ensure!(
-            c.kind <= SPRITE && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
+            c.kind <= TILED_IMAGE && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
             "invalid drawing operation"
         );
         let rectangle = if c.kind == CLEAR {
@@ -541,11 +545,14 @@ fn pack_commands(
         let mut source_offset = 0;
         let mut table_offset = 0;
         let mut source_pitch = 0;
-        if c.kind == IMAGE || c.kind == GPOLY_SPAN || c.kind == SPRITE {
+        if matches!(
+            c.kind,
+            IMAGE | GPOLY_SPAN | SPRITE | RAW_IMAGE | TILED_IMAGE
+        ) {
             let source = resources.get(&c.source).context("unknown source version")?;
             source_pitch = source.pitch;
             source_offset = pack_resource(c.source, source, &mut offsets, &mut assets, limit)?;
-            if c.kind == IMAGE {
+            if matches!(c.kind, IMAGE | RAW_IMAGE | TILED_IMAGE) {
                 ensure!(
                     c.width > 0 && c.height > 0 && c.source_width > 0 && c.source_height > 0,
                     "empty source or destination image"
@@ -556,6 +563,28 @@ fn pack_commands(
                             <= u64::from(source.height),
                     "source rectangle exceeds asset"
                 );
+                if c.kind == RAW_IMAGE || c.kind == TILED_IMAGE {
+                    ensure!(
+                        c.blend == 0
+                            && c.transparent == OPAQUE
+                            && c.source_x == 0
+                            && c.source_y == 0,
+                        "invalid raw image options"
+                    );
+                }
+                if c.kind == RAW_IMAGE {
+                    ensure!(
+                        c.x == 0 && c.y == 0 && c.width == width && c.height == height,
+                        "raw image requires full target bounds"
+                    );
+                    ensure!(
+                        (1..=16384).contains(&c.step_low)
+                            && (1..=16384).contains(&c.step_high)
+                            && (-16384..=16384).contains(&(c.start_low as i32))
+                            && (-16384..=16384).contains(&(c.start_high as i32)),
+                        "invalid raw image scaling"
+                    );
+                }
             } else if c.kind == SPRITE {
                 sprites::validate(c, source)?;
             } else {
@@ -707,7 +736,7 @@ mod tests {
                 ..Default::default()
             },
             Command {
-                kind: 7,
+                kind: 9,
                 ..Default::default()
             },
             Command {

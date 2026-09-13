@@ -19,6 +19,7 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
 #include "front_simple.h"
+#include "kfx/renderer/software/WgpuRawImage.h"
 
 #include <math.h>
 
@@ -121,24 +122,24 @@ unsigned char palette_buf[PALETTE_SIZE];
 #endif
 /******************************************************************************/
 
-/** Copies the given RAW image at given point of screen buffer.
- *
- * @param dst_buf Destination screen buffer.
- * @param scanline Amount of bytes making up one line in screen buffer.
- * @param nlines Amount of lines in screen buffer.
- * @param dst_width Destination image width.
- * @param dst_height Destination image height.
- * @param spw Starting position in screen buffer.
- * @param sph Starting position in screen buffer.
- * @param src_buf Source image buffer.
- * @param src_width Source image width.
- * @param src_height Source image height.
- *     Factor of 2 would mean every pixel is repeated in both dimensions and drawn 2*2 times.
- * @return Gives true on success.
- */
+struct RawImageOracle {
+    int height, dw, dh, x, y, sw, sh;
+    const uint8_t *source;
+};
+
+static void raw_image_oracle(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    struct RawImageOracle *o = context;
+    copy_raw8_image_buffer(pixels, pitch, o->height, o->dw, o->dh, o->x, o->y,
+        o->source, o->sw, o->sh);
+}
+
 TbBool copy_raw8_image_buffer(unsigned char *dst_buf,const int scanline,const int nlines,const int dst_width,const int dst_height,
     const int spw,const int sph,const unsigned char *src_buf,const int src_width,const int src_height)
 {
+    struct RawImageOracle oracle = {nlines, dst_width, dst_height, spw, sph, src_width, src_height, src_buf};
+    if (kfx_wgpu_raw_image(dst_buf, scanline, nlines, dst_width, dst_height, spw, sph,
+        src_buf, src_width, src_height, raw_image_oracle, &oracle)) return true;
     unsigned char* dst;
     SYNCDBG(18, "Starting; screen buf %d,%d screen size %d,%d dst pos %d,%d src %d,%d", (int)scanline, (int)nlines, (int)dst_width, (int)dst_height, (int)spw, (int)sph, (int)src_width, (int)src_height);
     // Source pixel coords
