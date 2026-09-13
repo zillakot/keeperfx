@@ -23,6 +23,7 @@
 #include "bflib_video.h"
 #include "bflib_sprite.h"
 #include "bflib_vidraw.h"
+#include "kfx/renderer/GpolyCapture.h"
 #include "post_inc.h"
 
 #ifdef __GNUC__
@@ -678,12 +679,24 @@ static void pack_texcoords(void)
     texcoord_delta_y = texcoord_delta_y_top;
 }
 
-static void draw_gpoly_line(uint8_t *restrict pixel_dst, int32_t length, TexCoord texcoord)
+static void draw_gpoly_line(uint8_t *restrict pixel_dst, int32_t length, TexCoord texcoord,
+    int32_t x, int32_t y)
 {
     const uint8_t *const restrict texture = vec_map;
     const uint8_t *const restrict fade_table = render_fade_tables;
     const uint64_t texture_step = texcoord_as_uint64(texcoord_delta_x);
     uint64_t texture_position = texcoord_as_uint64(texcoord_truncate(texcoord));
+
+    if (kfx_gpoly_sink && length > 0) {
+        const struct KfxGpolyTarget target = {vec_screen, vec_window_width,
+            vec_window_height, vec_screen_width};
+        const struct KfxGpolySpan span = {x, y, (uint32_t)length,
+            (uint32_t)texture_position, (uint32_t)(texture_position >> 32),
+            (uint32_t)texture_step, (uint32_t)(texture_step >> 32)};
+        if (kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &span, texture, fade_table) ==
+            KFX_GPOLY_CONSUMED)
+            return;
+    }
 
     for (int i = 0; i < length; i++)
     {
@@ -726,7 +739,7 @@ static void draw_gpoly_clipped_half(struct GPolyDrawState *state)
         for (; x_left_int < state->x; --state->x)
             state->texcoord = texcoord_subtract(state->texcoord, texcoord_delta_x_exact);
 
-        draw_gpoly_line(dst, length, state->texcoord);
+        draw_gpoly_line(dst, length, state->texcoord, x_left_int, state->y);
     }
 }
 
@@ -743,7 +756,7 @@ static void draw_gpoly_whole_half(struct GPolyDrawState *state)
         const int length = x_right_int - x_left_int;
         uint8_t *const dst = state->dst_line + x_left_int;
 
-        draw_gpoly_line(dst, length, state->texcoord);
+        draw_gpoly_line(dst, length, state->texcoord, x_left_int, state->y);
     }
 }
 
