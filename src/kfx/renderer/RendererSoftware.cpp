@@ -208,6 +208,7 @@ void RendererSoftware::destroy_rust_presenter()
         m_metal_view = nullptr;
     }
     m_rust_window = nullptr;
+    m_vsync = -1;
 }
 
 bool RendererSoftware::try_rust_presenter()
