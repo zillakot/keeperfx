@@ -17,7 +17,7 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
         source.bytes.len() == axis + 8 * (w + h) + 256,
         "invalid sprite asset length"
     );
-    for pixel in source.bytes[..axis].chunks_exact(2) {
+    for pixel in source.bytes[..axis].as_chunks::<2>().0 {
         ensure!(pixel[1] <= 1, "invalid sprite coverage");
     }
     for (offset, count) in [(axis, w), (axis + 8 * w, h)] {
