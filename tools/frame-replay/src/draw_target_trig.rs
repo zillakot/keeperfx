@@ -8,6 +8,7 @@ impl DrawRenderer {
         commands: &[Command],
         texture: u64,
     ) -> Result<()> {
+        self.frame_flush()?;
         self.check_status()?;
         let (width, height) = self.target_dimensions(target)?;
         ensure!(
@@ -110,7 +111,16 @@ impl DrawRenderer {
         let params = buffer(
             &self.device,
             "snapshot triangle parameters",
-            &[width, height, commands.len() as u32, width.div_ceil(16)],
+            &[
+                width,
+                height,
+                commands.len() as u32,
+                width.div_ceil(16),
+                self.targets[&target].pitch,
+                self.targets[&target].offset,
+                0,
+                0,
+            ],
             wgpu::BufferUsages::UNIFORM,
         );
         let assets = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -141,7 +151,9 @@ impl DrawRenderer {
         self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4 + 20;
         self.target_resource_counters.sampling_copy_bytes += copies.len() as u64 * 65536 * 4;
         let valid = self.validate_trig_batch(&cb, &assets, &params, width, height)?;
-        self.counters.readback_bytes += 4;
+        if self.deferred_status.is_none() {
+            self.counters.readback_bytes += 4;
+        }
         ensure!(valid, "snapshot triangle invalid lookup");
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,

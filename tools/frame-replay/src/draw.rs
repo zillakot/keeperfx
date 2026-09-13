@@ -1,3 +1,6 @@
+#[path = "draw_frame.rs"]
+mod frame_queue;
+pub use frame_queue::FrameCounters;
 #[path = "draw_bitmap.rs"]
 mod bitmap;
 #[path = "draw_map_view.rs"]
@@ -134,10 +137,14 @@ struct Resource {
     bytes: Vec<u8>,
 }
 
+#[derive(Clone)]
 struct Target {
     width: u32,
     height: u32,
     indices: wgpu::Buffer,
+    root: u64,
+    pitch: u32,
+    offset: u32,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -165,6 +172,10 @@ pub struct DrawRenderer {
     target_snapshots: HashMap<u64, target_resources::TargetSnapshot>,
     target_resource_counters: TargetResourceCounters,
     counters: Counters,
+    frame: Option<frame_queue::QueuedFrame>,
+    frame_counters: FrameCounters,
+    deferred_status: Option<Vec<wgpu::Buffer>>,
+    deferred_snapshot_releases: Vec<u64>,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -244,6 +255,10 @@ impl DrawRenderer {
             target_snapshots: HashMap::new(),
             target_resource_counters: TargetResourceCounters::default(),
             counters: Counters::default(),
+            frame: None,
+            frame_counters: FrameCounters::default(),
+            deferred_status: None,
+            deferred_snapshot_releases: Vec::new(),
             failure: renderer.failure.clone(),
         })
     }
@@ -285,7 +300,9 @@ impl DrawRenderer {
         let indices = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("authoritative indexed target"),
             size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let id = next_handle()?;
@@ -295,12 +312,18 @@ impl DrawRenderer {
                 width,
                 height,
                 indices,
+                root: id,
+                pitch: width,
+                offset: 0,
             },
         );
         Ok(id)
     }
 
     pub fn release_target(&mut self, id: u64) -> Result<()> {
+        if self.defer_target_release(id)? {
+            return Ok(());
+        }
         self.targets.remove(&id).context("unknown target")?;
         Ok(())
     }
@@ -319,6 +342,17 @@ impl DrawRenderer {
             "resource exceeds device buffer limit"
         );
         let id = next_handle()?;
+        if self.frame.is_some() {
+            ensure!(
+                self.resources
+                    .values()
+                    .map(|r| r.bytes.len())
+                    .sum::<usize>()
+                    .checked_add(bytes.len())
+                    .is_some_and(|n| n <= 256 * 1024 * 1024),
+                "queued resource arena exceeds 256 MiB"
+            );
+        }
         self.resources.insert(
             id,
             Resource {
@@ -332,11 +366,17 @@ impl DrawRenderer {
     }
 
     pub fn release_resource(&mut self, id: u64) -> Result<()> {
+        if self.defer_resource_release(id)? {
+            return Ok(());
+        }
         self.resources.remove(&id).context("unknown resource")?;
         Ok(())
     }
 
     pub fn submit(&mut self, target: u64, commands: &[Command]) -> Result<()> {
+        if self.enqueue_commands(target, commands)? {
+            return Ok(());
+        }
         self.check_status()?;
         if commands.len() == 1 && commands[0].kind == MINIMAP {
             return self.submit_minimap(target, &commands[0]);
@@ -359,7 +399,7 @@ impl DrawRenderer {
             target_height,
             self.storage_limit() as usize,
         )?;
-        let target = self.targets.get(&target).context("unknown target")?;
+        let target = self.targets.get(&target).context("unknown target")?.clone();
         if commands.is_empty() {
             return Ok(());
         }
@@ -401,6 +441,10 @@ impl DrawRenderer {
                 target.height,
                 commands.len() as u32,
                 target.width.div_ceil(16),
+                target.pitch,
+                target.offset,
+                0,
+                0,
             ],
             wgpu::BufferUsages::UNIFORM,
         );
@@ -414,7 +458,9 @@ impl DrawRenderer {
                 target.width,
                 target.height,
             )?;
-            self.counters.readback_bytes += 4;
+            if self.deferred_status.is_none() {
+                self.counters.readback_bytes += 4;
+            }
             self.counters.command_upload_bytes += 4;
             ensure!(valid, "triangle has an invalid lookup");
         }
@@ -449,13 +495,14 @@ impl DrawRenderer {
 
     pub fn target_dimensions(&self, target: u64) -> Result<(u32, u32)> {
         self.check_status()?;
-        let target = self.targets.get(&target).context("unknown target")?;
+        let target = self.targets.get(&target).context("unknown target")?.clone();
         Ok((target.width, target.height))
     }
 
     pub fn readback(&mut self, target: u64) -> Result<Vec<u8>> {
+        self.frame_flush()?;
         self.check_status()?;
-        let target = self.targets.get(&target).context("unknown target")?;
+        let target = self.targets.get(&target).context("unknown target")?.clone();
         let size = u64::from(target.width) * u64::from(target.height) * 4;
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("explicit indexed readback"),
@@ -464,7 +511,15 @@ impl DrawRenderer {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(&target.indices, 0, &staging, 0, size);
+        for row in 0..target.height {
+            encoder.copy_buffer_to_buffer(
+                &target.indices,
+                u64::from(target.offset + row * target.pitch) * 4,
+                &staging,
+                u64::from(row * target.width) * 4,
+                u64::from(target.width) * 4,
+            );
+        }
         self.queue.submit([encoder.finish()]);
         let (sender, receiver) = std::sync::mpsc::channel();
         staging
@@ -492,15 +547,16 @@ impl DrawRenderer {
     }
 
     pub fn present_into(
-        &self,
+        &mut self,
         target: u64,
         palette: &[u8],
         output_width: u32,
         output_height: u32,
         view: &wgpu::TextureView,
     ) -> Result<()> {
+        self.frame_flush()?;
         self.check_status()?;
-        let target = self.targets.get(&target).context("unknown target")?;
+        let target = self.targets.get(&target).context("unknown target")?.clone();
         crate::frame::dimensions(output_width, output_height)?;
         ensure!(
             palette.len() == 1024,
@@ -525,7 +581,16 @@ impl DrawRenderer {
         let parameters = buffer(
             &self.device,
             "presentation dimensions",
-            &[target.width, target.height, output_width, output_height],
+            &[
+                target.width,
+                target.height,
+                output_width,
+                output_height,
+                target.pitch,
+                target.offset,
+                0,
+                0,
+            ],
             wgpu::BufferUsages::UNIFORM,
         );
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

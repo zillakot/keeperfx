@@ -138,10 +138,20 @@ impl DrawRenderer {
             &words,
             wgpu::BufferUsages::STORAGE,
         );
+        let view = buffer(
+            &self.device,
+            "target view",
+            &[target.width, target.pitch, target.offset, 0],
+            wgpu::BufferUsages::UNIFORM,
+        );
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native lens"),
             layout: &pipeline.get_bind_group_layout(0),
-            entries: &[entry(0, &target.indices), entry(1, &assets)],
+            entries: &[
+                entry(0, &target.indices),
+                entry(1, &assets),
+                entry(2, &view),
+            ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {

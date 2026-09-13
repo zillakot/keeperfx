@@ -1,6 +1,7 @@
 @group(0) @binding(0) var<storage, read> indices: array<u32>;
 @group(0) @binding(1) var<storage, read> palette: array<u32>;
-@group(0) @binding(2) var<uniform> parameters: vec4<u32>;
+struct Parameters { dimensions: vec4<u32>, view: vec4<u32> }
+@group(0) @binding(2) var<uniform> params: Parameters;
 
 @vertex
 fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -10,8 +11,8 @@ fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let pixel = ((2u * vec2<u32>(position.xy) + vec2<u32>(1)) * parameters.xy) / (2u * parameters.zw);
-    let rgba = palette[indices[pixel.y * parameters.x + pixel.x]];
+    let pixel = ((2u * vec2<u32>(position.xy) + vec2<u32>(1)) * params.dimensions.xy) / (2u * params.dimensions.zw);
+    let rgba = palette[indices[params.view.y + pixel.y * params.view.x + pixel.x]];
     return vec4<f32>(f32(rgba & 255u), f32((rgba >> 8u) & 255u),
         f32((rgba >> 16u) & 255u), f32(rgba >> 24u)) / 255.0;
 }

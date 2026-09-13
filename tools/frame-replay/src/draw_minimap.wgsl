@@ -1,3 +1,5 @@
+@group(0) @binding(3) var<uniform> target_view: vec4<u32>;
+fn address(i: u32) -> u32 { return target_view.z + (i / target_view.x) * target_view.y + i % target_view.x; }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<storage, read> data: array<u32>;
 @group(0) @binding(2) var<storage, read> background: array<u32>;
@@ -29,5 +31,5 @@ fn minimap(@builtin(global_invocation_id) id:vec3<u32>) {
   var pos=vec2<i32>(si(16),si(17));var remaining=si(21)-4;
   loop {if remaining<=0||pos.x<0||pos.y<0||pos.x>>8>=i32(d)||pos.y>>8>=i32(d){break;}pos+=vec2<i32>(si(6),si(7));if pattern(p,pos>>vec2<u32>(8),0){write=true;break;}remaining-=4;}
  } else {col=255u;write=true;}
- if write {pixels[dst]=col;}
+ if write {pixels[address(dst)]=col;}
 }

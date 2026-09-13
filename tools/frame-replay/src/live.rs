@@ -1,3 +1,5 @@
+#[path = "live_frame.rs"]
+mod frame_queue;
 #[path = "live_shadow.rs"]
 mod shadow;
 #[path = "live_target_resources.rs"]

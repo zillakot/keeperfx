@@ -44,6 +44,7 @@ impl DrawRenderer {
         height: u32,
         pitch: u32,
     ) -> Result<u64> {
+        self.frame_flush()?;
         self.check_status()?;
         let target = self
             .targets
@@ -68,7 +69,10 @@ impl DrawRenderer {
         for row in 0..height {
             encoder.copy_buffer_to_buffer(
                 &target.indices,
-                (u64::from(y + row) * u64::from(target.width) + u64::from(x)) * 4,
+                (u64::from(target.offset)
+                    + u64::from(y + row) * u64::from(target.pitch)
+                    + u64::from(x))
+                    * 4,
                 &indices,
                 u64::from(row) * u64::from(pitch) * 4,
                 u64::from(width) * 4,
@@ -92,6 +96,15 @@ impl DrawRenderer {
     }
 
     pub fn release_target_snapshot(&mut self, snapshot: u64) -> Result<()> {
+        if self.deferred_status.is_some() {
+            ensure!(
+                self.target_snapshots.contains_key(&snapshot)
+                    && !self.deferred_snapshot_releases.contains(&snapshot),
+                "unknown snapshot"
+            );
+            self.deferred_snapshot_releases.push(snapshot);
+            return Ok(());
+        }
         self.target_snapshots
             .remove(&snapshot)
             .context("unknown target snapshot")?;
@@ -113,6 +126,7 @@ impl DrawRenderer {
 
     /// IMAGE and single TRANSITION sources are GPU snapshots; tables are CPU resources.
     pub fn submit_target_images(&mut self, target: u64, commands: &[Command]) -> Result<()> {
+        self.frame_flush()?;
         self.check_status()?;
         let (width, height) = self.target_dimensions(target)?;
         let batch = self.pack_target_images(commands)?;
@@ -140,7 +154,16 @@ impl DrawRenderer {
         let parameters = buffer(
             &self.device,
             "snapshot image dimensions",
-            &[width, height, commands.len() as u32, width.div_ceil(16)],
+            &[
+                width,
+                height,
+                commands.len() as u32,
+                width.div_ceil(16),
+                self.targets[&target].pitch,
+                self.targets[&target].offset,
+                0,
+                0,
+            ],
             wgpu::BufferUsages::UNIFORM,
         );
         let assets = self.device.create_buffer(&wgpu::BufferDescriptor {

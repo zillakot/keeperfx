@@ -11,7 +11,9 @@ struct Command {
 @group(0) @binding(1) var<storage, read> commands: array<Command>;
 @group(0) @binding(2) var<storage, read> assets: array<u32>;
 @group(0) @binding(4) var<storage, read> tiles: array<u32>;
-@group(0) @binding(3) var<uniform> parameters: vec4<u32>;
+struct DrawParameters { x: u32, y: u32, z: u32, w: u32, pitch: u32, offset: u32, pad0: u32, pad1: u32 }
+@group(0) @binding(3) var<uniform> parameters: DrawParameters;
+fn pixel_address(i: u32) -> u32 { return parameters.offset + (i / parameters.x) * parameters.pitch + i % parameters.x; }
 
 fn mul_high(a: u32, b: u32) -> u32 {
     let a0 = a & 65535u;
@@ -78,7 +80,7 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
     let pixel = vec2<i32>(id.xy);
     let index = id.y * parameters.x + id.x;
     let tile = ((id.y / 16u) * parameters.w + id.x / 16u) * 2u;
-    var destination = pixels[index];
+    var destination = pixels[pixel_address(index)];
     for (var i = 0u; i < tiles[tile + 1u]; i++) {
         let c = commands[tiles[tiles[tile] + i]];
         if any(pixel < c.clip.xy) || any(pixel >= c.clip.zw) { continue; }
@@ -125,5 +127,5 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         }
     }
-    pixels[index] = destination;
+    pixels[pixel_address(index)] = destination;
 }

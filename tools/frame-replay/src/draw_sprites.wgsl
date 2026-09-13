@@ -36,20 +36,20 @@ fn sprite_sample(c: Command, pixel: vec2<u32>) -> u32 {
 fn sprite_copy_forward(source: i32, destination: i32, count: i32, alignment: u32) {
     var at = 0i;
     while at < count && ((u32(destination + at) + alignment) & 3u) != 0u {
-        pixels[u32(destination + at)] = pixels[u32(source + at)];
+        pixels[pixel_address(u32(destination + at))] = pixels[pixel_address(u32(source + at))];
         at++;
     }
     while at + 4 <= count {
-        let values = vec4<u32>(pixels[u32(source + at)], pixels[u32(source + at + 1)],
-            pixels[u32(source + at + 2)], pixels[u32(source + at + 3)]);
-        pixels[u32(destination + at)] = values.x;
-        pixels[u32(destination + at + 1)] = values.y;
-        pixels[u32(destination + at + 2)] = values.z;
-        pixels[u32(destination + at + 3)] = values.w;
+        let values = vec4<u32>(pixels[pixel_address(u32(source + at))], pixels[pixel_address(u32(source + at + 1))],
+            pixels[pixel_address(u32(source + at + 2))], pixels[pixel_address(u32(source + at + 3))]);
+        pixels[pixel_address(u32(destination + at))] = values.x;
+        pixels[pixel_address(u32(destination + at + 1))] = values.y;
+        pixels[pixel_address(u32(destination + at + 2))] = values.z;
+        pixels[pixel_address(u32(destination + at + 3))] = values.w;
         at += 4;
     }
     while at < count {
-        pixels[u32(destination + at)] = pixels[u32(source + at)];
+        pixels[pixel_address(u32(destination + at))] = pixels[pixel_address(u32(source + at))];
         at++;
     }
 }
@@ -81,7 +81,7 @@ fn sprite_ordered() {
             if !in_run { run_right = right; in_run = true; }
             let colour = select(assets[remap + assets[artwork]], c.operation.w, (c.source.x & 4u) != 0u);
             for (var dx = 0u; dx < xcount; dx++) {
-                pixels[u32(right - i32(dx))] = colour;
+                pixels[pixel_address(u32(right - i32(dx)))] = colour;
             }
             if coverage == 2u {
                 let left = i32(y * parameters.x + xstart) - 1;

@@ -1,3 +1,5 @@
+@group(0) @binding(2) var<uniform> target_view: vec4<u32>;
+fn address(i: u32) -> u32 { return target_view.z + (i / target_view.x) * target_view.y + i % target_view.x; }
 @group(0) @binding(0) var<storage, read_write> indices: array<u32>;
 @group(0) @binding(1) var<storage, read> data: array<u32>;
 fn word(n: u32) -> u32 {
@@ -10,7 +12,7 @@ fn source(offset: u32) -> u32 {
         if relative >= 0 {
             let y = u32(relative) / word(4u);
             let x = u32(relative) % word(4u);
-            if y < word(2u) && x < word(1u) { return indices[y * word(1u) + x]; }
+            if y < word(2u) && x < word(1u) { return indices[address(y * word(1u) + x)]; }
         }
     }
     return data[word(11u) + offset];
@@ -41,7 +43,7 @@ fn pixel(i: u32) {
         result = input;
         if overlay != 255u { result = (overlay * word(9u) + input * (256u-word(9u))) >> 8u; }
     }
-    indices[i] = result;
+    indices[address(i)] = result;
 }
 @compute @workgroup_size(8, 8)
 fn effect(@builtin(global_invocation_id) id: vec3<u32>) {

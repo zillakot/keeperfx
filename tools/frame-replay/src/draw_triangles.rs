@@ -47,8 +47,11 @@ impl TrianglePipelines {
 impl DrawRenderer {
     /// Submissions retain triangle order and reject invalid resources or shades before target writes.
     pub fn submit_triangles(&mut self, target: u64, commands: &[TriangleCommand]) -> Result<()> {
+        if self.enqueue_triangles(target, commands)? {
+            return Ok(());
+        }
         self.check_status()?;
-        let target = self.targets.get(&target).context("unknown target")?;
+        let target = self.targets.get(&target).context("unknown target")?.clone();
         ensure!(
             commands.len() <= MAX_COMMANDS,
             "triangle count exceeds limit"
@@ -129,7 +132,16 @@ impl DrawRenderer {
         let params = buffer(
             &self.device,
             "triangle batch dimensions",
-            &[target.width, target.height, commands.len() as u32, 0],
+            &[
+                target.width,
+                target.height,
+                commands.len() as u32,
+                0,
+                target.pitch,
+                target.offset,
+                0,
+                0,
+            ],
             wgpu::BufferUsages::UNIFORM,
         );
         let status = buffer(
@@ -138,11 +150,13 @@ impl DrawRenderer {
             &[0],
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
-        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("triangle validation flag readback"),
-            size: 4,
-            mapped_at_creation: false,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        let staging = self.deferred_status.is_none().then(|| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("triangle validation flag readback"),
+                size: 4,
+                mapped_at_creation: false,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            })
         });
         let validation = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -159,27 +173,34 @@ impl DrawRenderer {
             pass.set_bind_group(0, &validation, &[]);
             pass.dispatch_workgroups(target.height.div_ceil(64), commands.len() as u32, 1);
         }
-        encoder.copy_buffer_to_buffer(&status, 0, &staging, 0, 4);
+        if let Some(staging) = &staging {
+            encoder.copy_buffer_to_buffer(&status, 0, staging, 0, 4);
+        }
         self.queue.submit([encoder.finish()]);
         self.counters.command_upload_bytes += commands.len() as u64 * 96 + 36;
-        let (sender, receiver) = std::sync::mpsc::channel();
-        staging
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = sender.send(result);
-            });
-        self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(std::time::Duration::from_secs(30)),
-        })?;
-        receiver.recv()??;
-        let mapped = staging.slice(..).get_mapped_range()?;
-        let invalid = mapped.iter().any(|&byte| byte != 0);
-        drop(mapped);
-        staging.unmap();
-        self.counters.readback_bytes += 4;
-        self.check_status()?;
-        ensure!(!invalid, "invalid triangle shade");
+        if let Some(statuses) = &mut self.deferred_status {
+            statuses.push(status);
+        } else {
+            let staging = staging.unwrap();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            staging
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = sender.send(result);
+                });
+            self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })?;
+            receiver.recv()??;
+            let mapped = staging.slice(..).get_mapped_range()?;
+            let invalid = mapped.iter().any(|&byte| byte != 0);
+            drop(mapped);
+            staging.unmap();
+            self.counters.readback_bytes += 4;
+            self.check_status()?;
+            ensure!(!invalid, "invalid triangle shade");
+        }
         let asset_buffer = buffer(
             &self.device,
             "triangle immutable assets",

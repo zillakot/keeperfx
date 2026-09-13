@@ -98,7 +98,16 @@ impl DrawRenderer {
             let parameters = buffer(
                 &self.device,
                 "mixed batch preflight parameters",
-                &[width, height, commands.len() as u32, 0],
+                &[
+                    width,
+                    height,
+                    commands.len() as u32,
+                    0,
+                    self.targets[&target].pitch,
+                    self.targets[&target].offset,
+                    0,
+                    0,
+                ],
                 wgpu::BufferUsages::UNIFORM,
             );
             self.counters.command_upload_bytes += (words.len() as u64 * 4) + 20;
@@ -110,7 +119,9 @@ impl DrawRenderer {
                 width,
                 height,
             )?;
-            self.counters.readback_bytes += 4;
+            if self.deferred_status.is_none() {
+                self.counters.readback_bytes += 4;
+            }
             ensure!(valid, "triangle has an invalid lookup");
         }
         Ok(())
@@ -140,7 +151,7 @@ impl DrawRenderer {
     }
 
     pub(super) fn validate_trig_batch(
-        &self,
+        &mut self,
         commands: &wgpu::Buffer,
         assets: &wgpu::Buffer,
         params: &wgpu::Buffer,
@@ -154,11 +165,13 @@ impl DrawRenderer {
             &[0],
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: 4,
-            mapped_at_creation: false,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        let readback = self.deferred_status.is_none().then(|| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 4,
+                mapped_at_creation: false,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            })
         });
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -177,8 +190,15 @@ impl DrawRenderer {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
         }
-        encoder.copy_buffer_to_buffer(&status, 0, &readback, 0, 4);
+        if let Some(staging) = &readback {
+            encoder.copy_buffer_to_buffer(&status, 0, staging, 0, 4);
+        }
         self.queue.submit([encoder.finish()]);
+        if let Some(statuses) = &mut self.deferred_status {
+            statuses.push(status);
+            return Ok(true);
+        }
+        let readback = readback.unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);

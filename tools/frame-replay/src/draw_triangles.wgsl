@@ -1,5 +1,5 @@
 struct Span { bounds: vec4<u32>, accumulator: vec4<u32> }
-struct Parameters { width: u32, height: u32, count: u32, padding: u32 }
+struct Parameters { width: u32, height: u32, count: u32, padding: u32, pitch: u32, offset: u32, pad0: u32, pad1: u32 }
 @group(0) @binding(0) var<storage, read> spans: array<Span>;
 @group(0) @binding(1) var<storage, read> assets: array<u32>;
 @group(0) @binding(2) var<storage, read_write> pixels: array<u32>;
@@ -28,7 +28,7 @@ fn validate(@builtin(global_invocation_id) gid: vec3<u32>) {
 @compute @workgroup_size(8, 8)
 fn render(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= parameters.width || gid.y >= parameters.height { return; }
-    let pixel = gid.y * parameters.width + gid.x;
+    let pixel = parameters.offset + gid.y * parameters.pitch + gid.x;
     var color = pixels[pixel];
     for (var triangle = 0u; triangle < parameters.count; triangle++) {
         let row = spans[triangle * parameters.height + gid.y];

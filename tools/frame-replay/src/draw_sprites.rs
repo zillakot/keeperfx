@@ -151,7 +151,16 @@ impl DrawRenderer {
             let parameters = buffer(
                 &self.device,
                 "sprite target dimensions",
-                &[target.width, target.height, 1, 0],
+                &[
+                    target.width,
+                    target.height,
+                    1,
+                    0,
+                    target.pitch,
+                    target.offset,
+                    0,
+                    0,
+                ],
                 wgpu::BufferUsages::UNIFORM,
             );
             let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

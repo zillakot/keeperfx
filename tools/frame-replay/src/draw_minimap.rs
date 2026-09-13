@@ -3,7 +3,7 @@ pub const MINIMAP: u32 = 12;
 const HEADER: usize = 96;
 pub(super) struct MinimapState {
     pipeline: wgpu::ComputePipeline,
-    background: Option<(u64, u32)>,
+    pub(super) background: Option<(u64, u32)>,
 }
 
 fn validate(c: &Command, b: &[u8], width: u32, height: u32) -> Result<[u32; 24]> {
@@ -164,6 +164,13 @@ impl DrawRenderer {
         } else {
             &dummy
         };
+        let target = &self.targets[&target_id];
+        let view = buffer(
+            &self.device,
+            "target view",
+            &[target.width, target.pitch, target.offset, 0],
+            wgpu::BufferUsages::UNIFORM,
+        );
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &state.pipeline.get_bind_group_layout(0),
@@ -171,6 +178,7 @@ impl DrawRenderer {
                 entry(0, &self.targets[&target_id].indices),
                 entry(1, &assets),
                 entry(2, background),
+                entry(3, &view),
             ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
