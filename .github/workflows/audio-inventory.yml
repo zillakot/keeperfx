@@ -1,0 +1,38 @@
+name: Audio inventory
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'config/**'
+      - 'campgns/**'
+      - 'lang/speech_*'
+      - 'scripts/audio_inventory.py'
+      - 'scripts/tests/test_audio_inventory.py'
+      - 'docs/audio/cue-inventory.json'
+      - '.github/workflows/audio-inventory.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'config/**'
+      - 'campgns/**'
+      - 'lang/speech_*'
+      - 'scripts/audio_inventory.py'
+      - 'scripts/tests/test_audio_inventory.py'
+      - 'docs/audio/cue-inventory.json'
+      - '.github/workflows/audio-inventory.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python3 -m unittest discover -s scripts/tests -p test_audio_inventory.py -v
+      - run: python3 scripts/audio_inventory.py --check
