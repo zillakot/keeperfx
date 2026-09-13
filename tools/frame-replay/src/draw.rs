@@ -201,6 +201,13 @@ impl DrawRenderer {
         Ok(())
     }
 
+    fn storage_limit(&self) -> u64 {
+        let limits = self.device.limits();
+        limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size)
+    }
+
     pub fn counters(&self) -> Counters {
         self.counters
     }
@@ -210,7 +217,7 @@ impl DrawRenderer {
         let pixels = crate::frame::dimensions(width, height)?;
         let size = pixels as u64 * 4;
         ensure!(
-            size <= self.device.limits().max_storage_buffer_binding_size,
+            size <= self.storage_limit(),
             "target exceeds storage binding limit"
         );
         let indices = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -245,6 +252,10 @@ impl DrawRenderer {
     ) -> Result<u64> {
         self.check_status()?;
         validate_resource(bytes.len(), width, height, pitch)?;
+        ensure!(
+            bytes.len() as u64 * 4 <= self.storage_limit(),
+            "resource exceeds device buffer limit"
+        );
         let id = next_handle()?;
         self.resources.insert(
             id,
@@ -271,7 +282,7 @@ impl DrawRenderer {
             &self.resources,
             target.width,
             target.height,
-            self.device.limits().max_storage_buffer_binding_size as usize,
+            self.storage_limit() as usize,
         )?;
         if commands.is_empty() {
             return Ok(());
@@ -280,7 +291,7 @@ impl DrawRenderer {
             &words,
             target.width,
             target.height,
-            self.device.limits().max_storage_buffer_binding_size as usize,
+            self.storage_limit() as usize,
         )?;
         let tile_buffer = buffer(
             &self.device,

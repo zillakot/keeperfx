@@ -52,8 +52,18 @@ mod tests {
 
     #[test]
     fn rejects_malformed_sprite_assets() {
-        let command = Command { kind: SPRITE, source_width: 1, source_height: 1, ..Default::default() };
-        let mut resource = Resource { width: 1, height: 1, pitch: 1, bytes: vec![0; 274] };
+        let command = Command {
+            kind: SPRITE,
+            source_width: 1,
+            source_height: 1,
+            ..Default::default()
+        };
+        let mut resource = Resource {
+            width: 1,
+            height: 1,
+            pitch: 1,
+            bytes: vec![0; 274],
+        };
         validate(&command, &resource).unwrap();
         resource.bytes[1] = 2;
         assert!(validate(&command, &resource).is_err());
@@ -62,7 +72,16 @@ mod tests {
         assert!(validate(&command, &resource).is_err());
         resource.bytes.clear();
         assert!(validate(&command, &resource).is_err());
-        assert!(validate(&Command { source_width: u32::MAX, ..command }, &resource).is_err());
+        assert!(
+            validate(
+                &Command {
+                    source_width: u32::MAX,
+                    ..command
+                },
+                &resource
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -81,12 +100,17 @@ mod tests {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         eprintln!("sprite fixtures adapter: {:?}", adapter.get_info());
-        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         let renderer = crate::gpu::Renderer::new(device, queue).unwrap();
         let mut drawing = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
         let target = drawing.create_target(width, height).unwrap();
-        let initial: Vec<u8> = (0..size).map(|i| (i * 19 + i / width as usize * 13) as u8).collect();
-        let initial_source = drawing.create_resource(&initial, width, height, width).unwrap();
+        let initial: Vec<u8> = (0..size)
+            .map(|i| (i * 19 + i / width as usize * 13) as u8)
+            .collect();
+        let initial_source = drawing
+            .create_resource(&initial, width, height, width)
+            .unwrap();
         let mut expected = vec![0; size];
         for fixture in 0..count {
             let mut bytes = [0; 112];
@@ -106,24 +130,61 @@ mod tests {
             }
             file.read_exact(&mut expected).unwrap();
             let command = Command {
-                abi_version: word(&bytes,0), kind: word(&bytes,1), blend: word(&bytes,2), colour: word(&bytes,3),
-                x: word(&bytes,4) as i32, y: word(&bytes,5) as i32, width: word(&bytes,6), height: word(&bytes,7),
-                clip_x: word(&bytes,8) as i32, clip_y: word(&bytes,9) as i32,
-                clip_width: word(&bytes,10), clip_height: word(&bytes,11),
-                source: source_handle, table: table_handle,
-                source_x: word(&bytes,16), source_y: word(&bytes,17), source_width: word(&bytes,18), source_height: word(&bytes,19),
-                start_low: word(&bytes,20), start_high: word(&bytes,21), step_low: word(&bytes,22), step_high: word(&bytes,23),
-                transparent: word(&bytes,24), ..Default::default()
+                abi_version: word(&bytes, 0),
+                kind: word(&bytes, 1),
+                blend: word(&bytes, 2),
+                colour: word(&bytes, 3),
+                x: word(&bytes, 4) as i32,
+                y: word(&bytes, 5) as i32,
+                width: word(&bytes, 6),
+                height: word(&bytes, 7),
+                clip_x: word(&bytes, 8) as i32,
+                clip_y: word(&bytes, 9) as i32,
+                clip_width: word(&bytes, 10),
+                clip_height: word(&bytes, 11),
+                source: source_handle,
+                table: table_handle,
+                source_x: word(&bytes, 16),
+                source_y: word(&bytes, 17),
+                source_width: word(&bytes, 18),
+                source_height: word(&bytes, 19),
+                start_low: word(&bytes, 20),
+                start_high: word(&bytes, 21),
+                step_low: word(&bytes, 22),
+                step_high: word(&bytes, 23),
+                transparent: word(&bytes, 24),
+                ..Default::default()
             };
-            drawing.submit(target, &[
-                Command { kind: IMAGE, source: initial_source, width, height, source_width: width, source_height: height, ..Default::default() },
-                command,
-            ]).unwrap();
+            drawing
+                .submit(
+                    target,
+                    &[
+                        Command {
+                            kind: IMAGE,
+                            source: initial_source,
+                            width,
+                            height,
+                            source_width: width,
+                            source_height: height,
+                            ..Default::default()
+                        },
+                        command,
+                    ],
+                )
+                .unwrap();
             drawing.release_resource(source_handle).unwrap();
-            if table_handle != 0 { drawing.release_resource(table_handle).unwrap(); }
+            if table_handle != 0 {
+                drawing.release_resource(table_handle).unwrap();
+            }
             let actual = drawing.readback(target).unwrap();
-            if let Some(pixel) = actual.iter().zip(&expected).position(|(a,b)| a != b) {
-                panic!("fixture {fixture} {command:?}: pixel ({},{}) GPU={} legacy={}", pixel % width as usize, pixel / width as usize, actual[pixel], expected[pixel]);
+            if let Some(pixel) = actual.iter().zip(&expected).position(|(a, b)| a != b) {
+                panic!(
+                    "fixture {fixture} {command:?}: pixel ({},{}) GPU={} legacy={}",
+                    pixel % width as usize,
+                    pixel / width as usize,
+                    actual[pixel],
+                    expected[pixel]
+                );
             }
         }
         let mut trailing = [0];

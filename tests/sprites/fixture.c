@@ -99,14 +99,58 @@ int main(int argc, char **argv)
         switch (mode) {
         case 0: LbSpriteDrawUsingScalingData(0,0,&buffer); break;
         case 1: LbSpriteDrawRemapUsingScalingData(0,0,&buffer,remap); break;
-        case 2: LbSpriteDrawOneColourUsingScalingData(0,0,&sprite,0); break;
+        case 2: LbSpriteDrawOneColourUsingScalingData(0,0,&sprite,mapped ? 0 : 211); break;
         case 3: DrawAlphaSpriteUsingScalingData(0,0,&buffer); break;
         case 4: LbSpriteDrawImmediate(positions[position][0],positions[position][1],&sprite); break;
-        case 5: LbSpriteDrawOneColourImmediate(positions[position][0],positions[position][1],&sprite,0); break;
+        case 5: LbSpriteDrawOneColourImmediate(positions[position][0],positions[position][1],&sprite,mapped ? 0 : 211); break;
         }
         if (submissions == before) fallback++;
         else require(!memcmp(target_pixels,initial,SIZE), "accepted sprite modified native target");
     }
+    for (unsigned mode = 0; mode < 4; mode++)
+    for (unsigned flip = 0; flip < 4; flip++)
+    for (unsigned blend = 0; blend < 3; blend++)
+    for (unsigned scale = 0; scale < 3; scale++) {
+        flags = ((flip & 1) ? Lb_SPRITE_FLIP_HORIZ : 0) |
+            ((flip & 2) ? Lb_SPRITE_FLIP_VERTIC : 0) |
+            (blend == 1 ? Lb_SPRITE_TRANSPAR4 : 0) |
+            (blend == 2 ? Lb_SPRITE_TRANSPAR8 : 0);
+        memcpy(target_pixels, initial, SIZE);
+        buffer.height = 3;
+        LbSpriteSetScalingData(-2, 8, 11, 9, scales[scale][0] * 2, scales[scale][1] * 2);
+        unsigned before = submissions;
+        switch (mode) {
+        case 0: LbSpriteDrawUsingScalingData(2,3,&buffer); break;
+        case 1: LbSpriteDrawRemapUsingScalingData(2,3,&buffer,remap); break;
+        case 2: LbSpriteDrawOneColourUsingScalingData(2,3,&sprite,211); break;
+        case 3: DrawAlphaSpriteUsingScalingData(2,3,&buffer); break;
+        }
+        if (submissions == before) fallback++;
+    }
+    flags = 0;
+    buffer.height = 5;
+    LbSpriteSetScalingData(13,11,7,5,14,15);
+    memcpy(target_pixels,initial,SIZE);
+    decline = 1;
+    LbSpriteDrawUsingScalingData(0,0,&buffer);
+    uint8_t fallback_pixels[SIZE];
+    memcpy(fallback_pixels,target_pixels,SIZE);
+    memcpy(target_pixels,initial,SIZE);
+    decline = 0;
+    enabled = 0;
+    unsigned before = submissions;
+    LbSpriteDrawUsingScalingData(0,0,&buffer);
+    require(submissions == before && !memcmp(target_pixels,fallback_pixels,SIZE),
+        "disabled and declined sprite paths differ");
+    enabled = 1;
+    memcpy(target_pixels,initial,SIZE);
+    LbSpriteDrawUsingScalingData(0,0,&buffer);
+    require(!memcmp(expected,fallback_pixels,SIZE), "oracle differs from native fallback");
+    lbDisplay.GraphicsWindowPtr++;
+    before = submissions;
+    LbSpriteDrawUsingScalingData(0,0,&buffer);
+    require(submissions == before, "inconsistent graphics target alias accepted");
+    lbDisplay.GraphicsWindowPtr--;
     header[1] = count;
     rewind(fixture);
     fwrite(header, sizeof(header), 1, fixture);

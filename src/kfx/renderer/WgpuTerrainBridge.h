@@ -35,7 +35,7 @@ public:
         uint64_t resource_snapshot_bytes = 0, target_creations = 0, failures = 0;
         uint64_t gpu_batches = 0, bridge_initial_index_bytes = 0, cpu_replayed_spans = 0;
         uint64_t verified_batches = 0, verification_cpu_spans = 0;
-        uint64_t native_commands = 0, verification_cpu_commands = 0;
+        uint64_t native_commands = 0, verification_cpu_commands = 0, gpu_sprite_commands = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
     };
     WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify = false);

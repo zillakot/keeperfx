@@ -130,6 +130,11 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
     command.clip_width = SwTargetWindowWidth();
     command.clip_height = SwTargetWindowHeight();
     command.source_x = flip | ((mode == 2 || mode == 5) ? 4 : 0);
+    /* The legacy remap and one-colour down/Trans2RL kernels discard the source byte. */
+    if ((mode == 1 || mode == 2) && !scale_up && (flip & 1) && blend == 2) {
+        command.source_x |= 4;
+        command.colour = 0;
+    }
     command.source_width = w;
     command.source_height = h;
     command.transparent = KFX_WGPU_DRAW_OPAQUE;

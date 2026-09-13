@@ -1124,13 +1124,13 @@ int LbSpriteDrawScaledRemap(long xpos, long ypos, const struct TbSprite *sprite,
 
 TbResult LbSpriteDrawImmediate(long x, long y, const struct TbSprite *spr)
 {
-    if (kfx_wgpu_sprite(x, y, NULL, spr, NULL, 0, 4)) return Lb_SUCCESS;
     struct TbSpriteDrawData spd;
     TbResult ret;
     SYNCDBG(19,"At (%ld,%ld)",x,y);
     ret = LbSpriteDrawPrepare(&spd, x, y, spr);
     if (ret != Lb_SUCCESS)
         return ret;
+    if (kfx_wgpu_sprite(x, y, NULL, spr, NULL, 0, 4)) return Lb_SUCCESS;
     if ((RendererGetDrawFlags() & (Lb_SPRITE_TRANSPAR4|Lb_SPRITE_TRANSPAR8)) != 0)
         return LbSpriteDrawTranspr(spd.sp,spd.Wd,spd.Ht,spd.r,spd.nextRowDelta,spd.startShift,spd.mirror);
     else
@@ -1413,13 +1413,13 @@ static inline TbResult LbSpriteDrawFCOneColour(const char *sp,short sprWd,short 
 
 TbResult LbSpriteDrawOneColourImmediate(long x, long y, const struct TbSprite *spr, const TbPixel colour)
 {
-    if (kfx_wgpu_sprite(x, y, NULL, spr, NULL, colour, 5)) return Lb_SUCCESS;
     struct TbSpriteDrawData spd;
     TbResult ret;
     SYNCDBG(19,"At (%ld,%ld)",x,y);
     ret = LbSpriteDrawPrepare(&spd, x, y, spr);
     if (ret != Lb_SUCCESS)
         return ret;
+    if (kfx_wgpu_sprite(x, y, NULL, spr, NULL, colour, 5)) return Lb_SUCCESS;
     if ((RendererGetDrawFlags() & (Lb_SPRITE_TRANSPAR4|Lb_SPRITE_TRANSPAR8)) != 0) {
         return LbSpriteDrawTrOneColour(spd.sp,spd.Wd,spd.Ht,spd.r,colour,spd.nextRowDelta,spd.startShift,spd.mirror);
     } else

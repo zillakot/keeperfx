@@ -348,6 +348,7 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
             ++m_counts.gpu_spans;
         } else {
             ++m_counts.native_commands;
+            if (command.kind == KFX_WGPU_DRAW_SPRITE) ++m_counts.gpu_sprite_commands;
         }
     }
     m_counts.gpu_triangles += m_triangles.size();
