@@ -30,8 +30,9 @@ bool RendererSoftware::Init()
 #ifdef KFX_RUST_PRESENTER
         const char* fail_after = SDL_getenv("KFX_WGPU_DRAW_FAIL_AFTER");
         m_drawing = new WgpuTerrainBridge(fail_after != nullptr ? strtoull(fail_after, nullptr, 10) : 0,
-            SDL_getenv("KFX_WGPU_DRAW_FAIL_INIT") != nullptr, SDL_getenv("KFX_WGPU_DRAW_VERIFY") != nullptr);
-        SYNCLOG("Drawing selected: partial wgpu terrain with synchronous CPU composition bridges");
+            SDL_getenv("KFX_WGPU_DRAW_FAIL_INIT") != nullptr, SDL_getenv("KFX_WGPU_DRAW_VERIFY") != nullptr, SDL_getenv("KFX_WGPU_DRAW_RESIDENT") != nullptr);
+        SYNCLOG("Drawing selected: wgpu commands with explicit CPU composition barriers%s",
+            SDL_getenv("KFX_WGPU_DRAW_RESIDENT") != nullptr ? "; resident terrain sequences enabled" : "");
 #else
         WARNLOG("Rust drawing is not built on this platform; using software drawing");
 #endif
@@ -78,6 +79,10 @@ void RendererSoftware::ClearScreen(unsigned char colour)
 {
     if (lbDrawSurface == NULL)
         return;
+#ifdef KFX_RUST_PRESENTER
+    if (m_drawing != nullptr && SDL_getenv("KFX_WGPU_DRAW_RESIDENT") != nullptr && lbWindow != nullptr)
+        ensure_present_target();
+#endif
     SDL_Rect clip;
     if (SDL_GetSurfaceClipRect(lbDrawSurface, &clip) && clip.x == 0 && clip.y == 0 &&
         clip.w == lbDrawSurface->w && clip.h == lbDrawSurface->h &&
@@ -86,6 +91,11 @@ void RendererSoftware::ClearScreen(unsigned char colour)
     kfx_wgpu_terrain_boundary(0);
     if (!SDL_FillSurfaceRect(lbDrawSurface, NULL, colour))
         ERRORLOG("Error while clearing screen: %s", SDL_GetError());
+#ifdef KFX_RUST_PRESENTER
+    else if (m_drawing != nullptr && SDL_GetSurfaceClipRect(lbDrawSurface, &clip) &&
+        clip.x == 0 && clip.y == 0 && clip.w == lbDrawSurface->w && clip.h == lbDrawSurface->h)
+        m_drawing->FullRedraw();
+#endif
 }
 
 bool RendererSoftware::ensure_present_target()
@@ -150,6 +160,11 @@ void RendererSoftware::destroy_present_target()
 
 unsigned char* RendererSoftware::LockFramebuffer(int* out_pitch)
 {
+    if (!kfx_wgpu_native_cpu_barrier()) return nullptr;
+#ifdef KFX_RUST_PRESENTER
+    if (m_drawing != nullptr && SDL_getenv("KFX_WGPU_DRAW_RESIDENT") != nullptr && lbWindow != nullptr)
+        ensure_present_target();
+#endif
     if (lbDrawSurface == NULL || !SDL_LockSurface(lbDrawSurface))
         return nullptr;
     if (out_pitch != nullptr)
@@ -165,6 +180,7 @@ void RendererSoftware::UnlockFramebuffer()
 
 bool RendererSoftware::ScheduleScreenshot(const char* path, int fmt)
 {
+    if (!kfx_wgpu_native_cpu_barrier()) return false;
     if (lbDrawSurface == NULL)
         return false;
     bool ok;
@@ -186,6 +202,10 @@ void RendererSoftware::PresentFrame()
         m_drawing->Boundary(false);
         ++m_drawing_frames;
         report_drawing();
+        if (!m_drawing->FrameValid()) {
+            performance_failed("resident GPU frame invalid; awaiting full screen redraw");
+            return;
+        }
     }
 #endif
     if (lbDrawSurface == NULL || !ensure_present_target()) {
@@ -253,7 +273,7 @@ void RendererSoftware::report_drawing()
                 "\"cpu_gpoly_spans\":%llu,\"cpu_replayed_spans\":%llu,"
                 "\"bridge_readbacks\":%llu,\"gpu_readback_bytes\":%llu,\"native_copy_bytes\":%llu,"
                 "\"bridge_initial_index_bytes\":%llu,\"resource_snapshot_bytes\":%llu,"
-                "\"target_creations\":%llu,\"failures\":%llu,\"verified_batches\":%llu,\"verification_cpu_spans\":%llu,\"gpu_api_batches\":%llu,\"gpu_api_commands\":%llu,\"gpu_asset_upload_bytes\":%llu,\"gpu_command_upload_bytes\":%llu,\"gpu_api_readback_bytes\":%llu,\"native_commands\":%llu,\"verification_cpu_commands\":%llu,\"gpu_triangles\":%llu,\"cpu_triangles\":%llu,\"replayed_triangles\":%llu,\"verified_triangles\":%llu,\"rejected_triangles\":%llu,\"gpu_sprite_commands\":%llu,\"gpu_shadow_commands\":%llu,\"shadow_scratch_upload_bytes\":%llu,\"shadow_scratch_readback_bytes\":%llu,\"shadow_scratch_copy_bytes\":%llu}\n",
+                "\"target_creations\":%llu,\"failures\":%llu,\"verified_batches\":%llu,\"verification_cpu_spans\":%llu,\"gpu_api_batches\":%llu,\"gpu_api_commands\":%llu,\"gpu_asset_upload_bytes\":%llu,\"gpu_command_upload_bytes\":%llu,\"gpu_api_readback_bytes\":%llu,\"native_commands\":%llu,\"verification_cpu_commands\":%llu,\"gpu_triangles\":%llu,\"cpu_triangles\":%llu,\"replayed_triangles\":%llu,\"verified_triangles\":%llu,\"rejected_triangles\":%llu,\"gpu_sprite_commands\":%llu,\"gpu_shadow_commands\":%llu,\"shadow_scratch_upload_bytes\":%llu,\"shadow_scratch_readback_bytes\":%llu,\"shadow_scratch_copy_bytes\":%llu,\"resident_sequences\":%llu,\"resident_batches\":%llu,\"cpu_barriers\":%llu,\"target_alias_barriers\":%llu,\"barrier_readbacks\":%llu,\"verification_readbacks\":%llu,\"invalid_frames\":%llu,\"missing_cpu_barriers\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
                 static_cast<unsigned long long>(counts.cpu_gpoly_spans), static_cast<unsigned long long>(counts.cpu_replayed_spans),
@@ -268,7 +288,11 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(counts.gpu_triangles), static_cast<unsigned long long>(counts.cpu_triangles),
                 static_cast<unsigned long long>(counts.replayed_triangles), static_cast<unsigned long long>(counts.verified_triangles), static_cast<unsigned long long>(counts.rejected_triangles), static_cast<unsigned long long>(counts.gpu_sprite_commands),
                 static_cast<unsigned long long>(counts.gpu_shadow_commands), static_cast<unsigned long long>(counts.shadow_scratch_upload_bytes),
-                static_cast<unsigned long long>(counts.shadow_scratch_readback_bytes), static_cast<unsigned long long>(counts.shadow_scratch_copy_bytes));
+                static_cast<unsigned long long>(counts.shadow_scratch_readback_bytes), static_cast<unsigned long long>(counts.shadow_scratch_copy_bytes),
+                static_cast<unsigned long long>(counts.resident_sequences), static_cast<unsigned long long>(counts.resident_batches),
+                static_cast<unsigned long long>(counts.cpu_barriers), static_cast<unsigned long long>(counts.target_alias_barriers),
+                static_cast<unsigned long long>(counts.barrier_readbacks), static_cast<unsigned long long>(counts.verification_readbacks),
+                static_cast<unsigned long long>(counts.invalid_frames), static_cast<unsigned long long>(counts.missing_cpu_barriers));
             fclose(output);
         }
     }
@@ -277,6 +301,7 @@ void RendererSoftware::report_drawing()
 void RendererSoftware::destroy_rust_presenter()
 {
     if (m_rust != nullptr) {
+        if (m_drawing != nullptr) m_drawing->DetachPresenter();
         kfx_wgpu_details(m_rust, m_rust_details, sizeof(m_rust_details));
         SYNCLOG("Rust presenter shutdown after %lu frames: %s", m_rust_frames, m_rust_details);
         kfx_wgpu_destroy(m_rust);
@@ -314,6 +339,8 @@ bool RendererSoftware::try_rust_presenter()
         destroy_rust_presenter();
         return false;
     }
+    if (m_drawing != nullptr && SDL_getenv("KFX_WGPU_DRAW_RESIDENT") != nullptr)
+        m_drawing->AttachPresenter(m_rust);
     m_rust_window = lbWindow;
     kfx_wgpu_details(m_rust, m_rust_details, sizeof(m_rust_details));
     SYNCLOG("Presenting through Rust wgpu-metal: %s", m_rust_details);

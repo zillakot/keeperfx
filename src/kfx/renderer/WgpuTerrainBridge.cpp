@@ -12,9 +12,15 @@ static WgpuTerrainBridge* active_bridge = nullptr;
 extern "C" int kfx_wgpu_native_enabled(void)
 { return active_bridge != nullptr && !active_bridge->Failed() && !active_bridge->IsOracleActive(); }
 
+extern "C" int kfx_wgpu_native_cpu_barrier(void)
+{ return active_bridge == nullptr || active_bridge->IsOracleActive() || active_bridge->CpuBarrier(); }
+
+extern "C" void kfx_wgpu_native_flush(void)
+{ if (active_bridge != nullptr && !active_bridge->IsOracleActive()) active_bridge->Flush(); }
+
 extern "C" void kfx_wgpu_terrain_boundary(int allow_terrain)
 {
-    if (active_bridge != nullptr) active_bridge->Boundary(allow_terrain != 0);
+    if (active_bridge != nullptr && !active_bridge->IsOracleActive()) active_bridge->Boundary(allow_terrain != 0);
 }
 
 extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget* target,
@@ -45,8 +51,8 @@ int WgpuTerrainBridge::SubmitShadow(const KfxGpolyTarget& target, const KfxWgpuD
     return accepted;
 }
 
-WgpuTerrainBridge::WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify)
-    : m_fail_after(fail_after), m_fail_init(fail_init), m_verify(verify)
+WgpuTerrainBridge::WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify, bool resident)
+    : m_resident_enabled(resident), m_fail_after(fail_after), m_fail_init(fail_init), m_verify(verify)
 {
     active_bridge = this;
     kfx_gpoly_set_sink(Sink, this);
@@ -56,14 +62,14 @@ WgpuTerrainBridge::WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool v
 
 WgpuTerrainBridge::~WgpuTerrainBridge()
 {
-    Flush();
+    CpuBarrier();
     if (active_bridge == this) active_bridge = nullptr;
     if (kfx_gpoly_sink_context == this) kfx_gpoly_set_sink(nullptr, nullptr);
     if (kfx_gpoly_triangle_context == this) {
         kfx_gpoly_triangle_sink = nullptr;
         kfx_gpoly_triangle_context = nullptr;
     }
-    if (m_context != nullptr) kfx_wgpu_draw_destroy(m_context);
+    if (m_context != nullptr && !m_borrowed_context) kfx_wgpu_draw_destroy(m_context);
 }
 
 KfxWgpuDrawCounters WgpuTerrainBridge::GetGpuCounters() const
@@ -74,9 +80,95 @@ KfxWgpuDrawCounters WgpuTerrainBridge::GetGpuCounters() const
     return counters;
 }
 
+bool WgpuTerrainBridge::SameTarget(const KfxGpolyTarget& target) const
+{
+    return m_gpu_native_target.pixels == target.pixels && m_gpu_native_target.width == target.width &&
+        m_gpu_native_target.height == target.height && m_gpu_native_target.pitch == target.pitch;
+}
+
+void WgpuTerrainBridge::BeginResident()
+{
+    if (!m_resident_enabled || m_failed || m_resident_lease) return;
+    m_resident_lease = true;
+    ++m_counts.resident_sequences;
+}
+
+bool WgpuTerrainBridge::Materialize()
+{
+    if (m_frame_invalid) return false;
+    if (!m_gpu_dirty) return true;
+    if (kfx_wgpu_draw_readback(m_context, m_target, m_readback.data(), m_readback.size(),
+            m_width, m_error.data(), m_error.size()) != 1) {
+        Fail(nullptr);
+        return false;
+    }
+    for (uint32_t row = 0; row < m_height; ++row)
+        std::memcpy(m_gpu_native_target.pixels + static_cast<size_t>(row) * m_gpu_native_target.pitch,
+            m_readback.data() + static_cast<size_t>(row) * m_width, m_width);
+    ++m_counts.bridge_readbacks;
+    ++m_counts.barrier_readbacks;
+    m_counts.gpu_readback_bytes += static_cast<uint64_t>(m_width) * m_height * sizeof(uint32_t);
+    m_counts.native_copy_bytes += static_cast<uint64_t>(m_width) * m_height;
+    m_gpu_dirty = false;
+    return true;
+}
+
+bool WgpuTerrainBridge::CpuBarrier()
+{
+    ++m_counts.cpu_barriers;
+    Flush();
+    const bool valid = Materialize();
+    m_resident_lease = false;
+    m_gpu_valid = false;
+    return valid;
+}
+
+void WgpuTerrainBridge::FullRedraw()
+{
+    m_pending.clear();
+    m_triangles.clear();
+    m_resident_lease = false;
+    m_allow_terrain = false;
+    m_frame_invalid = false;
+    m_gpu_dirty = false;
+    m_gpu_valid = false;
+}
+
+bool WgpuTerrainBridge::AttachPresenter(void* presenter)
+{
+    if (m_context != nullptr || m_failed) return false;
+    m_context = kfx_wgpu_draw_context(presenter, m_error.data(), m_error.size());
+    m_borrowed_context = m_context != nullptr;
+    return m_borrowed_context;
+}
+
+void WgpuTerrainBridge::DetachPresenter()
+{
+    if (!m_borrowed_context) return;
+    CpuBarrier();
+    for (const auto& resource : m_textures)
+        kfx_wgpu_draw_resource_release(m_context, resource.handle, m_error.data(), m_error.size());
+    for (const auto& resource : m_fades)
+        kfx_wgpu_draw_resource_release(m_context, resource.handle, m_error.data(), m_error.size());
+    if (m_target) kfx_wgpu_draw_target_release(m_context, m_target, m_error.data(), m_error.size());
+    m_textures.clear();
+    m_fades.clear();
+    m_context = nullptr;
+    m_target = 0;
+    m_width = m_height = 0;
+    m_borrowed_context = false;
+}
+
+uint64_t WgpuTerrainBridge::ResidentTarget(const KfxGpolyTarget& target)
+{
+    Flush();
+    return !m_failed && m_resident_lease && m_gpu_valid && SameTarget(target) ? m_target : 0;
+}
+
 void WgpuTerrainBridge::Boundary(bool allow_terrain)
 {
-    if (!allow_terrain) Flush();
+    if (!allow_terrain) CpuBarrier();
+    else BeginResident();
     m_allow_terrain = allow_terrain;
 }
 
@@ -84,6 +176,12 @@ int WgpuTerrainBridge::Fail(const char* reason)
 {
     if (m_failed) return KFX_GPOLY_DECLINED;
     if (reason != nullptr) std::snprintf(m_error.data(), m_error.size(), "%s", reason);
+    if (m_gpu_dirty) {
+        m_frame_invalid = true;
+        ++m_counts.invalid_frames;
+        m_triangles.clear();
+        m_pending.clear();
+    }
     if (!m_pending.empty() || !m_triangles.empty()) {
         try { ReplayPending(); }
         catch (...) {
@@ -110,7 +208,10 @@ int WgpuTerrainBridge::Sink(void* context, const KfxGpolyTarget* target,
     } catch (...) {
         result = bridge.Fail("native drawing bridge exception");
     }
-    if (result != KFX_GPOLY_CONSUMED) ++bridge.m_counts.cpu_gpoly_spans;
+    if (result != KFX_GPOLY_CONSUMED) {
+        bridge.CpuBarrier();
+        ++bridge.m_counts.cpu_gpoly_spans;
+    }
     return result;
 }
 
@@ -164,6 +265,11 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
         Flush();
         if (m_failed) return KFX_GPOLY_DECLINED;
     }
+    if (m_gpu_valid && !SameTarget(target)) {
+        ++m_counts.target_alias_barriers;
+        if (!Materialize()) return Fail(nullptr);
+        m_gpu_valid = false;
+    }
     m_native_target = target;
     std::array<uint8_t, KFX_GPOLY_TEXTURE_BYTES> texture_bytes = {};
     for (size_t row = 0; row < 32; ++row)
@@ -203,7 +309,7 @@ int WgpuTerrainBridge::TriangleSink(void* context, const KfxGpolyTarget* target,
     catch (const std::exception& error) { result = bridge.Fail(error.what()); }
     catch (...) { result = bridge.Fail("native triangle bridge exception"); }
     if (result != KFX_GPOLY_CONSUMED) {
-        bridge.Flush();
+        bridge.CpuBarrier();
         ++bridge.m_counts.cpu_triangles;
     }
     return result;
@@ -230,6 +336,11 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
         if (m_fail_init) return Fail("injected GPU drawing initialization failure");
         m_context = kfx_wgpu_draw_create(m_error.data(), m_error.size());
         if (m_context == nullptr) return Fail(nullptr);
+    }
+    if (m_gpu_valid && !SameTarget(target)) {
+        ++m_counts.target_alias_barriers;
+        if (!Materialize()) return Fail(nullptr);
+        m_gpu_valid = false;
     }
     m_native_target = target;
     m_rasterizer = rasterizer;
@@ -298,6 +409,16 @@ void WgpuTerrainBridge::ReplayPending()
 
 bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_context)
 {
+    if (m_verify && m_resident_lease && m_gpu_valid) {
+        for (uint32_t row = 0; row < m_height; ++row) {
+            if (std::memcmp(m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch,
+                    m_cpu_checkpoint.data() + static_cast<size_t>(row) * m_width, m_width) != 0) {
+                ++m_counts.missing_cpu_barriers;
+                std::snprintf(m_error.data(), m_error.size(), "CPU target changed during GPU lease without a barrier");
+                return false;
+            }
+        }
+    }
     if (m_fail_after != 0 && m_counts.gpu_batches >= m_fail_after) {
         std::snprintf(m_error.data(), m_error.size(), "injected GPU drawing batch failure");
         return false;
@@ -314,24 +435,36 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
         if (m_target == 0) return false;
         ++m_counts.target_creations;
     }
-    const size_t initial_length = static_cast<size_t>(m_native_target.pitch) * (m_height - 1) + m_width;
-    const uint64_t initial = kfx_wgpu_draw_resource_create(m_context, m_native_target.pixels,
-        initial_length, m_width, m_height, m_native_target.pitch, m_error.data(), m_error.size());
-    if (initial == 0) return false;
-    KfxWgpuDrawCommand copy = {};
-    copy.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
-    copy.kind = KFX_WGPU_DRAW_IMAGE;
-    copy.width = copy.clip_width = copy.source_width = m_width;
-    copy.height = copy.clip_height = copy.source_height = m_height;
-    copy.source = initial;
-    copy.transparent = KFX_WGPU_DRAW_OPAQUE;
-    bool success = kfx_wgpu_draw_submit(m_context, m_target, &copy, 1,
-        m_error.data(), m_error.size()) == 1;
-    m_counts.bridge_initial_index_bytes += initial_length;
-    char release_error[1024] = {};
-    if (kfx_wgpu_draw_resource_release(m_context, initial, release_error, sizeof(release_error)) != 1)
-        success = false;
-    if (!success) return false;
+    if (!m_resident_lease || !m_gpu_valid) {
+        const size_t initial_length = static_cast<size_t>(m_native_target.pitch) * (m_height - 1) + m_width;
+        const uint64_t initial = kfx_wgpu_draw_resource_create(m_context, m_native_target.pixels,
+            initial_length, m_width, m_height, m_native_target.pitch, m_error.data(), m_error.size());
+        if (initial == 0) return false;
+        KfxWgpuDrawCommand copy = {};
+        copy.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+        copy.kind = KFX_WGPU_DRAW_IMAGE;
+        copy.width = copy.clip_width = copy.source_width = m_width;
+        copy.height = copy.clip_height = copy.source_height = m_height;
+        copy.source = initial;
+        copy.transparent = KFX_WGPU_DRAW_OPAQUE;
+        bool success = kfx_wgpu_draw_submit(m_context, m_target, &copy, 1,
+            m_error.data(), m_error.size()) == 1;
+        m_counts.bridge_initial_index_bytes += initial_length;
+        char release_error[1024] = {};
+        if (kfx_wgpu_draw_resource_release(m_context, initial, release_error, sizeof(release_error)) != 1)
+            success = false;
+        if (!success) return false;
+        m_gpu_native_target = m_native_target;
+        m_gpu_valid = m_resident_lease;
+        if (m_verify && m_resident_lease) {
+            m_expected.resize(static_cast<size_t>(m_width) * m_height);
+            for (uint32_t row = 0; row < m_height; ++row)
+                std::memcpy(m_expected.data() + static_cast<size_t>(row) * m_width,
+                    m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch, m_width);
+            m_cpu_checkpoint = m_expected;
+        }
+    }
+    if (m_resident_lease) m_gpu_dirty = true;
     if (!m_triangles.empty() && kfx_wgpu_draw_submit_triangles(m_context, m_target, m_triangles.data(),
             m_triangles.size(), m_error.data(), m_error.size()) != 1) return false;
     std::vector<uint8_t> shadow_mirror;
@@ -344,11 +477,17 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
         m_counts.shadow_scratch_readback_bytes += 65536 * sizeof(uint32_t);
     } else if (kfx_wgpu_draw_submit(m_context, m_target, m_pending.data(), m_pending.size(),
             m_error.data(), m_error.size()) != 1) return false;
-    if (kfx_wgpu_draw_readback(m_context, m_target, m_readback.data(), m_readback.size(),
-            m_width, m_error.data(), m_error.size()) != 1) return false;
+    if (!m_resident_lease || m_verify) {
+        if (kfx_wgpu_draw_readback(m_context, m_target, m_readback.data(), m_readback.size(),
+                m_width, m_error.data(), m_error.size()) != 1) return false;
+        ++m_counts.bridge_readbacks;
+        m_counts.gpu_readback_bytes += static_cast<uint64_t>(m_width) * m_height * sizeof(uint32_t);
+        if (m_resident_lease) ++m_counts.verification_readbacks;
+    }
     if (m_verify) {
         std::vector<uint8_t> expected(static_cast<size_t>(m_width) * m_height);
-        for (uint32_t row = 0; row < m_height; ++row)
+        if (m_resident_lease) expected = m_expected;
+        else for (uint32_t row = 0; row < m_height; ++row)
             std::memcpy(expected.data() + static_cast<size_t>(row) * m_width,
                 m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch, m_width);
         if (oracle != nullptr) {
@@ -377,6 +516,7 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
             std::snprintf(m_error.data(), m_error.size(), "GPU terrain index comparison failed");
             return false;
         }
+        if (m_resident_lease) m_expected = std::move(expected);
         m_counts.verified_triangles += m_triangles.size();
         ++m_counts.verified_batches;
     }
@@ -385,9 +525,12 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
         ++m_counts.gpu_shadow_commands;
         m_counts.shadow_scratch_copy_bytes += 65536;
     }
-    for (uint32_t row = 0; row < m_height; ++row)
-        std::memcpy(m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch,
-            m_readback.data() + static_cast<size_t>(row) * m_width, m_width);
+    if (!m_resident_lease) {
+        for (uint32_t row = 0; row < m_height; ++row)
+            std::memcpy(m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch,
+                m_readback.data() + static_cast<size_t>(row) * m_width, m_width);
+        m_counts.native_copy_bytes += static_cast<uint64_t>(m_width) * m_height;
+    } else ++m_counts.resident_batches;
     for (const auto& command : m_pending) {
         if (command.kind == KFX_WGPU_DRAW_GPOLY_SPAN) {
             m_counts.gpu_pixels += command.width;
@@ -400,9 +543,6 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
     m_counts.gpu_triangles += m_triangles.size();
     m_triangles.clear();
     ++m_counts.gpu_batches;
-    ++m_counts.bridge_readbacks;
-    m_counts.gpu_readback_bytes += static_cast<uint64_t>(m_width) * m_height * sizeof(uint32_t);
-    m_counts.native_copy_bytes += static_cast<uint64_t>(m_width) * m_height;
     m_pending.clear();
     return true;
 }
@@ -411,8 +551,13 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
     const KfxWgpuDrawCommand& command, const KfxWgpuNativeResource* source,
     const KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context)
 {
-    Boundary(false);
-    if (m_failed || (m_verify && oracle == nullptr)) return 0;
+    Flush();
+    m_allow_terrain = false;
+    if (m_failed) return 0;
+    if (m_verify && oracle == nullptr) {
+        CpuBarrier();
+        return 0;
+    }
     if (target.pixels == nullptr || target.width == 0 || target.height == 0 ||
         target.pitch < target.width ||
         static_cast<uint64_t>(target.pitch) * target.height > std::numeric_limits<size_t>::max())
@@ -424,7 +569,24 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
             m_context = kfx_wgpu_draw_create(m_error.data(), m_error.size());
             if (m_context == nullptr) return Fail(nullptr);
         }
+        if (m_gpu_valid && !SameTarget(target)) {
+            ++m_counts.target_alias_barriers;
+            if (!Materialize()) return Fail(nullptr);
+            m_gpu_valid = false;
+        }
         m_native_target = target;
+        auto aliases_target = [&](const KfxWgpuNativeResource* resource) {
+            if (!resource || !resource->bytes || !resource->length || !m_gpu_dirty) return false;
+            const uintptr_t first = reinterpret_cast<uintptr_t>(resource->bytes);
+            const uintptr_t screen = reinterpret_cast<uintptr_t>(m_gpu_native_target.pixels);
+            const size_t length = static_cast<size_t>(m_gpu_native_target.pitch) * (m_gpu_native_target.height - 1) + m_gpu_native_target.width;
+            return first <= screen ? screen - first < resource->length : first - screen < length;
+        };
+        if (aliases_target(source) || aliases_target(table)) {
+            ++m_counts.target_alias_barriers;
+            if (!Materialize()) return Fail(nullptr);
+            m_gpu_valid = false;
+        }
         KfxWgpuDrawCommand owned = command;
         if (source != nullptr) {
             source_handle = kfx_wgpu_draw_resource_create(m_context, source->bytes, source->length,
@@ -475,6 +637,8 @@ void WgpuTerrainBridge::Flush()
 extern "C" int kfx_wgpu_native_shadow(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
     const KfxWgpuNativeResource*, const KfxWgpuNativeResource*, uint8_t*, KfxWgpuNativeOracle, void*) { return 0; }
 extern "C" int kfx_wgpu_native_enabled(void) { return 0; }
+extern "C" int kfx_wgpu_native_cpu_barrier(void) { return 1; }
+extern "C" void kfx_wgpu_native_flush(void) {}
 extern "C" void kfx_wgpu_terrain_boundary(int) {}
 extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
     const KfxWgpuNativeResource*, const KfxWgpuNativeResource*, KfxWgpuNativeOracle, void*) { return 0; }

@@ -7,6 +7,8 @@ extern "C" {
 #endif
 void kfx_wgpu_terrain_boundary(int allow_terrain);
 int kfx_wgpu_native_enabled(void);
+int kfx_wgpu_native_cpu_barrier(void);
+void kfx_wgpu_native_flush(void);
 struct KfxWgpuNativeResource {
     const uint8_t* bytes;
     size_t length;
@@ -35,16 +37,29 @@ public:
         uint64_t resource_snapshot_bytes = 0, target_creations = 0, failures = 0;
         uint64_t gpu_batches = 0, bridge_initial_index_bytes = 0, cpu_replayed_spans = 0;
         uint64_t verified_batches = 0, verification_cpu_spans = 0;
+        uint64_t resident_sequences = 0, resident_batches = 0, cpu_barriers = 0, target_alias_barriers = 0;
+        uint64_t barrier_readbacks = 0, verification_readbacks = 0, invalid_frames = 0, missing_cpu_barriers = 0;
         uint64_t native_commands = 0, verification_cpu_commands = 0, gpu_sprite_commands = 0;
         uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
     };
-    WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify = false);
+    WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify = false, bool resident = false);
     ~WgpuTerrainBridge();
     WgpuTerrainBridge(const WgpuTerrainBridge&) = delete;
     WgpuTerrainBridge& operator=(const WgpuTerrainBridge&) = delete;
     void Boundary(bool allow_terrain);
     void Flush();
+    // CPU pixels are unavailable inside a resident lease until this succeeds.
+    bool CpuBarrier();
+    void BeginResident();
+    bool FrameValid() const { return !m_frame_invalid; }
+    // Call only after a successful full CPU overwrite, before the next frame draws.
+    void FullRedraw();
+    // Detach before destroying a borrowed presenter.
+    bool AttachPresenter(void* presenter);
+    void DetachPresenter();
+    uint64_t ResidentTarget(const KfxGpolyTarget& target);
+    void* Context() const { return m_context; }
     int SubmitNative(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table,
         KfxWgpuNativeOracle oracle, void* oracle_context);
@@ -76,6 +91,12 @@ private:
     void ReplayPending();
     bool RasterizePending(uint8_t* pixels, uint32_t pitch) const;
     bool ExecutePending(KfxWgpuNativeOracle oracle = nullptr, void* oracle_context = nullptr);
+    bool SameTarget(const KfxGpolyTarget& target) const;
+    bool Materialize();
+    bool m_resident_enabled = false, m_resident_lease = false, m_gpu_valid = false, m_gpu_dirty = false;
+    bool m_frame_invalid = false, m_borrowed_context = false;
+    KfxGpolyTarget m_gpu_native_target = {};
+    std::vector<uint8_t> m_expected, m_cpu_checkpoint;
     bool m_oracle_active = false;
     uint8_t* m_shadow_scratch = nullptr;
     void* m_context = nullptr;

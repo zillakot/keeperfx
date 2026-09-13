@@ -1,4 +1,5 @@
 #include "kfx/renderer/WgpuTerrainBridge.h"
+#include "kfx/renderer/WgpuShadow.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -12,6 +13,8 @@ struct FakeContext {
     uint64_t next = 1;
     std::map<uint64_t, FakeResource> resources, targets;
 };
+extern "C" void* kfx_wgpu_draw_context(void* presenter, char*, size_t) { return presenter; }
+extern "C" int32_t kfx_wgpu_draw_submit_shadow(void*, uint64_t, const KfxWgpuDrawCommand*, uint8_t*, size_t, char*, size_t) { return -1; }
 static bool fail_readback = false;
 static bool mock_triangles = false, mismatch_triangles = false;
 extern "C" int32_t kfx_wgpu_draw_submit_triangles(void* handle, uint64_t target, const KfxWgpuTriangle*, size_t, char*, size_t)
@@ -174,6 +177,110 @@ int main()
         assert(bridge.GetCounters().native_commands == 1 && bridge.GetCounters().gpu_spans == 1);
         assert(bridge.GetCounters().verification_cpu_commands == 1);
     }
+    for (bool verify : {false, true}) {
+        std::vector<uint8_t> resident_pixels(24 * 10, 0x6a), independent = resident_pixels;
+        KfxGpolyTarget resident = {resident_pixels.data(), 20, 10, 24};
+        WgpuTerrainBridge bridge(0, false, verify, true);
+        bridge.BeginResident();
+        bridge.Boundary(true);
+        for (unsigned i = 0; i < 5; ++i) {
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
+            oracle(independent, resident.pitch, a, texture, fade);
+            bridge.Flush();
+        }
+        assert(resident_pixels != independent);
+        assert(bridge.ResidentTarget(resident) != 0);
+        const auto before = bridge.GetCounters();
+        assert(before.bridge_initial_index_bytes == 236);
+        assert(before.resident_batches == 5 && before.native_copy_bytes == 0);
+        assert(before.bridge_readbacks == (verify ? 5 : 0));
+        assert(before.verification_readbacks == (verify ? 5 : 0));
+        std::vector<uint8_t> source_pixels(200, 17);
+        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 20, 10, 20};
+        KfxWgpuDrawCommand image = {};
+        image.abi_version = 1;
+        image.kind = KFX_WGPU_DRAW_IMAGE;
+        image.width = image.clip_width = image.source_width = 20;
+        image.height = image.clip_height = image.source_height = 10;
+        image.transparent = KFX_WGPU_DRAW_OPAQUE;
+        assert(bridge.SubmitNative(resident, image, &source, nullptr, copy_oracle, &source) == 1);
+        copy_oracle(independent.data(), resident.pitch, &source);
+        std::fill(source_pixels.begin(), source_pixels.end(), 99);
+        assert(bridge.GetCounters().bridge_initial_index_bytes == 236);
+        assert(bridge.CpuBarrier());
+        assert(resident_pixels == independent);
+        assert(bridge.ResidentTarget(resident) == 0);
+        assert(bridge.GetCounters().barrier_readbacks == 1);
+        resident_pixels[0] = independent[0] = 88;
+        bridge.Boundary(true);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
+        oracle(independent, resident.pitch, a, texture, fade);
+        bridge.Flush();
+        KfxGpolyTarget alias = {resident_pixels.data() + 1, 20, 10, 24};
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &alias, &b, texture.data(), fade.data()) == 1);
+        std::vector<uint8_t> alias_expected(independent.begin() + 1, independent.end());
+        oracle(alias_expected, alias.pitch, b, texture, fade);
+        std::copy(alias_expected.begin(), alias_expected.end(), independent.begin() + 1);
+        assert(bridge.CpuBarrier());
+        assert(resident_pixels == independent);
+        assert(bridge.GetCounters().target_alias_barriers == 1);
+        assert(bridge.FrameValid() && !bridge.Failed());
+    }
+    {
+        std::vector<uint8_t> resident_pixels(240, 0x6a), checkpoint = resident_pixels;
+        KfxGpolyTarget resident = {resident_pixels.data(), 20, 10, 24};
+        WgpuTerrainBridge bridge(1, false, false, true);
+        bridge.Boundary(true);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
+        bridge.Flush();
+        assert(bridge.FrameValid() && resident_pixels == checkpoint);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &b, texture.data(), fade.data()) == 1);
+        bridge.Flush();
+        assert(bridge.Failed() && !bridge.FrameValid());
+        assert(!bridge.CpuBarrier() && bridge.ResidentTarget(resident) == 0);
+        assert(resident_pixels == checkpoint && bridge.GetCounters().invalid_frames == 1);
+        std::fill(resident_pixels.begin(), resident_pixels.end(), 0);
+        bridge.FullRedraw();
+        assert(bridge.FrameValid() && bridge.Failed());
+        const auto clear_checkpoint = resident_pixels;
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 0);
+        oracle(resident_pixels, resident.pitch, a, texture, fade);
+        assert(bridge.CpuBarrier() && bridge.FrameValid() && resident_pixels != clear_checkpoint);
+    }
+    {
+        std::vector<uint8_t> resident_pixels(240, 0x6a);
+        KfxGpolyTarget resident = {resident_pixels.data(), 20, 10, 24};
+        WgpuTerrainBridge bridge(0, false, true, true);
+        bridge.Boundary(true);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
+        bridge.Flush();
+        resident_pixels[0] ^= 1;
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &b, texture.data(), fade.data()) == 1);
+        bridge.Flush();
+        assert(bridge.Failed() && !bridge.FrameValid());
+        assert(bridge.GetCounters().missing_cpu_barriers == 1);
+    }
+    {
+        std::vector<uint8_t> resident_pixels(240, 0x6a), independent = resident_pixels;
+        KfxGpolyTarget resident = {resident_pixels.data(), 20, 10, 24};
+        WgpuTerrainBridge bridge(0, false, true, true);
+        bridge.Boundary(true);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
+        oracle(independent, resident.pitch, a, texture, fade);
+        bridge.Flush();
+        KfxWgpuNativeResource alias_source = {resident_pixels.data(), 236, 20, 10, 24};
+        KfxWgpuDrawCommand image = {};
+        image.abi_version = 1;
+        image.kind = KFX_WGPU_DRAW_IMAGE;
+        image.width = image.clip_width = image.source_width = 20;
+        image.height = image.clip_height = image.source_height = 10;
+        image.transparent = KFX_WGPU_DRAW_OPAQUE;
+        assert(bridge.SubmitNative(resident, image, &alias_source, nullptr, copy_oracle, &alias_source) == 1);
+        assert(bridge.CpuBarrier());
+        assert(resident_pixels == independent);
+        assert(bridge.GetCounters().target_alias_barriers == 1);
+        assert(bridge.GetCounters().barrier_readbacks == 2);
+    }
     assert(kfx_gpoly_sink == nullptr);
     {
         WgpuTerrainBridge bridge(1, false);
@@ -205,6 +312,32 @@ int main()
         assert(bridge.GetCounters().cpu_replayed_spans == 1);
     }
 #ifndef KFX_BRIDGE_REAL_GPU
+    {
+        auto* context = kfx_wgpu_draw_create(nullptr, 0);
+        WgpuTerrainBridge bridge(0, false, false, true);
+        assert(bridge.AttachPresenter(context));
+        bridge.Boundary(true);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &a, texture.data(), fade.data()) == 1);
+        oracle(expected, target.pitch, a, texture, fade);
+        bridge.Flush();
+        bridge.DetachPresenter();
+        assert(pixels == expected && bridge.Context() == nullptr);
+        assert(static_cast<FakeContext*>(context)->targets.empty());
+        assert(static_cast<FakeContext*>(context)->resources.empty());
+        kfx_wgpu_draw_destroy(context);
+    }
+    {
+        std::vector<uint8_t> resident_pixels(240, 0x6a), checkpoint = resident_pixels;
+        KfxGpolyTarget resident = {resident_pixels.data(), 20, 10, 24};
+        WgpuTerrainBridge bridge(0, false, false, true);
+        bridge.Boundary(true);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
+        bridge.Flush();
+        fail_readback = true;
+        assert(!bridge.CpuBarrier());
+        fail_readback = false;
+        assert(bridge.Failed() && !bridge.FrameValid() && resident_pixels == checkpoint);
+    }
     for (const bool mismatch : {false, true}) {
         std::vector<uint8_t> triangle_pixels(20 * 10, 106);
         KfxGpolyTarget triangle_target = {triangle_pixels.data(), 20, 10, 20};

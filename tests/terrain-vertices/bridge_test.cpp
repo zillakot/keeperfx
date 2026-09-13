@@ -52,5 +52,50 @@ int main()
         assert(bridge.GetCounters().replayed_triangles == 0);
         assert(bridge.GetCounters().gpu_triangles == 0);
     }
+    for (bool verify : {false, true}) {
+        std::vector<uint8_t> actual(83*61+32, 167), expected = actual;
+        const auto initial = actual;
+        KfxGpolyTarget target = {actual.data()+16,79,61,83};
+        KfxGpolyTarget oracle = {expected.data()+16,79,61,83};
+        WgpuTerrainBridge bridge(0, false, verify, true);
+        bridge.Boundary(true);
+        for (int i = 0; i < 300; ++i) {
+            auto command = triangle;
+            command.vertices[0].x = (i * 17) % 80 - 23;
+            command.vertices[1].y = (i * 13) % 75 - 10;
+            vertex_draw(&oracle, &command, texture.data(), fade.data(), 1);
+            vertex_draw(&target, &command, texture.data(), fade.data(), 0);
+            if (!verify) assert(!vertex_cpu_setup_ran());
+        }
+        bridge.Flush();
+        const auto before = bridge.GetCounters();
+        assert(actual == initial && actual != expected);
+        assert(before.gpu_triangles == 300 && before.resident_batches == 3);
+        assert(before.bridge_initial_index_bytes == 83 * 60 + 79);
+        assert(before.bridge_readbacks == (verify ? 3 : 0));
+        assert(before.native_copy_bytes == 0);
+        bridge.Boundary(false);
+        assert(actual == expected && bridge.FrameValid() && !bridge.Failed());
+        assert(bridge.GetCounters().barrier_readbacks == 1);
+        std::printf("Resident native vertices: verify=%d, triangles=300, batches=3, initial_indices=%llu, final_materializations=1, diagnostic_readbacks=%llu\n",
+            verify, static_cast<unsigned long long>(before.bridge_initial_index_bytes),
+            static_cast<unsigned long long>(before.verification_readbacks));
+    }
+    {
+        std::vector<uint8_t> actual(83*61+32, 167), expected = actual;
+        KfxGpolyTarget target = {actual.data()+16,79,61,83};
+        KfxGpolyTarget oracle = {expected.data()+16,79,61,83};
+        WgpuTerrainBridge bridge(0, false, false, true);
+        bridge.Boundary(true);
+        vertex_draw(&oracle, &triangle, texture.data(), fade.data(), 1);
+        vertex_draw(&target, &triangle, texture.data(), fade.data(), 0);
+        bridge.Flush();
+        auto outside_gpu_domain = triangle;
+        for (auto& vertex : outside_gpu_domain.vertices) vertex.x = 40000;
+        vertex_draw(&oracle, &outside_gpu_domain, texture.data(), fade.data(), 1);
+        vertex_draw(&target, &outside_gpu_domain, texture.data(), fade.data(), 0);
+        assert(actual == expected && !bridge.Failed());
+        assert(bridge.GetCounters().barrier_readbacks == 1 && bridge.GetCounters().cpu_triangles == 1);
+    }
     std::puts("PASS: native original vertices bypass CPU setup; Metal exact clipped overlaps/resource mutations, CPU interleaving, original-input batch recovery and initialization fallback");
 }
