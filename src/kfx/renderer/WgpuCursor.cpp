@@ -165,6 +165,8 @@ struct WgpuCursor::State {
 #define COLLECT(field) totals.gpu.field += c.field - reported.field
             COLLECT(batches); COLLECT(commands); COLLECT(asset_upload_bytes);
             COLLECT(command_upload_bytes); COLLECT(readback_bytes);
+            COLLECT(submits); COLLECT(dispatches); COLLECT(waits); COLLECT(wait_ns);
+            COLLECT(buffers); COLLECT(buffer_bytes); COLLECT(gpu_span_ns); COLLECT(gpu_spans);
 #undef COLLECT
             reported = c;
         }

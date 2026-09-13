@@ -120,9 +120,8 @@ impl DrawRenderer {
         }
         self.triangles
             .get_or_insert_with(|| TrianglePipelines::new(&self.device));
-        let pipelines = self.triangles.as_ref().unwrap();
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        let prepared = pipelines.prepare.encode(
+        let prepared = self.triangles.as_ref().unwrap().prepare.encode(
             &self.device,
             &mut encoder,
             &triangles,
@@ -131,6 +130,7 @@ impl DrawRenderer {
         )?;
         let params = buffer(
             &self.device,
+            &mut self.counters,
             "triangle batch dimensions",
             &[
                 target.width,
@@ -146,28 +146,32 @@ impl DrawRenderer {
         );
         let status = buffer(
             &self.device,
+            &mut self.counters,
             "triangle resource validation",
             &[0],
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
-        let staging = self.deferred_status.is_none().then(|| {
-            self.device.create_buffer(&wgpu::BufferDescriptor {
+        let staging = if self.deferred_status.is_none() {
+            Some(self.tracked_buffer(&wgpu::BufferDescriptor {
                 label: Some("triangle validation flag readback"),
                 size: 4,
                 mapped_at_creation: false,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            })
-        });
-        let validation = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &pipelines.validate.get_bind_group_layout(0),
-            entries: &[
-                entry(0, &prepared.rows),
-                entry(3, &params),
-                entry(5, &status),
-            ],
-        });
+            }))
+        } else {
+            None
+        };
         {
+            let pipelines = self.triangles.as_ref().unwrap();
+            let validation = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipelines.validate.get_bind_group_layout(0),
+                entries: &[
+                    entry(0, &prepared.rows),
+                    entry(3, &params),
+                    entry(5, &status),
+                ],
+            });
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&pipelines.validate);
             pass.set_bind_group(0, &validation, &[]);
@@ -176,7 +180,7 @@ impl DrawRenderer {
         if let Some(staging) = &staging {
             encoder.copy_buffer_to_buffer(&status, 0, staging, 0, 4);
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit_encoder(encoder);
         self.counters.command_upload_bytes += commands.len() as u64 * 96 + 36;
         if let Some(statuses) = &mut self.deferred_status {
             statuses.push(status);
@@ -188,10 +192,7 @@ impl DrawRenderer {
                 .map_async(wgpu::MapMode::Read, move |result| {
                     let _ = sender.send(result);
                 });
-            self.device.poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(std::time::Duration::from_secs(30)),
-            })?;
+            self.wait_for_queue()?;
             receiver.recv()??;
             let mapped = staging.slice(..).get_mapped_range()?;
             let invalid = mapped.iter().any(|&byte| byte != 0);
@@ -203,35 +204,39 @@ impl DrawRenderer {
         }
         let asset_buffer = buffer(
             &self.device,
+            &mut self.counters,
             "triangle immutable assets",
             &assets,
             wgpu::BufferUsages::STORAGE,
         );
         let metadata_buffer = buffer(
             &self.device,
+            &mut self.counters,
             "triangle ordered resources",
             &metadata,
             wgpu::BufferUsages::STORAGE,
         );
-        let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &pipelines.render.get_bind_group_layout(0),
-            entries: &[
-                entry(0, &prepared.rows),
-                entry(1, &asset_buffer),
-                entry(2, &target.indices),
-                entry(3, &params),
-                entry(4, &metadata_buffer),
-            ],
-        });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
+            let pipelines = self.triangles.as_ref().unwrap();
+            let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipelines.render.get_bind_group_layout(0),
+                entries: &[
+                    entry(0, &prepared.rows),
+                    entry(1, &asset_buffer),
+                    entry(2, &target.indices),
+                    entry(3, &params),
+                    entry(4, &metadata_buffer),
+                ],
+            });
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&pipelines.render);
             pass.set_bind_group(0, &bindings, &[]);
             pass.dispatch_workgroups(target.width.div_ceil(8), target.height.div_ceil(8), 1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.counters.dispatches += 1;
+        self.submit_encoder(encoder);
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;

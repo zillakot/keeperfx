@@ -989,6 +989,14 @@ pub struct DrawCounters {
     asset_upload_bytes: u64,
     command_upload_bytes: u64,
     readback_bytes: u64,
+    submits: u64,
+    dispatches: u64,
+    waits: u64,
+    wait_ns: u64,
+    buffers: u64,
+    buffer_bytes: u64,
+    gpu_span_ns: u64,
+    gpu_spans: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1011,6 +1019,14 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 asset_upload_bytes: counters.asset_upload_bytes,
                 command_upload_bytes: counters.command_upload_bytes,
                 readback_bytes: counters.readback_bytes,
+                submits: counters.submits,
+                dispatches: counters.dispatches,
+                waits: counters.waits,
+                wait_ns: counters.wait_ns,
+                buffers: counters.buffers,
+                buffer_bytes: counters.buffer_bytes,
+                gpu_span_ns: counters.gpu_span_ns,
+                gpu_spans: counters.gpu_spans,
             });
             Ok(Some(1))
         });

@@ -100,18 +100,21 @@ impl DrawRenderer {
         self.prepare_trig();
         let cb = buffer(
             &self.device,
+            &mut self.counters,
             "snapshot triangle commands",
             &words,
             wgpu::BufferUsages::STORAGE,
         );
         let tb = buffer(
             &self.device,
+            &mut self.counters,
             "snapshot triangle tiles",
             &tiles,
             wgpu::BufferUsages::STORAGE,
         );
         let params = buffer(
             &self.device,
+            &mut self.counters,
             "snapshot triangle parameters",
             &[
                 width,
@@ -125,7 +128,7 @@ impl DrawRenderer {
             ],
             wgpu::BufferUsages::UNIFORM,
         );
-        let assets = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let assets = self.tracked_buffer(&wgpu::BufferDescriptor {
             label: Some("GPU texture and geometry arena"),
             size: length as u64 * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -148,7 +151,7 @@ impl DrawRenderer {
             self.queue.write_buffer(&assets, offset as u64 * 4, &bytes);
             uploaded += bytes.len() as u64;
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit_encoder(encoder);
         self.counters.asset_upload_bytes += uploaded;
         self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4 + 20;
         self.target_resource_counters.sampling_copy_bytes += copies.len() as u64 * 65536 * 4;
@@ -175,7 +178,8 @@ impl DrawRenderer {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.counters.dispatches += 1;
+        self.submit_encoder(encoder);
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;

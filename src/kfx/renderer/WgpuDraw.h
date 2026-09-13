@@ -63,6 +63,10 @@ struct KfxWgpuDrawCommand {
 
 struct KfxWgpuDrawCounters {
     uint64_t batches, commands, asset_upload_bytes, command_upload_bytes, readback_bytes;
+    /* wait_ns is host stall time inside blocking device polls; gpu_span_ns is GPU
+     * execution time, zero unless timestamp queries were enabled and supported. */
+    uint64_t submits, dispatches, waits, wait_ns, buffers, buffer_bytes;
+    uint64_t gpu_span_ns, gpu_spans;
 };
 #pragma pack(pop)
 

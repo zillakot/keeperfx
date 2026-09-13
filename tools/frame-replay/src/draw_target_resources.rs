@@ -59,9 +59,10 @@ impl DrawRenderer {
         let target = self
             .targets
             .get(&target)
-            .context("unknown snapshot target")?;
+            .context("unknown snapshot target")?
+            .clone();
         let id = next_handle()?;
-        let indices = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let indices = self.tracked_buffer(&wgpu::BufferDescriptor {
             label: Some("immutable GPU target snapshot"),
             size,
             usage: wgpu::BufferUsages::STORAGE
@@ -82,7 +83,7 @@ impl DrawRenderer {
                 u64::from(width) * 4,
             );
         }
-        self.queue.submit([encoder.finish()]);
+        self.submit_encoder(encoder);
         self.check_status()?;
         self.target_snapshots.insert(
             id,
@@ -148,18 +149,21 @@ impl DrawRenderer {
         self.checkpoint_target(target)?;
         let command_buffer = buffer(
             &self.device,
+            &mut self.counters,
             "snapshot image commands",
             &batch.words,
             wgpu::BufferUsages::STORAGE,
         );
         let tile_buffer = buffer(
             &self.device,
+            &mut self.counters,
             "snapshot image tile lists",
             &tiles,
             wgpu::BufferUsages::STORAGE,
         );
         let parameters = buffer(
             &self.device,
+            &mut self.counters,
             "snapshot image dimensions",
             &[
                 width,
@@ -173,7 +177,7 @@ impl DrawRenderer {
             ],
             wgpu::BufferUsages::UNIFORM,
         );
-        let assets = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let assets = self.tracked_buffer(&wgpu::BufferDescriptor {
             label: Some("GPU snapshot sampling arena"),
             size: batch.asset_words as u64 * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -218,7 +222,8 @@ impl DrawRenderer {
             pass.set_bind_group(0, &binding, &[]);
             pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.counters.dispatches += 1;
+        self.submit_encoder(encoder);
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
