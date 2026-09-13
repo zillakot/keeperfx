@@ -12,9 +12,15 @@ test. A missing fixture fails the test. CI generates it before the GPU suite.
 
 Cases cover pixels (including unclipped row wrapping), filled/outline boxes,
 HV lines, filled/outline circles, all four transparency flag combinations,
-clipping, negative/zero radii, reversed and degenerate endpoints. Reversed
+clipping, negative/zero radii, the radius8191 boundary, large clipped inputs,
+empty boxes, reversed and degenerate endpoints. Reversed
 vertical lines preserve the legacy x-derived y coordinates; fixtures use
 coordinates whose resulting writes remain within the allocated target.
+
+Native assertions also check alias restoration, oracle recursion suppression,
+accepted commands skipping CPU writes, and declined calls retaining legacy output.
+Unclipped pixels normalize valid linear addresses before GPU coordinate limits.
+Outline circles above radius8191 still use CPU coverage.
 
 These fixtures prove exact GPU palette-index output for these primitive paths.
 General striped-line coverage, sprites, fonts, images and effects remain separate

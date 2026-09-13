@@ -114,14 +114,14 @@ static int wgpu_primitive(struct WgpuPrimitive primitive, uint32_t kind,
             (ptrdiff_t)SwTargetWindowY() * pitch + SwTargetWindowX()) return 0;
     x += SwTargetWindowX();
     y += SwTargetWindowY();
-    if (x < -16384 || y < -16384 || x > 16384 || y > 16384 ||
-        width < 1 || height < 1 || width > 16384 || height > 16384 || radius > 8191) return 0;
     if (primitive.kind == WgpuPixel) {
         ptrdiff_t offset = (ptrdiff_t)y * pitch + x;
         if (offset < 0 || offset >= (ptrdiff_t)pitch * screen_height) return 0;
         x = offset % pitch;
         y = offset / pitch;
     }
+    if (x < -16384 || y < -16384 || x > 16384 || y > 16384 ||
+        width < 1 || height < 1 || width > 16384 || height > 16384 || radius > 8191) return 0;
     struct KfxWgpuDrawCommand command = {0};
     command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
     command.kind = kind;
