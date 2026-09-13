@@ -127,6 +127,8 @@ struct WgpuCursor::State {
     bool owned, failed = false;
     uint64_t sprite = 0, raster = 0, background = 0, backup = 0, screen = 0;
     uint32_t width = 0, height = 0, screen_width = 0, screen_height = 0;
+    std::vector<uint8_t> artwork;
+    uint32_t artwork_width = 0, artwork_height = 0;
     SDL_Surface* backup_checkpoint = nullptr;
     bool backup_cpu_valid = true;
     char error[1024] = {};
@@ -233,7 +235,13 @@ bool WgpuCursor::InitialiseTarget(uint32_t width, uint32_t height, const TbSprit
     auto& s = *state;
     if (s.failed || s.sprite || !width || !height) return false;
     std::vector<uint8_t> asset;
-    if (!sprite_asset(spr, xs, ys, asset)) return false;
+    if (spr) {
+        if (!sprite_asset(spr, xs, ys, asset)) return false;
+        s.artwork = asset; s.artwork_width = spr->SWidth; s.artwork_height = spr->SHeight;
+    } else {
+        if (s.artwork.empty()) return false;
+        asset = s.artwork;
+    }
     if (!s.context) s.context = kfx_wgpu_draw_create(s.error, sizeof(s.error));
     if (!s.context) return s.good(false);
     s.width = width; s.height = height;
@@ -250,8 +258,8 @@ bool WgpuCursor::InitialiseTarget(uint32_t width, uint32_t height, const TbSprit
     clear.colour = 255;
     auto draw = command(KFX_WGPU_DRAW_SPRITE, width, height);
     draw.source = resource;
-    draw.source_width = spr->SWidth;
-    draw.source_height = spr->SHeight;
+    draw.source_width = s.artwork_width;
+    draw.source_height = s.artwork_height;
     const KfxWgpuDrawCommand commands[] = {clear, draw};
     bool ok = kfx_wgpu_draw_submit(s.context, s.raster, commands, 2, s.error, sizeof(s.error)) == 1;
     kfx_wgpu_draw_resource_release(s.context, resource, s.error, sizeof(s.error));
@@ -314,10 +322,46 @@ bool WgpuCursor::ComposeTarget(uint64_t target, uint32_t width, uint32_t height,
     return s.good(ok);
 }
 
+bool WgpuCursor::RefreshContext()
+{
+    void* borrowed = kfx_wgpu_native_context();
+    if (!borrowed || state->context == borrowed) return true;
+    auto* previous = state;
+    state = new State(borrowed);
+    state->artwork = previous->artwork;
+    state->artwork_width = previous->artwork_width;
+    state->artwork_height = previous->artwork_height;
+    state->backup_checkpoint = previous->backup_checkpoint;
+    bool ok = InitialiseTarget(previous->width, previous->height, nullptr, nullptr, nullptr);
+    auto& s = *state;
+    if (ok && previous->backup_cpu_valid && s.backup_checkpoint) {
+        SurfaceLock lock(s.backup_checkpoint);
+        const auto* surface = s.backup_checkpoint;
+        uint64_t resource = lock.locked ? kfx_wgpu_draw_resource_create(borrowed,
+            static_cast<uint8_t*>(surface->pixels), size_t(surface->pitch) * surface->h,
+            s.width, s.height, surface->pitch, s.error, sizeof(s.error)) : 0;
+        auto c = command(KFX_WGPU_DRAW_IMAGE, s.width, s.height);
+        c.source = resource; c.source_width = s.width; c.source_height = s.height;
+        ok = resource && kfx_wgpu_draw_submit(borrowed, s.background, &c, 1, s.error, sizeof(s.error)) == 1;
+        if (resource) kfx_wgpu_draw_resource_release(borrowed, resource, s.error, sizeof(s.error));
+        if (ok) {
+            kfx_wgpu_draw_target_snapshot_release(borrowed, s.backup, s.error, sizeof(s.error));
+            s.backup = kfx_wgpu_draw_target_snapshot(borrowed, s.background, 0, 0,
+                s.width, s.height, s.width, s.error, sizeof(s.error));
+            ok = s.backup != 0;
+        }
+    }
+    delete previous;
+    kfx_wgpu_native_context_cleanup(kfx_wgpu_cursor_detach_context);
+    if (!s.good(ok)) kfx_wgpu_native_invalidate_frame();
+    return ok;
+}
+
 bool WgpuCursor::Backup(SSurface& checkpoint, int x, int y, const TbRect& rect)
 {
     if (!checkpoint.surf_data || !lbDrawSurface) return false;
     state->backup_checkpoint = checkpoint.surf_data;
+    if (!RefreshContext()) return true;
     if (!state->owned && state->context) {
         const KfxGpolyTarget native = {static_cast<uint8_t*>(lbDrawSurface->pixels),
             uint32_t(lbDrawSurface->w), uint32_t(lbDrawSurface->h), uint32_t(lbDrawSurface->pitch)};
@@ -344,6 +388,7 @@ bool WgpuCursor::Backup(SSurface& checkpoint, int x, int y, const TbRect& rect)
 bool WgpuCursor::Compose(int x, int y, const TbRect& rect, bool restore)
 {
     if (!lbDrawSurface) return false;
+    if (!RefreshContext()) return true;
     if (!state->owned && state->context) {
         const KfxGpolyTarget native = {static_cast<uint8_t*>(lbDrawSurface->pixels),
             uint32_t(lbDrawSurface->w), uint32_t(lbDrawSurface->h), uint32_t(lbDrawSurface->pitch)};
@@ -367,6 +412,7 @@ struct WgpuCursor::State {};
 WgpuCursor::WgpuCursor(void*) : state(nullptr) {}
 WgpuCursor::~WgpuCursor() { delete state; }
 int kfx_wgpu_cursor_direct(const KfxGpolyTarget&, const TbSprite*, const int32_t*, const int32_t*) { return 0; }
+bool WgpuCursor::RefreshContext() { return false; }
 bool WgpuCursor::Initialise(SSurface&, const TbSprite*, const int32_t*, const int32_t*) { return false; }
 bool WgpuCursor::Backup(SSurface&, int, int, const TbRect&) { return false; }
 bool WgpuCursor::Compose(int, int, const TbRect&, bool) { return false; }

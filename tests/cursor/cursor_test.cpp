@@ -26,7 +26,7 @@ extern "C" int LbErrorLog(const char*, ...) { return 0; }
 extern "C" int LbSyncLog(const char*, ...) { return 0; }
 static void* drawing;
 static char error[1024];
-static bool enabled = true, shared = false;
+static bool enabled = true, shared = false, delayed_context = false, context_ready = true;
 static uint64_t shared_target;
 static unsigned direct_cases;
 extern "C" void cursor_native(uint8_t*, int, int, const TbSprite*, int32_t*, int32_t*);
@@ -39,7 +39,7 @@ extern "C" int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { 
 extern "C" void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
 extern "C" int kfx_wgpu_native_cpu_barrier(void) { return 1; }
 extern "C" void kfx_wgpu_native_context_cleanup(void (*)(void*)) {}
-extern "C" void* kfx_wgpu_native_context(void) { return shared && enabled ? drawing : nullptr; }
+extern "C" void* kfx_wgpu_native_context(void) { return shared && enabled && context_ready ? drawing : nullptr; }
 extern "C" uint64_t kfx_wgpu_native_target(const KfxGpolyTarget*) { return shared_target; }
 extern "C" void kfx_wgpu_native_invalidate_frame(void) { check(false, "unexpected invalidation"); }
 extern "C" void kfx_wgpu_terrain_boundary(int allow) { check(!allow, "unexpected terrain enabled"); }
@@ -109,6 +109,7 @@ static std::vector<std::vector<uint8_t>> lifecycle(bool gpu, bool advanced, int 
     const TbSprite* sprite, SDL_Palette* palette, bool offscreen)
 {
     enabled = gpu;
+    context_ready = !delayed_context;
     mouse_scale = scale;
     lbPointerAdvancedDraw = advanced;
     lbInteruptMouse = true;
@@ -130,6 +131,8 @@ static std::vector<std::vector<uint8_t>> lifecycle(bool gpu, bool advanced, int 
     TbPoint offset = {1,2};
     LbI_PointerHandler pointer;
     pointer.Initialise(sprite, &position, &offset);
+    context_ready = true;
+    const auto initialized = kfx_wgpu_cursor_counters();
     std::vector<std::vector<uint8_t>> frames;
     const int positions[][2] = {{0,0},{19,13},{36,30},{3,2},{-20,5},{80,80},{6,8}};
     for (const auto& p : positions) {
@@ -148,6 +151,8 @@ static std::vector<std::vector<uint8_t>> lifecycle(bool gpu, bool advanced, int 
     pointer.Release(); frames.push_back(bytes(screen));
     pointer.Release(); frames.push_back(bytes(screen));
     if (shared_target) {
+        check(kfx_wgpu_cursor_counters().bridge_initial_index_bytes == initialized.bridge_initial_index_bytes,
+            "late cursor borrowing uploaded native frame");
         check(kfx_wgpu_draw_frame_end(drawing, error, sizeof(error)) == 1, "shared frame end");
         kfx_wgpu_draw_target_release(drawing, shared_target, error, sizeof(error));
         shared_target = 0;
@@ -209,6 +214,13 @@ int main()
             before_shared.cpu_backups == after_shared.cpu_backups &&
             before_shared.cpu_compositions == after_shared.cpu_compositions, "shared frame cursor used CPU frame transfer or fallback");
     }
+    delayed_context = true;
+    for (int scale = 1; scale <= 3; ++scale) for (bool offscreen : {false,true}) {
+        auto native = lifecycle(false, true, scale, &sprite, palette, offscreen);
+        auto gpu = lifecycle(true, true, scale, &sprite, palette, offscreen);
+        check(native == gpu, "late context pointer promotion differs");
+    }
+    delayed_context = false;
     shared = false;
     for (int scale = 1; scale <= 3; ++scale) {
         auto* screen = SDL_CreateSurface(37, 31, SDL_PIXELFORMAT_INDEX8);
@@ -303,5 +315,5 @@ int main()
         after.gpu.readback_bytes && after.failures == 3, "missing counters");
     SDL_DestroyPalette(palette);
     kfx_wgpu_draw_destroy(drawing);
-    std::printf("%u actual native direct cursor cases; 81 advanced compositions/restores; 24 pointer lifecycle traces including 12 shared frames; failure checkpoints and borrowed targets exact\n", direct_cases);
+    std::printf("%u actual native direct cursor cases; 81 advanced compositions/restores; 30 pointer lifecycle traces including 18 shared frames; failure checkpoints and borrowed targets exact\n", direct_cases);
 }

@@ -42,5 +42,6 @@ public:
 private:
     friend void kfx_wgpu_cursor_detach_context(void* context);
     struct State;
+    bool RefreshContext();
     State* state;
 };
