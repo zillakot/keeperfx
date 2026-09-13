@@ -17,12 +17,13 @@ currently disabled in the fork, so this plan uses PRs as delivery records.
 ## Starting point
 
 The [project overview](../architecture/project-overview.md) describes the current
-implementation. Two useful foundations already exist:
+implementation. These foundations already exist:
 
 | Foundation | Evidence and limits |
 | --- | --- |
 | Native Apple Silicon C/C++ game | [PR #1](https://github.com/zillakot/keeperfx/pull/1): native launch, initial playtest and save/reload checks; broad campaign and cross-platform compatibility remain unverified. |
-| Standalone Rust/wgpu frame replay | [PR #2](https://github.com/zillakot/keeperfx/pull/2): exact captured-frame comparisons and regression tests; Rust does not yet render the running game. |
+| Standalone Rust/wgpu frame replay | [PR #2](https://github.com/zillakot/keeperfx/pull/2): exact captured-frame comparisons and regression tests; supplies frozen pixel input, not world scene data. |
+| Optional live Rust/wgpu presentation and native control | [PR #9](https://github.com/zillakot/keeperfx/pull/9): merged live Metal integration, exact surface comparisons, isolated game control and matched presenter measurements; CPU world drawing and the SDL default remain. |
 
 The [frame-feedback workflow](../frame-feedback.md) is our visual comparison tool.
 It establishes pixel correctness for captured input, not gameplay performance or
@@ -33,7 +34,7 @@ simulation equivalence.
 | Phase | Outcome | Evidence required before expanding scope |
 | --- | --- | --- |
 | 1. Broaden the reference cases | Reusable visual fixtures and measurements for representative scenes | Menu, dungeon, possession, palette changes and interface cases; separately measured simulation, drawing and presentation costs |
-| 2. Present live frames through Rust | Optional Rust/wgpu presentation in the playable game | Exact palette/frame comparisons, working window lifecycle, successful gameplay checks and a working original-renderer fallback |
+| 2. Present live frames through Rust | Bounded Apple Silicon integration delivered in PR #9; broaden coverage separately | Preserve exact comparisons and SDL fallback; close the remaining coverage items below before claiming comprehensive platform validation |
 | 3. Replace one bounded utility | A small live engine component implemented in safe Rust behind a narrow interface | Valid-input equivalence, malformed-input tests, bounded allocations and verified ownership at the language boundary |
 | 4. Establish world-state ownership | Typed Rust data for a bounded part of the world, with explicit adapters to legacy state | One authoritative writer, stable identifiers and verified save/network conversion for the affected data |
 | 5. Migrate gameplay systems | Move rules and simulation one system at a time | Replayed command sequences produce equivalent gameplay state; save/load, Lua and multiplayer checks cover each migrated system |
@@ -44,38 +45,44 @@ track for sound remastering and replacement, audio compatibility fixtures and
 gradual Rust ownership. Its initial audition pack can use the existing engine;
 live audio and graphics integration share explicit lifecycle checks.
 
-The order prioritizes our existing graphics work. A bounded utility can be tackled
-independently if platform integration delays phase 2. Later phases require their
-own scoped designs; success with frame replay is not evidence that the whole port
-will be small or quick.
+The next graphics task is the investigation below. Utility and gameplay migration
+remain separate tracks; GPU world drawing does not require transferring simulation
+ownership to Rust. Later phases require their own scoped designs.
 
-## Current milestone: optional live Rust presentation
+## Delivered milestone: optional live Rust presentation
 
-Ordered fixtures now cover palette and alpha changes, transparent RGB, interface
-screens, resolutions and possession. The [reusable Rust renderer](../../tools/frame-replay/src/gpu.rs)
-retains its device, queue, pipeline and reusable textures across offline sequence
-frames. Its library submits rendering without readback; the offline comparison
-adapter handles readback separately. The [frame-feedback guide](../frame-feedback.md#reusable-renderer)
-defines ownership, reuse, limits and failure behavior.
+[PR #9](https://github.com/zillakot/keeperfx/pull/9) merged the optional live adapter
+and stable [native game control CLI](../native-game-control.md). SDL owns the window
+and event handling; Rust presents borrowed indexed rows and palette through the
+shared pipeline. The existing C/C++ renderer still draws the world, menus and HUD.
+SDL remains the default and terminal fallback; the Rust build and selection are
+explicitly opt-in. Both presenters already use Metal on the measured Mac.
 
-The [optional live adapter](../live-rust-presentation.md) now connects that shared
-pipeline to an SDL-owned Metal view through a narrow C ABI. It retains SDL input
-and CPU world drawing; SDL remains the default and fallback presenter. Routine
-presentation does not allocate a readback buffer. The live validation record and
-paired measurements must cover the criteria below before this phase is complete.
+The final measured source was `506b703a35b84f4adb1bbe92d5f109166b3f8481`, merged as
+`ccaff3f52f4f9eda98c5cbb0a0c7d187ff27b4af`. The
+[final 30-run results](../performance-baselines.md#recorded-live-presentation-result)
+supersede earlier 9–13% presentation improvement claims. Small median reductions
+had ranges crossing zero, every pair regressed at p95, and neither consistent CPU
+savings nor uncapped FPS gains were established. This proves Rust integration;
+it does not justify changing the default or claiming a graphics speedup.
 
-Completion criteria for this milestone:
+Final-source native-event validation completed menu/options/load navigation,
+fullscreen changes, arbitrary resize, pause, minimize/restore, focus changes and
+normal quit. All 833 acquired frames matched live GPU comparison without fallback.
+Control authentication, cancellation and subscription teardown regressions passed.
+Separate earlier audits covered palette/alpha/padded-row and scaling comparisons,
+initial/runtime SDL fallback, API-driven digging, possession and save/reload, plus
+nonzero game-generated PCM. Those audits have distinct provenance; they are not
+all final-source physical-input or complete audio coverage.
 
-- The existing presentation path remains the default; the Rust path is explicitly selectable.
-- Captured output remains byte-identical at the supported integer scales and palette transitions.
-- Resize, minimize/restore, focus changes, fullscreen, display scaling, shutdown and surface/device errors have defined, tested behavior.
-- The original path remains usable when Rust initialization fails or the option is disabled; error recovery is exercised rather than assumed.
-- Menu navigation, digging, creature possession, sound and save/reload work during an Apple Silicon playtest.
-- CI retains Windows and Linux builds. Live Rust support on another platform is claimed only after runtime checks there; it can continue using the original path meanwhile.
-- CPU time, allocations and frame-time distributions are compared with the original presentation path under the same settings. Any regression is explained before making Rust the default.
-
-This milestone proves live integration. It is unlikely to create a large speedup
-because the existing path already presents through SDL/Metal on the tested Mac.
+Remaining coverage includes physical OS input delivery, transitions between distinct
+physical backing scales, additional targeted surface/device recovery failures,
+complete music/speaker behavior, total-process/GPU allocation measurement and live
+Rust support beyond the tested Apple Silicon configuration. The broad phase-2
+criteria are therefore not all closed. These items constrain support/default-change
+claims; they do not block a separate rendering investigation. See the
+[live guide](../live-rust-presentation.md) for the implemented ownership and failure
+contracts and PR #9 for the detailed evidence.
 
 ## Language boundaries and small components
 
@@ -133,18 +140,99 @@ and threading changes must not silently change simulation order.
 
 ## Graphics and performance track
 
-Preserve the original sprites, textures and palette behavior throughout the port.
-Moving terrain, sprites or lighting to GPU drawing is a separate graphics project,
-not a prerequisite for using Rust. It needs scene data before rasterization, which
-the current framebuffer replay does not supply.
+Preserve the original sprites, textures, palette lookup, nearest sampling, draw
+order and pixel coverage. GPU world drawing needs scene or draw-command data
+**before rasterization**. Replaying the finished framebuffer only changes
+presentation; it cannot remove CPU terrain or sprite drawing. No GPU world drawing
+has been implemented, and no new renderer architecture has been selected.
 
-Use the [performance baseline runner](../performance-baselines.md) to profile
-representative workloads first: a quiet level, a busy dungeon and
-possession, with recorded resolution, frame limits and VSync settings. Measure
-simulation, CPU drawing, presentation, memory and frame-time distributions.
-Choose a GPU rendering milestone only when those measurements justify it. Specify
-visual acceptance criteria before changing rasterization; do not relax the exact
-presentation comparison merely to make a new backend pass.
+### Next session: measure CPU drawing and define one extraction boundary
+
+This is the first bounded follow-up task, deferred to the next session. Deliver
+one investigation PR with a rendering-cost report, a source-backed scene/command
+boundary sketch and a go/no-go recommendation for one small GPU experiment.
+Instrumentation and runner changes needed for that investigation belong in that
+PR; implementing a GPU world renderer does not.
+
+Entry: start from the latest fork `master`, retain PR #9 as the presentation
+baseline, and record the exact source/binary/assets/settings used. Reuse the
+[performance collector](../performance-baselines.md) and isolate original assets
+and saves. Use [native game control](../native-game-control.md) for separate
+correctness checks; disable control, API, audio and verification/readback during
+performance collection.
+
+Work and deliverables:
+
+1. Inspect the existing simulation/draw/presentation distributions before adding
+   measurement. Break down CPU drawing into scene preparation, rasterization and
+   HUD/overlays where the actual call graph allows it. Start at
+   `keeper_screen_redraw()` / `redraw_display()` in
+   [engine_redraw.c](../../src/engine_redraw.c), then `draw_view()` and
+   `display_drawlist()` in [engine_render.c](../../src/engine_render.c).
+   `draw_view()` prepares bucketed work before `display_drawlist()` dispatches
+   polygons and sprites into the [software rasterizers](../../src/kfx/renderer/software/).
+   Front view has a separate `draw_frontview_engine()` path. Check each view;
+   do not assume one boundary covers every camera or effect.
+2. Use bounded coarse timing scopes and, if needed, a sampling profiler to locate
+   expensive rasterizer families without timing every pixel/primitive. Preserve
+   existing scope meanings in [performance_capture.cpp](../../src/performance_capture.cpp)
+   and the reports. Label inclusive/nested times, report unaccounted drawing work
+   and measure instrumentation overhead with a matched control. CPU drawing wall
+   time, process CPU time and GPU timing are different measurements.
+3. Collect serial matched quiet/busy/possession runs at the existing 640×480
+   baseline and one validated higher framebuffer resolution (candidate 1280×800).
+   Record actual framebuffer and output dimensions separately: enlarging only the
+   window does not increase world rasterization work. Reuse the five-pair protocol
+   when comparing presenters; inspect camera/population/RNG differences and record
+   display, visibility, power and background conditions. Keep capped results
+   separate. The current runner fixes 60 FPS; an uncapped experiment requires an
+   explicit, tested runner/metadata extension and validation of the engine's cap
+   semantics first. Run a complete matched uncapped matrix before any FPS claim,
+   or record that experiment as deferred with a reason.
+4. Trace one costly terrain or sprite family from command creation to pixel writes.
+   Sketch the smallest immutable command input: geometry or screen-space vertices,
+   camera/clip state, texture/sprite identifiers, palette/shade tables, ordering,
+   dimensions and referenced data lifetimes. Identify global-state reads and
+   effects that escape the buckets. Existing bucket records contain legacy
+   pointers; they are candidates to adapt, not an approved Rust ABI or retained
+   scene representation. Compare extraction at that boundary with a narrower
+   rasterizer input; choose only after measuring cost and compatibility needs.
+
+Exit/acceptance: the PR identifies which measured work limits each scene, includes
+absolute costs and distributions with workload/identity limits, and names one
+candidate's callers, required data, ownership, exclusions and expected removable
+CPU work. It proposes synthetic pixel fixtures and a local game comparison for that
+candidate. If the data do not justify GPU work, record that conclusion and the
+next measured question instead of promising an FPS improvement.
+
+Validation for changed measurement code must cover sample completeness, nesting,
+metadata/config mismatch rejection and preservation of default capped behavior.
+Run relevant collector/runner tests and existing CI; use an isolated native smoke
+check for changed hooks. Do not treat dummy/headless runs as native performance or
+run builds/profilers concurrently with benchmark collection. Keep original artwork,
+raw captures, session descriptors and private host details out of the PR; publish
+portable procedures, aggregate evidence and redistributable fixtures.
+
+### Gates after the investigation
+
+| Gate | Small delivery and acceptance |
+| --- | --- |
+| Select a bounded slice | Measured cost and command-boundary feasibility justify one terrain or sprite family and one initial view. Define coverage, unsupported cases and numerical/pixel rules before choosing raster versus compute or a broader scene architecture. |
+| Extract and compare commands | Add a bounded read-only adapter and synthetic fixtures in a separate PR. Specify ownership, limits and errors; preserve C/C++ simulation authority. Capture input before rasterization and prove that the legacy path still produces the reference pixels. |
+| Prototype GPU world drawing | Implement only the selected family behind an opt-in path. Compare identical command input against CPU output, including clipping, ordering, transparency, palette/shade behavior and integer scaling. Explain CPU/GPU composition and synchronization costs; fall back for unsupported input. |
+| Integrate and measure | Run exact pixel and native lifecycle/gameplay checks, then matched end-to-end measurements with verification disabled. Account for command extraction, upload, synchronization, remaining CPU drawing and frame-time tails. Expand only when evidence supports the next slice. |
+
+Keep exact presentation comparisons unchanged. Define the new slice's visual
+acceptance before implementation and investigate any rasterization differences;
+do not silently accept smoothing, filtering, changed palette behavior or new art.
+SDL remains default until comparable correctness, coverage and performance evidence
+justifies a separate default-change decision.
+
+AI, pathfinding, creature behavior and other simulation costs stay on the CPU in
+this graphics track. If simulation dominates, report that bottleneck and scope a
+separate simulation investigation; a GPU world renderer or Rust utility port does
+not by itself speed those systems up. The utility/world-state/gameplay phases above
+continue independently of this graphics sequence.
 
 ## Release and retirement criteria
 

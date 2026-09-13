@@ -12,11 +12,12 @@ practical guide for the work you want to do.
 | Read this | For |
 | --- | --- |
 | [Understanding KeeperFX](architecture/project-overview.md) | Engine structure, game loop, shared state, graphics, content and the role of Rust |
-| [Rust port plan](product/rust-port-plan.md) | Proposed migration phases, the next live presentation milestone and validation criteria |
+| [Rust port plan](product/rust-port-plan.md) | Proposed migration phases, delivered live presentation, next graphics investigation and migration gates |
 | [Audio modernization plan](product/audio-modernization-plan.md) | Sound remastering and replacement, Rust audio ownership, audition pack and compatibility criteria |
 | [World-data reference](data_structure.md) | Things, creature controls, rooms, slabs, subtiles, columns and cubes |
 | [macOS development](macos.md) | Build and run the native Apple Silicon game with the required assets |
 | [Frame capture and Rust replay](frame-feedback.md) | Obtain quick visual feedback, compare exact pixels and interpret the timings |
+| [Native game control](native-game-control.md) | Isolated game-event input, state predicates, screenshots and real SDL window operations |
 | [Live Rust presentation](live-rust-presentation.md) | Optional Metal surface integration, ownership and validation |
 | [Performance baselines](performance-baselines.md) | Isolated native simulation, drawing and presentation measurements and their limits |
 | [Original game files](files_required_from_original_dk.txt) | Files to copy from an original Dungeon Keeper installation |
@@ -33,10 +34,15 @@ The PRs are the durable records of changes and their validation:
   records the native build, launch, initial gameplay and save/reload checks.
 - [PR #2: Frame capture and Rust GPU replay](https://github.com/zillakot/keeperfx/pull/2)
   records exact image comparisons, deliberate-mismatch checks and CI coverage.
+- [PR #9: Live Rust presentation and native control](https://github.com/zillakot/keeperfx/pull/9)
+  records live integration, final-source UI/window checks and the final 30-run
+  presentation comparison.
 
 The shared Rust palette pipeline supports offline replay and optional live Metal
 presentation. CPU world drawing remains unchanged; use paired live measurements
-to assess presentation costs.
+to assess presentation costs. The final comparison established no reliable overall
+performance win; SDL remains the default. Continue with the
+[next-session graphics task](product/rust-port-plan.md#next-session-measure-cpu-drawing-and-define-one-extraction-boundary).
 
 ## Upstream resources
 

@@ -1,3 +1,8 @@
+---
+type: guide
+description: Drive isolated development sessions through native game input handlers and verify UI, state and SDL window outcomes.
+---
+
 # Native game control
 
 `scripts/game-control.py` drives an explicitly enabled development session through
@@ -30,6 +35,13 @@ legacy Lua/console actions. The engine opts in only with valid
 must also be enabled. The token is not returned or logged. The separate session
 identifier prevents an accidental connection to another game. Normal launches do
 not enable control or change their desktop input behavior.
+
+Use this CLI as the repeatable control path for graphics checks before creating
+one-off OS input helpers or accessibility automation. The final-source validation
+in [PR #9](https://github.com/zillakot/keeperfx/pull/9) exercised menu/load navigation,
+window changes, pause and quit with 833 exact acquired-frame comparisons. See the
+[Rust port plan](product/rust-port-plan.md#delivered-milestone-optional-live-rust-presentation)
+for what that evidence establishes and the remaining coverage.
 
 ## Operations and outcomes
 

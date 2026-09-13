@@ -204,6 +204,13 @@ They require a GPU adapter; the regular unit tests remain GPU-independent.
 
 ## Validation scope
 
+[PR #9](https://github.com/zillakot/keeperfx/pull/9) extends the shared palette
+pipeline to optional live Metal presentation. Its surface comparisons and matched
+performance results are separate from offline replay. The
+[next graphics task](product/rust-port-plan.md#next-session-measure-cpu-drawing-and-define-one-extraction-boundary)
+needs commands before rasterization; `KFXFRM01` contains finished pixels and cannot
+serve as a world-rendering command stream.
+
 [PR #2](https://github.com/zillakot/keeperfx/pull/2) records zero-difference Metal
 comparisons for a real game frame at 1× and 2×, synthetic alignment/alpha cases,
 and a deliberate one-pixel failure. CI separately checks synthetic frames through
