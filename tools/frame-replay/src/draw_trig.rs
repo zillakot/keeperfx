@@ -124,18 +124,7 @@ impl DrawRenderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("general triangle validation"),
-                source: wgpu::ShaderSource::Wgsl(
-                    concat!(
-                        include_str!("draw.wgsl"),
-                        "\n",
-                        include_str!("draw_sprites.wgsl"),
-                        "\n",
-                        include_str!("draw_raw.wgsl"),
-                        "\n",
-                        include_str!("draw_trig.wgsl")
-                    )
-                    .into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(super::DRAW_SHADER.into()),
             });
         let pipeline = self
             .device

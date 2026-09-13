@@ -17,6 +17,7 @@
  */
 /******************************************************************************/
 #include "pre_inc.h"
+#include "kfx/renderer/software/WgpuMapView.h"
 #include "kfx/renderer/RendererManager.h"
 #include "front_landview.h"
 
@@ -776,7 +777,7 @@ TbBool set_pointer_graphic_spland(long frame)
     return (spr != &dummy_sprite);
 }
 
-void frontzoom_to_point(long map_x, long map_y, long zoom)
+static void frontzoom_to_point_native(long map_x, long map_y, long zoom)
 {
     unsigned char *src;
     long bpos_x;
@@ -867,6 +868,33 @@ void frontzoom_to_point(long map_x, long map_y, long zoom)
         bpos_y += src_delta;
     }
 }
+struct FrontZoomOracle { long x, y, zoom; };
+static void frontzoom_oracle(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    const struct FrontZoomOracle *o = context;
+    unsigned char *saved = lbDisplay.WScreen;
+    long saved_pitch = lbDisplay.GraphicsScreenWidth;
+    lbDisplay.WScreen = pixels; lbDisplay.GraphicsScreenWidth = pitch;
+    frontzoom_to_point_native(o->x,o->y,o->zoom);
+    lbDisplay.WScreen = saved; lbDisplay.GraphicsScreenWidth = saved_pitch;
+}
+void frontzoom_to_point(long map_x, long map_y, long zoom)
+{
+    long x = scale_value_landview(map_x) - scale_value_landview(map_info.screen_shift_x);
+    long y = scale_value_landview(map_y) - scale_value_landview(map_info.screen_shift_y);
+    if (x > lbDisplay.PhysicalScreenWidth-1) x = lbDisplay.PhysicalScreenWidth-1;
+    if (x < 1) x = 1;
+    if (y > lbDisplay.PhysicalScreenHeight-1) y = lbDisplay.PhysicalScreenHeight-1;
+    if (y < 1) y = 1;
+    struct FrontZoomOracle o = {map_x,map_y,zoom};
+    if (kfx_wgpu_map_zoom(lbDisplay.WScreen,lbDisplay.GraphicsScreenWidth,
+            lbDisplay.PhysicalScreenWidth,lbDisplay.PhysicalScreenHeight,x,y,map_x,map_y,
+            (256-zoom)*16/units_per_pixel_landview,map_screen,LANDVIEW_MAP_WIDTH,
+            LANDVIEW_MAP_HEIGHT,frontzoom_oracle,&o)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
+    frontzoom_to_point_native(map_x,map_y,zoom);
+}
+
 /** Draw the window frame on the campaign map (land view). */
 void compressed_window_draw(void)
 {

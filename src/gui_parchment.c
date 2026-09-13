@@ -18,6 +18,8 @@
  */
 /******************************************************************************/
 #include "pre_inc.h"
+#include "kfx/renderer/software/WgpuMapView.h"
+#include "kfx/renderer/software/SwDrawTarget.h"
 #include "kfx/renderer/RendererManager.h"
 #include "gui_parchment.h"
 
@@ -300,73 +302,88 @@ static int get_overhead_mapblock_style(const struct Map* mapblk, const struct Sl
     return get_player_path_colour(owner);
 }
 
+struct OverheadRow { int x, y, block_size, count; const int *styles; };
+static void overhead_row_native(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    const struct OverheadRow *row = context;
+    int screen_width = pitch, block_size = row->block_size;
+    const int *styles = row->styles;
+    unsigned char *dstrow = pixels + row->y * pitch + row->x;
+    unsigned char* dstblock = dstrow;
+    for (MapSlabCoord slb_x = 0; slb_x < row->count;) {
+        int style = styles[slb_x];
+        MapSlabCoord run = 1;
+        while ((slb_x + run < row->count) && (styles[slb_x + run] == style)) {
+            run++;
+        }
+        int32_t run_width = run * block_size;
+        if (style == OMapSt_Unchanged) {
+            slb_x += run;
+            dstblock += run_width;
+            continue;
+        }
+        const unsigned char* remap = NULL;
+        int shift = 0;
+        int add = 0;
+        if (style == OMapSt_Tagged || style == OMapSt_TaggedGems) {
+            remap = &pixmap.ghost[0x1A00];
+            if (style == OMapSt_TaggedGems) {
+                add = 2;
+            }
+        } else if (style == OMapSt_Gold) {
+            remap = &pixmap.ghost[0x8C00];
+        } else if (style == OMapSt_Gems) {
+            remap = pixmap.ghost;
+            shift = 6;
+            add = 102;
+        } else if (style == OMapSt_Wall) {
+            remap = &pixmap.ghost[0x1000];
+        } else if (style == OMapSt_Abyss) {
+            remap = pixmap.map_abyss;
+        }
+        unsigned char* dstline = dstblock;
+        for (int32_t y = 0; y < block_size; y++) {
+            if (remap == NULL) {
+                if (run_width >= 16) {
+                    memset(dstline, style, run_width);
+                } else {
+                    volatile unsigned char* dstpixel = dstline;
+                    for (int32_t x = 0; x < run_width; x++) {
+                        dstpixel[x] = style;
+                    }
+                }
+            } else {
+                for (int32_t x = 0; x < run_width; x++) {
+                    dstline[x] = add + (remap[dstline[x]] >> shift);
+                }
+            }
+            dstline += screen_width;
+        }
+        slb_x += run;
+        dstblock += run_width;
+    }
+}
+
 void draw_overhead_map(const struct TbRect *map_area, long block_size, PlayerNumber plyr_idx)
 {
     GameTurn turn = get_gameturn();
     int gui_frame = (turn / gui_blink_rate) & 7;
     TbPixel neutral_colour = player_room_colours[(turn / neutral_flash_rate) & 3];
     int32_t screen_width = lbDisplay.GraphicsScreenWidth;
-    int32_t block_stride = screen_width * block_size;
     int styles[MAX_TILES_X];
     const struct SlabMap* slb = get_slabmap_block(0, 0);
-    unsigned char* dstrow = &lbDisplay.WScreen[map_area->left + screen_width * map_area->top];
-    for (MapSlabCoord slb_y = 0; slb_y < game.map_tiles_y; slb_y++, dstrow += block_stride) {
+    for (MapSlabCoord slb_y = 0; slb_y < game.map_tiles_y; slb_y++) {
         const struct Map* mapblk = get_map_block_at(slab_subtile_center(0), slab_subtile_center(slb_y));
         for (MapSlabCoord slb_x = 0; slb_x < game.map_tiles_x; slb_x++, slb++, mapblk += STL_PER_SLB) {
             styles[slb_x] = get_overhead_mapblock_style(mapblk, slb, slb_x, slb_y, plyr_idx, gui_frame, neutral_colour);
         }
-        unsigned char* dstblock = dstrow;
-        for (MapSlabCoord slb_x = 0; slb_x < game.map_tiles_x;) {
-            int style = styles[slb_x];
-            MapSlabCoord run = 1;
-            while ((slb_x + run < game.map_tiles_x) && (styles[slb_x + run] == style)) {
-                run++;
-            }
-            int32_t run_width = run * block_size;
-            if (style == OMapSt_Unchanged) {
-                slb_x += run;
-                dstblock += run_width;
-                continue;
-            }
-            const unsigned char* remap = NULL;
-            int shift = 0;
-            int add = 0;
-            if (style == OMapSt_Tagged || style == OMapSt_TaggedGems) {
-                remap = &pixmap.ghost[0x1A00];
-                if (style == OMapSt_TaggedGems) {
-                    add = 2;
-                }
-            } else if (style == OMapSt_Gold) {
-                remap = &pixmap.ghost[0x8C00];
-            } else if (style == OMapSt_Gems) {
-                remap = pixmap.ghost;
-                shift = 6;
-                add = 102;
-            } else if (style == OMapSt_Wall) {
-                remap = &pixmap.ghost[0x1000];
-            } else if (style == OMapSt_Abyss) {
-                remap = pixmap.map_abyss;
-            }
-            unsigned char* dstline = dstblock;
-            for (int32_t y = 0; y < block_size; y++) {
-                if (remap == NULL) {
-                    if (run_width >= 16) {
-                        memset(dstline, style, run_width);
-                    } else {
-                        volatile unsigned char* dstpixel = dstline;
-                        for (int32_t x = 0; x < run_width; x++) {
-                            dstpixel[x] = style;
-                        }
-                    }
-                } else {
-                    for (int32_t x = 0; x < run_width; x++) {
-                        dstline[x] = add + (remap[dstline[x]] >> shift);
-                    }
-                }
-                dstline += screen_width;
-            }
-            slb_x += run;
-            dstblock += run_width;
+        struct OverheadRow row = {map_area->left, map_area->top + slb_y * block_size,
+            block_size, game.map_tiles_x, styles};
+        if (!kfx_wgpu_map_row(lbDisplay.WScreen, screen_width, lbDisplay.GraphicsScreenHeight,
+                row.x, row.y, block_size, styles, row.count, pixmap.ghost, pixmap.map_abyss,
+                overhead_row_native, &row)) {
+            if (!kfx_wgpu_native_cpu_barrier()) break;
+            overhead_row_native(lbDisplay.WScreen, screen_width, &row);
         }
     }
     RendererSetDrawFlags(0);
@@ -430,11 +447,51 @@ int draw_overhead_call_to_arms(const struct TbRect *map_area, long block_size, P
     return n;
 }
 
+struct OverheadMarker { long x, y; int count, spread, cross; TbPixel colour; };
+static void overhead_marker_native(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    const struct OverheadMarker *o = context;
+    unsigned char *saved = lbDisplay.WScreen, *window = lbDisplay.GraphicsWindowPtr;
+    long saved_pitch = lbDisplay.GraphicsScreenWidth;
+    lbDisplay.WScreen = pixels;
+    lbDisplay.GraphicsWindowPtr = pixels + SwTargetWindowY()*pitch + SwTargetWindowX();
+    lbDisplay.GraphicsScreenWidth = pitch;
+    for (int p=0;p<o->count;p++) {
+        long x=o->x+draw_square[p].delta_x, y=o->y+draw_square[p].delta_y;
+        LbDrawPixel(x,y,o->colour);
+        if (o->cross) {
+            LbDrawPixel(x+o->spread,y,o->colour);
+            LbDrawPixel(x-o->spread,y,o->colour);
+            LbDrawPixel(x,y+o->spread,o->colour);
+            LbDrawPixel(x,y-o->spread,o->colour);
+        }
+    }
+    lbDisplay.WScreen = saved; lbDisplay.GraphicsWindowPtr = window;
+    lbDisplay.GraphicsScreenWidth = saved_pitch;
+}
+static void overhead_marker(long x, long y, int count, int spread, int cross, TbPixel colour)
+{
+    int32_t pattern[36*2];
+    struct OverheadMarker o = {x,y,count,spread,cross,colour};
+    if (count >= 1 && count <= 36) {
+        for (int p=0;p<count;p++) {
+            pattern[2*p]=draw_square[p].delta_x;
+            pattern[2*p+1]=draw_square[p].delta_y;
+        }
+        if (SwTargetGraphicsWindowPtr() == SwTargetWScreen()+
+                (ptrdiff_t)SwTargetWindowY()*SwTargetScanline()+SwTargetWindowX() &&
+            kfx_wgpu_map_marker(SwTargetWScreen(),SwTargetScanline(),SwTargetScreenHeight(),
+                x+SwTargetWindowX(),y+SwTargetWindowY(),pattern,count,spread,cross,colour,
+                overhead_marker_native,&o)) return;
+    }
+    if (!kfx_wgpu_native_cpu_barrier()) return;
+    overhead_marker_native(SwTargetWScreen(),SwTargetScanline(),&o);
+}
+
 int draw_overhead_creatures(const struct TbRect *map_area, long block_size, PlayerNumber plyr_idx)
 {
     TbPixel col;
     short pixel_end;
-    int p;
     int n = 0;
     int k = 0;
     const struct StructureList* slist = get_list_for_thing_class(TCls_Creature);
@@ -477,10 +534,7 @@ int draw_overhead_creatures(const struct TbRect *map_area, long block_size, Play
                     col = col1;
                 }
                 pixel_end = get_pixels_scaled_and_zoomed(TWO_PIXELS);
-                for (p = 0; p < pixel_end; p++)
-                {
-                    LbDrawPixel(pos_x + draw_square[p].delta_x, pos_y+draw_square[p].delta_y, col);
-                }
+                overhead_marker(pos_x,pos_y,pixel_end,0,0,col);
                 n++;
             } else
             // Special tunneler code
@@ -508,10 +562,7 @@ int draw_overhead_creatures(const struct TbRect *map_area, long block_size, Play
                     long pos_x = map_area->left + block_size * stl_num_decode_x(memberpos) / STL_PER_SLB;
                     long pos_y = map_area->top + block_size * stl_num_decode_y(memberpos) / STL_PER_SLB;
                     pixel_end = get_pixels_scaled_and_zoomed(TWO_PIXELS);
-                    for (p = 0; p < pixel_end; p++)
-                    {
-                        LbDrawPixel(pos_x + draw_square[p].delta_x, pos_y + draw_square[p].delta_y, col);
-                    }
+                    overhead_marker(pos_x,pos_y,pixel_end,0,0,col);
                     n++;
                 }
             }
@@ -554,15 +605,7 @@ int draw_overhead_traps(const struct TbRect *map_area, long block_size, PlayerNu
                     short pixels_amount = scale_pixel(ONE_PIXEL);
                     short pixel_end = get_pixels_scaled_and_zoomed(ONE_PIXEL);
                     short colour = 60;
-                    for (int p = 0; p < pixel_end; p++)
-                    {
-                        // Draw a cross
-                        LbDrawPixel(pos_x + draw_square[p].delta_x, pos_y + draw_square[p].delta_y, colour);
-                        LbDrawPixel(pos_x + pixels_amount + draw_square[p].delta_x, pos_y + draw_square[p].delta_y, colour);
-                        LbDrawPixel(pos_x - pixels_amount + draw_square[p].delta_x, pos_y + draw_square[p].delta_y, colour);
-                        LbDrawPixel(pos_x + draw_square[p].delta_x, pos_y + pixels_amount + draw_square[p].delta_y, colour);
-                        LbDrawPixel(pos_x + draw_square[p].delta_x, pos_y - pixels_amount + draw_square[p].delta_y, colour);
-                    }
+                    overhead_marker(pos_x,pos_y,pixel_end,pixels_amount,1,colour);
                     n++;
                 }
             }
@@ -603,20 +646,14 @@ int draw_overhead_spells(const struct TbRect *map_area, long block_size, PlayerN
                   long pos_x = map_area->left + block_size * (int)thing->mappos.x.stl.num / STL_PER_SLB  + ((block_size + 1)/5);
                   long pos_y = map_area->top + block_size * (int)thing->mappos.y.stl.num / STL_PER_SLB + ((block_size + 1)/5);
                   short pixel_end = get_pixels_scaled_and_zoomed(TWO_PIXELS);
-                  for (int p = 0; p < pixel_end; p++)
-                  {
-                      LbDrawPixel(pos_x + draw_square[p].delta_x, pos_y + draw_square[p].delta_y, colours[15][0][15]);
-                  }
+                  overhead_marker(pos_x,pos_y,pixel_end,0,0,colours[15][0][15]);
               }
               else if ( thing_is_workshop_crate(thing) )
               {
                   long pos_x = map_area->left + block_size * (int)thing->mappos.x.stl.num / STL_PER_SLB  + ((block_size + 1)/5);
                   long pos_y = map_area->top + block_size * (int)thing->mappos.y.stl.num / STL_PER_SLB + ((block_size + 1)/5);
                   short pixel_end = get_pixels_scaled_and_zoomed(TWO_PIXELS);
-                  for (int p = 0; p < pixel_end; p++)
-                  {
-                      LbDrawPixel(pos_x + draw_square[p].delta_x, pos_y + draw_square[p].delta_y, colours[7][6][7]);
-                  }
+                  overhead_marker(pos_x,pos_y,pixel_end,0,0,colours[7][6][7]);
               }
             }
         }
@@ -780,7 +817,7 @@ void draw_zoom_box_things_on_mapblk(struct Map *mapblk,unsigned short subtile_si
     }
 }
 
-static void scale_tmap2(long texture_block_index, long flags, long fade_level, long screen_x, long screen_y, long scaled_width, long scaled_height)
+static void scale_tmap2_native(long texture_block_index, long flags, long fade_level, long screen_x, long screen_y, long scaled_width, long scaled_height)
 {
     if ((scaled_width == 0) || (scaled_height == 0)) {
         return;
@@ -1013,6 +1050,26 @@ static void scale_tmap2(long texture_block_index, long flags, long fade_level, l
           }
         }
     }
+}
+
+struct MapTextureOracle { long texture, flags, fade, x, y, width, height; };
+static void map_texture_oracle(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    const struct MapTextureOracle *o = context;
+    unsigned char *saved = vec_screen;
+    long saved_pitch = vec_screen_width;
+    vec_screen = pixels; vec_screen_width = pitch;
+    scale_tmap2_native(o->texture,o->flags,o->fade,o->x,o->y,o->width,o->height);
+    vec_screen = saved; vec_screen_width = saved_pitch;
+}
+static void scale_tmap2(long texture, long flags, long fade, long x, long y, long width, long height)
+{
+    struct MapTextureOracle o = {texture,flags,fade,x,y,width,height};
+    if (fade < 64 && kfx_wgpu_map_texture(vec_screen,vec_screen_width,vec_window_width,
+            vec_window_height,x,y,width,height,flags,block_ptrs[texture],
+            fade < 0 ? NULL : pixmap.fade_tables+256*fade,map_texture_oracle,&o)) return;
+    if (!kfx_wgpu_native_cpu_barrier()) return;
+    scale_tmap2_native(texture,flags,fade,x,y,width,height);
 }
 
 static void draw_texture(int32_t texture_x, int32_t texture_y, int32_t texture_width, int32_t texture_height, int32_t texture_block_index, int32_t flags, int32_t fade_level)
