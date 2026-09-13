@@ -243,13 +243,13 @@ ownership, synchronization, counters and failure behavior.
 | Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Original unsorted vertices → GPU setup, clipping, scan conversion and ordered texture/shade stores for `QK_PolygonStandard`, `QK_PolyMode5`, near-FP textured subtypes 0–11; immutable texture/fade snapshots | Other polygon modes and near-FP solid subtypes 12–23; broader scene/resource coverage |
 | Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` original-vertex terrain batching is wired | Independent front-view runtime proof; sprites and interleaved overlays |
 | General triangles and creature shadows: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | CPU reference | All modes, destination-dependent blending and GPU shadow-mask generation |
-| World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores | Solid scaled-up horizontal flips with duplicated rows remain native (588 fixture cases); creature shadow masks, custom-asset/gameplay coverage and direct cursor kernels remain open |
+| World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores | Ordered GPU run copies cover solid scaled-up horizontal flips, including native alignment/chunk behavior; creature shadow masks, asset/destination aliases, custom-asset/gameplay coverage and direct cursor kernels remain open |
 | Pixels, boxes, HV lines and circles: [bflib_vidraw.c](../../src/kfx/renderer/software/bflib_vidraw.c) | Native GPU hooks; circles use original center/radius and preserve repeated blend hits | Independent review and combined-head native checks; circle radii above 8,191 and other unsupported inputs decline to CPU |
 | General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level primitives; scaled normal/remap/one-colour/alpha and immediate normal/one-colour sprites | General-line coverage/color selection, unsupported sprite modes and full interleaving validation |
 | Text, including Asian fonts: [bflib_sprfnt.c](../../src/bflib_sprfnt.c) | Ordinary sprite-based glyphs reach GPU sprite wrappers; CPU layout retained | Direct DBC bitmap glyphs, unsupported sprite modes and complete underline/shadow/font validation |
 | Raw/tiled images, frontend backgrounds, landview/torture/zoom: [raw adapter](../../src/kfx/renderer/software/WgpuRawImage.c), [raw helper](../../src/front_simple.c), [slab helper](../../src/gui_draw.c) | Original raw8 assets with exact floor-endpoint scaling, clipping and black letterbox; 64×64 tiled slabs with native clipped phase; shared static frontend/loading/landview/torture/parchment backgrounds | Huge compressed sprites, landview/parchment zoom and surrounding transforms; aliased source/destination inputs remain native |
 | Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | Static raw parchment background uses GPU image helper; map generation/transforms remain CPU | Semantic map commands, rotation/masks and framebuffer-derived minimap background state |
-| Built-in possession lenses: [lens implementations](../../src/kfx/lense/) | CPU reference | GPU target views and indexed displacement, flyeye, mist, overlay and palette effects; preserve alias/order behavior |
+| Built-in possession lenses: [lens implementations](../../src/kfx/lense/) | Indexed displacement/flyeye remaps, mist and overlay GPU kernels preserve sequential source/target aliases; CPU map preparation and palette lifecycle remain | Resident GPU target views; lightness 32–63 mist, out-of-viewport maps, asset/destination aliases and oversized inputs still decline; full LensManager lifecycle/gameplay validation |
 | Custom Lua lenses: [LuaLensEffect.cpp](../../src/kfx/lense/LuaLensEffect.cpp), [lua_api_lens.c](../../src/lua_api_lens.c) | CPU reference | Ordered GPU writes/copies and exact read-after-write compatibility for arbitrary pixel-dependent Lua control flow; CPU-script readback is explicit, never hidden CPU-rendered lens upload |
 | Smoothing and map fades/transitions: [engine_redraw.c](../../src/engine_redraw.c) | CPU reference | GPU target snapshots and exact indexed effects, including traversal/truncation quirks |
 | Movies: [bflib_fmvids.cpp](../../src/bflib_fmvids.cpp) | CPU decode and screen drawing | Upload decoded source assets; GPU centering/scaling/interlace and palette timing |
@@ -273,21 +273,41 @@ The 2D [native fixture generator](../../tests/primitives/fixture.c) compares act
 legacy output for the supported primitives; it does not establish full HUD/text
 coverage.
 
-The sprite slice through `a7be8ce6b` has 10,789 exact native-reference Metal cases
-from the [ASan native fixture](../../tests/sprites/fixture.c), covering RLE transparency
-versus opaque indices 0/255, scale/flip/table combinations, clipping and source-frame
-offsets. Its 588 scaled solid horizontal-flip declines preserve a native duplicated-row
-copy quirk; they are outstanding GPU work, not passing GPU coverage. The cursor's
-direct scaling kernel and creature-shadow mask loop bypass the sprite wrappers.
+The sprite slice through `c20303633` has 12,386 exact native-reference Metal cases
+from the [ASan native fixture](../../tests/sprites/fixture.c), including all 588 former
+scaled solid horizontal-flip declines. Ordered GPU run copies preserve the extra
+left pixel, RLE segmentation and overlapping destination writes. Independent review
+added 576 [narrow-pitch cases](../../tests/sprites/copy_fixture.c): actual native
+four-byte copy grouping depends on destination alignment, which the command now
+preserves. All 12,962 cases match exact Metal indices, including 2,029 ordered commands.
+The verification oracle preserves native target alignment in its temporary buffer.
+The cursor's direct scaling kernel and creature-shadow mask loop bypass these wrappers;
+trusted native RLE pointers have no encoded-length contract, and mutable artwork/table
+aliases with the destination explicitly decline. Three native alias regressions verify
+exact fallback for decoded RLE, remap and blend-table overlap; GPU alias support is open.
 The raw slice through `8a38178ef` has 270 exact native-reference Metal cases from
 the [raw fixture](../../tests/raw-images/fixture.c), including tile clipping/phase and
 padded clears. Both suites check isolated recursive oracles and source snapshots.
-Independent source review found no additional defect; these bounded fixtures do
-not replace combined-head gameplay, complete asset coverage or performance evidence.
+These bounded fixtures do not replace combined-head gameplay, complete asset coverage or performance evidence.
 The native build at `8a38178ef` passed with binary SHA-256
 `63a0c73186aae4ef5b53470bdb0e9de7f6cf7e043689b295aae7e0c302e58228`;
 that is compilation/linking evidence only. Sprite/raw commands still use the
 synchronous full-target upload/readback bridge, including clears and backgrounds.
+
+The built-in lens slice at `7a865cc43`, combined with shared dispatch at `d18840c6b`,
+has 54 [native fixture cases](../../tests/lens/lens_test.cpp) covering padded/different
+pitches, in-place and partial aliases, signed alpha, wrapped mist phases, transparent
+index 255 and signed remaps. Its extracted-loop native oracle is separate from the
+GPU shader; it does not run the full LensManager. Review additionally verifies source
+snapshot lifetime, mixed-lens batch rejection, and limited-device rejection without
+target changes or device loss. Mist animation remains once per Draw by source review;
+palette effects have no pixel loop. Native wrappers still upload the current target
+and source assets, execute GPU pixels, then read back before committing. Dimensions
+above 8192, pitches above 1 MiB, extents above 32 MiB, packed assets above 16 MiB,
+out-of-viewport map entries and asset/destination aliases retain native fallback.
+Mist requires 33 readable fade rows; configured lightness 32–63 remains native,
+including valid narrower-shade cases. No visible presentation, final linked-game
+lifecycle result, resident target ownership or speedup follows from these fixtures.
 
 The original-vertex native smoke used original campaign level 1, a 640×480 indexed
 target, isolated assets/settings/saves, SDL presentation and drawing verification:

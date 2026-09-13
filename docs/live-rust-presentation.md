@@ -153,13 +153,21 @@ Circles execute their integer coverage recurrence on GPU. The
 [sprite adapter](../src/kfx/renderer/software/WgpuSprite.c) decodes RLE into immutable
 index/coverage assets and copies native scale ranges and tables; GPU source selection
 performs supported scaling, flips, remap and blending. Scaled solid horizontal flips
-with duplicated rows retain native fallback, as do the cursor's direct kernel and
-separate creature-shadow masks. Ordinary sprite glyphs reach these wrappers; direct
-DBC glyph writes remain CPU. The [raw adapter](../src/kfx/renderer/software/WgpuRawImage.c)
+with duplicated rows use ordered GPU run copies, preserving native extra-left pixels,
+four-byte copy grouping and target alignment. The cursor's direct kernel and separate
+creature-shadow masks remain native. Mutable sprite artwork/remap/blend tables that
+overlap the target decline before submission. Ordinary sprite glyphs reach these
+wrappers; direct DBC glyph writes remain CPU. The [raw adapter](../src/kfx/renderer/software/WgpuRawImage.c)
 submits source images for exact native scaling/letterbox and clipped slab tiling.
 Full SDL clip clears run on GPU and preserve row padding; nonfull clips remain native.
-General lines, circle radii above 8,191, image/effect transforms and the other ledger
-gaps remain unfinished. Enabled adapters flush terrain before unsupported fallback.
+The [lens adapter](../src/kfx/lense/WgpuLens.cpp) sends remap maps, mist texture/fade
+rows and overlay artwork to indexed GPU kernels. Source/target overlaps execute in
+native row-major order, including earlier-write visibility across different pitches.
+Map preparation and once-only mist animation/palette lifecycle stay native. Mist
+lightness 32–63, out-of-viewport map entries, asset/destination aliases and resource
+limits retain fallback; full lens lifecycle validation remains open.
+General lines, circle radii above 8,191, remaining image/effect transforms and the other
+ledger gaps remain unfinished. Enabled adapters flush terrain before unsupported fallback.
 
 At each CPU composition boundary, the bridge supplies the current CPU target as
 an initial indexed image, executes owned GPU commands, reads the complete result

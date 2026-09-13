@@ -100,6 +100,17 @@ impl DrawRenderer {
             .get(&command.source)
             .context("unknown lens source")?;
         let h = validate(command, &source.bytes, target.width, target.height)?;
+        let dispatch = if h[6] != 0 {
+            [1, 1]
+        } else {
+            [target.width.div_ceil(8), target.height.div_ceil(8)]
+        };
+        ensure!(
+            dispatch
+                .into_iter()
+                .all(|n| n <= self.device.limits().max_compute_workgroups_per_dimension),
+            "lens dispatch exceeds device limit"
+        );
         let words: Vec<u32> = source.bytes.iter().map(|&b| u32::from(b)).collect();
         if self.effects.is_none() {
             let shader = self
@@ -140,19 +151,7 @@ impl DrawRenderer {
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &binding, &[]);
-            pass.dispatch_workgroups(
-                if h[6] != 0 {
-                    1
-                } else {
-                    target.width.div_ceil(8)
-                },
-                if h[6] != 0 {
-                    1
-                } else {
-                    target.height.div_ceil(8)
-                },
-                1,
-            );
+            pass.dispatch_workgroups(dispatch[0], dispatch[1], 1);
         }
         self.queue.submit([encoder.finish()]);
         self.check_status()?;

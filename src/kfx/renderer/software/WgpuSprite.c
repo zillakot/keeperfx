@@ -21,8 +21,16 @@ static void sprite_oracle(uint8_t *pixels, uint32_t pitch, void *context)
     const struct SpriteOracle *o = context;
     TbPixel *screen = lbDisplay.WScreen, *window = lbDisplay.GraphicsWindowPtr;
     unsigned long old_pitch = lbDisplay.GraphicsScreenWidth;
-    lbDisplay.WScreen = pixels;
-    lbDisplay.GraphicsWindowPtr = pixels + SwTargetWindowY() * pitch + SwTargetWindowX();
+    uint8_t *storage = NULL, *draw_pixels = pixels;
+    size_t size = (size_t)pitch * SwTargetScreenHeight();
+    if (((uintptr_t)screen & 3) != ((uintptr_t)pixels & 3)) {
+        storage = malloc(size + 3);
+        if (!storage) return;
+        draw_pixels = storage + (((uintptr_t)screen - (uintptr_t)storage) & 3);
+        memcpy(draw_pixels, pixels, size);
+    }
+    lbDisplay.WScreen = draw_pixels;
+    lbDisplay.GraphicsWindowPtr = draw_pixels + SwTargetWindowY() * pitch + SwTargetWindowX();
     lbDisplay.GraphicsScreenWidth = pitch;
     oracle_active = 1;
     switch (o->mode) {
@@ -37,6 +45,10 @@ static void sprite_oracle(uint8_t *pixels, uint32_t pitch, void *context)
     lbDisplay.WScreen = screen;
     lbDisplay.GraphicsWindowPtr = window;
     lbDisplay.GraphicsScreenWidth = old_pitch;
+    if (storage) {
+        memcpy(pixels, draw_pixels, size);
+        free(storage);
+    }
 }
 
 static void put_u32(uint8_t *bytes, uint32_t value)
@@ -120,6 +132,14 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
         }
     }
     if (!valid) { free(asset); return 0; }
+    uintptr_t begin = (uintptr_t)SwTargetWScreen();
+    uintptr_t end = begin + (size_t)pitch * height;
+    if (((uintptr_t)source->data < end && begin < (uintptr_t)rle) ||
+        (remap && (uintptr_t)remap < end && begin < (uintptr_t)remap + 256) ||
+        (blend && (uintptr_t)table < end && begin < (uintptr_t)table + 65536)) {
+        free(asset);
+        return 0;
+    }
     for (unsigned i = 0; i < 256; i++) asset[length - 256 + i] = remap ? remap[i] : i;
     struct KfxWgpuDrawCommand command = {0};
     command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
@@ -138,6 +158,7 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
         command.source_x |= 4;
         command.colour = 0;
     }
+    command.source_y = ordered ? (uintptr_t)SwTargetWScreen() & 3 : 0;
     command.source_width = w;
     command.source_height = h;
     command.transparent = KFX_WGPU_DRAW_OPAQUE;

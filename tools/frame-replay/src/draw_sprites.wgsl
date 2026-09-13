@@ -33,6 +33,27 @@ fn sprite_sample(c: Command, pixel: vec2<u32>) -> u32 {
     return assets[axis + (w + h) * 8u + assets[index]];
 }
 
+fn sprite_copy_forward(source: i32, destination: i32, count: i32, alignment: u32) {
+    var at = 0i;
+    while at < count && ((u32(destination + at) + alignment) & 3u) != 0u {
+        pixels[u32(destination + at)] = pixels[u32(source + at)];
+        at++;
+    }
+    while at + 4 <= count {
+        let values = vec4<u32>(pixels[u32(source + at)], pixels[u32(source + at + 1)],
+            pixels[u32(source + at + 2)], pixels[u32(source + at + 3)]);
+        pixels[u32(destination + at)] = values.x;
+        pixels[u32(destination + at + 1)] = values.y;
+        pixels[u32(destination + at + 2)] = values.z;
+        pixels[u32(destination + at + 3)] = values.w;
+        at += 4;
+    }
+    while at < count {
+        pixels[u32(destination + at)] = pixels[u32(source + at)];
+        at++;
+    }
+}
+
 @compute @workgroup_size(1)
 fn sprite_ordered() {
     let c = commands[0];
@@ -65,9 +86,8 @@ fn sprite_ordered() {
             if coverage == 2u {
                 let left = i32(y * parameters.x + xstart) - 1;
                 for (var dy = 1u; dy < ycount; dy++) {
-                    for (var at = left; at <= run_right; at++) {
-                        pixels[u32(at + i32(dy) * stride)] = pixels[u32(at)];
-                    }
+                    sprite_copy_forward(left, left + i32(dy) * stride,
+                        run_right - left + 1, c.source.y);
                 }
                 in_run = false;
             }

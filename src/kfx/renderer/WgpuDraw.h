@@ -18,6 +18,7 @@ extern "C" {
 /* SPRITE source: index/coverage byte pairs, x then y little-endian u32
  * start/count pairs, and a 256-byte remap. source_width/height give decoded size;
  * source_x bits 0/1/2 select horizontal flip, vertical flip, and one-colour.
+ * Ordered sprite source_y records the native target base byte alignment modulo 4.
  * Bit 3 preserves solid-RL row-copy order; coverage 2 ends each positive RLE run.
  * Scaling ranges are target-relative; table uses the ordinary blend axes. */
 #define KFX_WGPU_DRAW_RAW_IMAGE 7u
