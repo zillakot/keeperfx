@@ -37,7 +37,7 @@ fn native_general_triangles() -> Result<()> {
         let colour = word(&mut data);
         let mut source = data[..60].to_vec();
         data = &data[60..];
-        let textured = matches!(mode, 2 | 3 | 7 | 8 | 10 | 11 | 12 | 13 | 18 | 19 | 22 | 23);
+        let textured = matches!(mode, 2 | 3 | 5..=13 | 18..=26);
         if textured {
             source.extend_from_slice(&texture);
         }
@@ -185,6 +185,94 @@ fn native_general_triangles() -> Result<()> {
         draw.readback(target)? == original,
         "mixed sprite/triangle rejection changed target"
     );
+    for mode in [5, 6, 9, 20, 21, 24, 25, 26] {
+        for transparent in [false, true] {
+            let mut source = Vec::new();
+            for (x, y) in [(0_i32, 0_i32), (70, 0), (0, 60)] {
+                for n in [x, y, 0, 0, 64 * 65536] {
+                    source.extend_from_slice(&n.to_le_bytes());
+                }
+            }
+            source.push(if transparent {
+                0
+            } else if mode == 9 {
+                64
+            } else {
+                1
+            });
+            let source = draw.create_resource(&source, 1, 1, 1)?;
+            let c = Command {
+                source,
+                source_y: 1,
+                source_x: mode,
+                ..invalid_command
+            };
+            let skips_fade = transparent && matches!(mode, 6 | 9 | 24 | 25);
+            if skips_fade {
+                draw.submit(target, &[c])?;
+            } else {
+                ensure!(
+                    draw.submit(
+                        target,
+                        &[
+                            Command {
+                                kind: CLEAR,
+                                colour: 9,
+                                ..Default::default()
+                            },
+                            sprite_command,
+                            c,
+                        ]
+                    )
+                    .is_err(),
+                    "mode {mode} accepted an invalid computed fade access"
+                );
+            }
+            ensure!(
+                draw.readback(target)? == original,
+                "mode {mode} changed target on transparency or rejection"
+            );
+            draw.release_resource(source)?;
+        }
+    }
+    for mode in [
+        2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    ] {
+        let mut source = Vec::new();
+        for (x, y) in [(0_i32, 0_i32), (70, 0), (0, 60)] {
+            for n in [x, y, 65536, 0, 0] {
+                source.extend_from_slice(&n.to_le_bytes());
+            }
+        }
+        source.push(0);
+        let source = draw.create_resource(&source, 1, 1, 1)?;
+        let c = Command {
+            source,
+            source_y: 1,
+            source_x: mode,
+            ..invalid_command
+        };
+        ensure!(
+            draw.submit(
+                target,
+                &[
+                    Command {
+                        kind: CLEAR,
+                        colour: 9,
+                        ..Default::default()
+                    },
+                    c,
+                ]
+            )
+            .is_err(),
+            "mode {mode} accepted a computed texture access beyond its extent"
+        );
+        ensure!(
+            draw.readback(target)? == original,
+            "mode {mode} texture rejection changed target"
+        );
+        draw.release_resource(source)?;
+    }
     let mut undefined = Vec::new();
     for (x, y) in [(1_i32, 0_i32), (2, 1), (3, 3)] {
         for n in [x, y, 0, 0, 65536] {

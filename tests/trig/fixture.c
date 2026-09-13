@@ -8,6 +8,7 @@ long vec_window_width = 79, vec_window_height = 61;
 struct PolyPoint scans[1024];
 struct PolyPoint *polyscans = scans;
 struct TbColorTables pixmap;
+unsigned char block_mem[TEXTURE_VARIATIONS_COUNT * TEXTURE_BLOCKS_STAT_COUNT * 32 * 32];
 #ifndef KFX_TRIG_NATIVE
 int kfx_wgpu_native_enabled(void) { return 0; }
 void kfx_wgpu_terrain_boundary(int allow) { (void)allow; }
@@ -28,6 +29,7 @@ static void word(FILE *f, uint32_t n) {
 }
 static void emit(FILE *f, struct PolyPoint vertices[3], unsigned mode, unsigned colour) {
     vec_mode = mode; vec_colour = colour;
+
     word(f, mode); word(f, colour);
     for (unsigned i = 0; i < 3; i++) {
         word(f, vertices[i].X); word(f, vertices[i].Y);
@@ -44,13 +46,13 @@ int main(int argc, char **argv) {
     if (argc != 2) return 1;
     FILE *f = fopen(argv[1], "wb"); if (!f) return 1;
     memset(pixels, 167, sizeof(pixels)); vec_screen = pixels + 83; poly_screen = pixels; vec_map = texture;
-    for (unsigned i = 0; i < sizeof(texture); i++) texture[i] = random32() >> 24;
+    for (unsigned i = 0; i < sizeof(texture); i++) texture[i] = (random32() >> 24) & (i < 8192 ? 63 : 255);
     for (unsigned i = 0; i < sizeof(pixmap.fade_tables); i++) pixmap.fade_tables[i] = random32() >> 24;
     for (unsigned i = 0; i < sizeof(pixmap.ghost); i++) pixmap.ghost[i] = random32() >> 24;
     fwrite("KFXTRIG1", 1, 8, f); word(f, 79); word(f, 61); word(f, 0);
     fwrite(texture, 1, sizeof(texture), f); fwrite(pixmap.fade_tables, 1, sizeof(pixmap.fade_tables), f);
     fwrite(pixmap.ghost, 1, sizeof(pixmap.ghost), f);
-    const unsigned modes[] = {0,1,2,3,4,7,8,10,11,12,13,14,15,16,17,18,19,22,23};
+    const unsigned modes[] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26};
     const int xy[][6] = {
         {3,2,73,2,39,59}, {3,2,73,59,3,59}, {3,2,73,22,20,59}, {3,2,73,59,5,22},
         {-30,-20,105,10,20,90}, {-30,-20,105,90,0,10}, {-10,-20,103,-20,23,80},
@@ -70,6 +72,8 @@ int main(int argc, char **argv) {
                     (long)((int)(random32() % (1024*65536)) - 512*65536),
                     (long)((int)(random32() % (1024*65536)) - 512*65536),
                     (long)(random32() % (63*65536))};
+                if (modes[mode] == 5 || modes[mode] == 6 || modes[mode] == 20 || modes[mode] == 21 || modes[mode] >= 24)
+                    for (unsigned i = 0; i < 3; i++) original[i].S = 17*65536;
                 for (unsigned i = 0; i < 3; i++) v[i] = original[order[permutation][i]];
                 emit(f, v, modes[mode], shape % 3 == 0 ? 32 : 17); count++;
             }
@@ -86,16 +90,51 @@ int main(int argc, char **argv) {
             v[i].V = (int)(random32() % (1024*65536)) - 512*65536;
             v[i].S = random32() % (63*65536);
         }
-        emit(f, v, modes[n % 19], n % 3 == 0 ? 32 : 17); count++;
+        if (modes[n % 27] == 5 || modes[n % 27] == 6 || modes[n % 27] == 20 || modes[n % 27] == 21 || modes[n % 27] >= 24)
+            for (unsigned i = 0; i < 3; i++) v[i].S = 17*65536;
+        emit(f, v, modes[n % 27], n % 3 == 0 ? 32 : 17); count++;
     }
     const long boundary[] = {-65537,-65536,-1,0,65535,65536,31*65536,32*65536,255*65536,256*65536};
-    for (unsigned mode = 0; mode < 19; mode++) for (unsigned j = 0; j < 10; j++) {
+    for (unsigned mode = 0; mode < 27; mode++) for (unsigned j = 0; j < 10; j++) {
         struct PolyPoint v[3] = {
             {-3,-2,boundary[j],boundary[j],0},
             {78,0,boundary[(j+1)%10],boundary[(j+2)%10],63*65536},
             {0,61,boundary[(j+2)%10],boundary[(j+1)%10],31*65536}
         };
+        if (modes[mode] == 5 || modes[mode] == 6 || modes[mode] == 20 || modes[mode] == 21 || modes[mode] >= 24)
+            for (unsigned i = 0; i < 3; i++) v[i].S = (j % 2 ? 63 : 0)*65536;
         emit(f,v,modes[mode],j % 2 ? 32 : 17); count++;
+    }
+    const unsigned shaded_modes[] = {5,6,20,21,24,25,26};
+    for (unsigned mode = 0; mode < 7; mode++) for (unsigned n = 0; n < 120; n++) {
+        const int small_xy[][6] = {
+            {-3,-2,15,2,2,19}, {-3,-2,15,19,2,2},
+            {-3,-2,15,-2,2,19}, {-3,-2,15,19,2,19}
+        };
+        const unsigned order[][3] = {{0,1,2},{1,2,0},{2,0,1},{0,2,1},{2,1,0},{1,0,2}};
+        struct PolyPoint v[3], original[3];
+        for (unsigned i = 0; i < 3; i++) {
+            v[i].X = small_xy[n % 4][i*2]; v[i].Y = small_xy[n % 4][i*2+1];
+            v[i].U = (int)(random32() % (1024*65536)) - 512*65536;
+            v[i].V = (int)(random32() % (1024*65536)) - 512*65536;
+            v[i].S = 30*65536 + (int)(random32() % (4*65536)) - 2*65536;
+        }
+        memcpy(original, v, sizeof(v));
+        for (unsigned i = 0; i < 3; i++) v[i] = original[order[(n/4)%6][i]];
+        emit(f,v,shaded_modes[mode],17); count++;
+    }
+    const unsigned samples[] = {0,1,12,13,63,64,127,255};
+    for (unsigned mode = 0; mode < 27; mode++) for (unsigned j = 0; j < 8; j++) {
+        if (mode == 9 && samples[j] >= 64) continue;
+        unsigned index = 0;
+        while (index < sizeof(texture) && texture[index] != samples[j]) index++;
+        if (index == sizeof(texture)) abort();
+        struct PolyPoint v[3] = {
+            {0,0,(index & 255)*65536,(index >> 8)*65536,31*65536},
+            {20,0,(index & 255)*65536,(index >> 8)*65536,31*65536},
+            {0,20,(index & 255)*65536,(index >> 8)*65536,31*65536}
+        };
+        emit(f,v,mode,17); count++;
     }
     fseek(f,16,SEEK_SET); word(f,count); fclose(f); printf("%u original C triangle fixtures\n", count); return 0;
 }

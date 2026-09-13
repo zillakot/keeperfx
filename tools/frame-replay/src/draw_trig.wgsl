@@ -11,6 +11,30 @@ fn trig_fixed(a: i32, b: i32) -> i32 {
 fn trig_weight(r: i32, a: vec3<i32>) -> vec3<i32> {
     return vec3(trig_fixed(r, a.x), trig_fixed(r, a.y), trig_fixed(r, a.z));
 }
+fn trig_rol(value: i32) -> vec2<u32> {
+    let sign = select(0u, 0xffffffffu, value < 0);
+    return vec2((u32(value) << 16u) | (u32(value) >> 16u) | (sign << 16u),
+        (u32(value) >> 16u) | (sign << 16u) | (sign >> 16u));
+}
+fn trig_add(a: vec2<u32>, b: vec2<u32>) -> vec3<u32> {
+    let lo = a.x + b.x;
+    let carry = u32(lo < a.x);
+    let hi = a.y + b.y;
+    let end = hi + carry;
+    return vec3(lo, end, u32(hi < a.y || end < hi));
+}
+fn trig_shade(initial: i32, step: i32, count: u32, mode: u32) -> u32 {
+    var state = trig_rol(initial);
+    let increment = vec2(u32(step) << 16u, u32(step >> 16u));
+    var shade = state.x & 255u;
+    for (var i = 0u; i < count; i++) {
+        if mode == 6u { state = vec2(state.x & 0xffff0000u, 0u); }
+        let next = trig_add(state, increment);
+        shade = (shade + u32(step >> 16u) + next.z) & 255u;
+        state = vec2((next.x & 0xffffff00u) | shade, 0u);
+    }
+    return shade;
+}
 fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
     let p = trig_vertex(command.assets.x, 0u);
     let q = trig_vertex(command.assets.x, 1u);
@@ -118,10 +142,23 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
         if mode == 17u { return assets[ghost + (destination << 8u) + source]; }
         return source;
     }
+    let clipped = row_value + step * max(-left, 0);
+    let count = u32(pixel.x - max(left, 0));
+    if mode == 5u || mode == 26u {
+        let u = (u32(clipped.x >> 16u) + count * u32(step.x >> 16u)) & 255u;
+        let v = (u32(clipped.y >> 16u) + count * u32(step.y >> 16u)) & select(31u, 255u, mode == 26u);
+        let uv = (v << 8u) | u;
+        if uv >= command.source.y { return 257u; }
+        let source = assets[command.assets.x + 60u + uv];
+        let shade = ((u32(clipped.z >> 8u) + count * (u32(step.z >> 8u) & 65535u)) >> 8u) & 255u;
+        if shade >= 64u { return 257u; }
+        let shaded = assets[fade + (shade << 8u) + source];
+        if mode == 26u && source <= 12u { return assets[ghost + (destination << 8u) + shaded]; }
+        return shaded;
+    }
     let full_v = mode == 2u || mode == 3u || mode == 10u || ((mode == 7u || mode == 11u) && colour == 32u);
     // Native LP64 ROL4 retains sign bits; CFADDL carries at 64 bits, not 32.
     let clipped_v = row_value.y + step.y * max(-left, 0);
-    let count = u32(pixel.x - max(left, 0));
     let fraction = select(u32(clipped_v) & 65535u, 65535u, clipped_v < 0);
     var v = (u32(clipped_v) >> 16u) + count * u32(step.y >> 16u);
     if step.y < 0 && step.y > -65536 {
@@ -130,6 +167,20 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
     let uv = ((v & select(31u, 255u, full_v)) << 8u) | ((u32(value.x) >> 16u) & 255u);
     if uv >= command.source.y { return 257u; }
     let source = assets[command.assets.x + 60u + uv];
+    if mode == 9u {
+        if source == 0u { return destination; }
+        if source >= 64u { return 257u; }
+        return assets[fade + (source << 8u) + destination];
+    }
+    if mode == 6u || mode == 20u || mode == 21u || mode == 24u || mode == 25u {
+        if (mode == 6u || mode == 24u || mode == 25u) && source == 0u { return destination; }
+        let shade = trig_shade(clipped.z, step.z, count, mode);
+        if shade >= 64u { return 257u; }
+        let shaded = assets[fade + (shade << 8u) + source];
+        if mode == 6u { return shaded; }
+        if mode == 20u || mode == 24u { return assets[ghost + (shaded << 8u) + destination]; }
+        return assets[ghost + (destination << 8u) + shaded];
+    }
     if mode == 2u || ((mode == 7u || mode == 11u) && colour == 32u) { return source; }
     if mode == 10u {
         if source == 0u { return destination; }

@@ -1,6 +1,7 @@
 #pragma once
 #include "kfx/renderer/WgpuTerrainBridge.h"
 #include "front_simple.h"
+#include "engine_textures.h"
 
 static int wgpu_trig_oracle_active;
 
@@ -26,9 +27,12 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
     kfx_wgpu_terrain_boundary(0);
     const int textured = vec_mode == 2 || vec_mode == 3 || vec_mode == 7 || vec_mode == 8 ||
         vec_mode == 11 || vec_mode == 12 || vec_mode == 13 || vec_mode == 18 || vec_mode == 19 ||
-        vec_mode == 22 || vec_mode == 23;
+        vec_mode == 22 || vec_mode == 23 || vec_mode == 5 || vec_mode == 6 || vec_mode == 9 ||
+        vec_mode == 20 || vec_mode == 21 || vec_mode == 24 || vec_mode == 25 || vec_mode == 26;
     if (textured && vec_map == big_scratch) return 0;
-    const int shaded = vec_mode == 1 || vec_mode == 4 || vec_mode == 16 || vec_mode == 17;
+    const int shaded = vec_mode == 1 || vec_mode == 4 || vec_mode == 16 || vec_mode == 17 ||
+        vec_mode == 5 || vec_mode == 6 || vec_mode == 20 || vec_mode == 21 ||
+        vec_mode == 24 || vec_mode == 25 || vec_mode == 26;
     if (!(textured || shaded || vec_mode == 0 || vec_mode == 14 || vec_mode == 15)) return 0;
     if (vec_window_width <= 0 || vec_window_height <= 0 || vec_window_width > 8192 ||
         vec_window_height > 8192 || vec_screen_width < (unsigned long)vec_window_width ||
@@ -46,7 +50,13 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
         if (labs(vertices[i].X - vertices[j].X) > 32767 ||
             labs(vertices[i].Y - vertices[j].Y) > 32767) return 0;
     }
-    const size_t texture_length = textured ? 7968 : 0;
+    size_t texture_length = 0;
+    if (textured) {
+        const uintptr_t address = (uintptr_t)vec_map, base = (uintptr_t)block_mem;
+        if (address < base || address - base >= sizeof(block_mem)) return 0;
+        texture_length = sizeof(block_mem) - (address - base);
+        if (texture_length > 65536) texture_length = 65536;
+    }
     uint8_t *source = malloc(60 + texture_length);
     uint8_t *tables = malloc(81920);
     if (source == NULL || tables == NULL) { free(source); free(tables); return 0; }

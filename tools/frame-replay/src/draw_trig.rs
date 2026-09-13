@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) -> Result<()> {
     ensure!(
-        matches!(c.source_x, 0..=4 | 7 | 8 | 10..=19 | 22 | 23),
+        matches!(c.source_x, 0..=26),
         "unsupported general triangle mode"
     );
     ensure!(
@@ -15,8 +15,7 @@ pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) 
         "invalid general triangle bounds/options"
     );
     ensure!(
-        source.bytes.len() == 60 + c.source_y as usize
-            && matches!(c.source_y, 0 | 7968 | 8192 | 65536),
+        source.bytes.len() == 60 + c.source_y as usize && c.source_y <= 65536,
         "invalid triangle vertex/texture resource"
     );
     ensure!(
@@ -25,7 +24,7 @@ pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) 
     );
     let textured = matches!(
         c.source_x,
-        2 | 3 | 7 | 8 | 10 | 11 | 12 | 13 | 18 | 19 | 22 | 23
+        2 | 3 | 5..=13 | 18..=26
     );
     ensure!(
         textured == (c.source_y != 0),
