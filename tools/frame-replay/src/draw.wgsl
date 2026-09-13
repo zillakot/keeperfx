@@ -23,6 +23,55 @@ fn mul_high(a: u32, b: u32) -> u32 {
     return a1 * b1 + (t >> 16u) + (u >> 16u);
 }
 
+fn circle_octants(p: vec2<i32>, a: i32, b: i32) -> u32 {
+    return u32(all(p == vec2(-a, -b))) + u32(all(p == vec2(a, -b)))
+        + u32(all(p == vec2(-a, b))) + u32(all(p == vec2(a, b)))
+        + u32(all(p == vec2(-b, -a))) + u32(all(p == vec2(b, -a)))
+        + u32(all(p == vec2(-b, a))) + u32(all(p == vec2(b, a)));
+}
+
+fn circle_rows(p: vec2<i32>, extent: i32, row: i32) -> u32 {
+    return u32(abs(p.x) <= extent) * (u32(p.y == -row) + u32(p.y == row));
+}
+
+fn circle_hits(p: vec2<i32>, radius: i32, outline: bool) -> u32 {
+    if radius == 0 { return u32(all(p == vec2(0))); }
+    var r = radius;
+    var n = 3 - 2 * radius;
+    var hits = 0u;
+    if outline {
+        var a = 0;
+        while a < r {
+            hits += circle_octants(p, a, r);
+            if n >= 0 { n += 10 + 4 * (a - r); r--; }
+            else { n += 6 + 4 * a; }
+            a++;
+        }
+        if r == a { hits += circle_octants(p, a, r); }
+        return hits;
+    }
+    if radius == 1 { return u32(abs(p.x) + abs(p.y) <= 1); }
+    hits = u32(p.y == 0 && abs(p.x) <= radius);
+    if n >= 0 {
+        hits += circle_rows(p, 0, radius);
+        r--;
+        n += 10 - (4 * (radius - 1) + 4);
+    } else { n += 6; }
+    var dx = 1;
+    while dx < r {
+        hits += circle_rows(p, r, dx);
+        if n >= 0 {
+            hits += circle_rows(p, dx, r);
+            let delta = dx - r;
+            r--;
+            n += 4 * delta + 10;
+        } else { n += 4 * dx + 6; }
+        dx++;
+    }
+    if r == dx { hits += circle_rows(p, r, dx); }
+    return hits;
+}
+
 @compute @workgroup_size(8, 8)
 fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= parameters.x || id.y >= parameters.y { return; }
@@ -51,12 +100,19 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
             source = assets[c.assets.y + shade + assets[c.assets.x + uv]];
         }
         if source == c.options.x { continue; }
+        var hits = 1u;
+        if c.operation.x == 4u || c.operation.x == 5u {
+            let radius = i32(c.source.z);
+            hits = circle_hits(vec2<i32>(local) - vec2(radius), radius, c.operation.x == 5u);
+        }
+        for (var hit = 0u; hit < hits; hit++) {
         if c.operation.y == 1u {
             destination = assets[c.assets.y + (source << 8u) + destination];
         } else if c.operation.y == 2u {
             destination = assets[c.assets.y + (destination << 8u) + source];
         } else {
             destination = source;
+        }
         }
     }
     pixels[index] = destination;

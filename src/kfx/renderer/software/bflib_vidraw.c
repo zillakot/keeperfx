@@ -22,6 +22,7 @@
 #include "kfx/renderer/software/SwDrawTarget.h"
 #include "kfx/renderer/RendererManager.h"
 #include "bflib_vidraw.h"
+#include "kfx/renderer/WgpuTerrainBridge.h"
 
 #include <string.h>
 #include <stdarg.h>
@@ -65,6 +66,93 @@ unsigned char *dither_end;
 unsigned char *lbSpriteReMapPtr;
 long scale_up;
 /******************************************************************************/
+void LbDrawPixelClip(long x, long y, TbPixel colour);
+void LbDrawBoxClip(long x, long y, unsigned long width, unsigned long height, TbPixel colour);
+void LbDrawCircleFilled(long x, long y, long radius, TbPixel colour);
+void LbDrawCircleOutline(long x, long y, long radius, TbPixel colour);
+
+enum WgpuPrimitiveKind { WgpuPixel, WgpuPixelClip, WgpuHV, WgpuBox, WgpuCircleFill, WgpuCircleOutline };
+struct WgpuPrimitive {
+    enum WgpuPrimitiveKind kind;
+    long x, y, a, b;
+    TbPixel colour;
+};
+static int wgpu_primitive_oracle_active;
+
+static void wgpu_primitive_oracle(uint8_t *pixels, uint32_t pitch, void *context)
+{
+    const struct WgpuPrimitive *p = context;
+    unsigned char *screen = lbDisplay.WScreen;
+    unsigned char *window = lbDisplay.GraphicsWindowPtr;
+    long scanline = lbDisplay.GraphicsScreenWidth;
+    lbDisplay.WScreen = pixels;
+    lbDisplay.GraphicsWindowPtr = pixels + SwTargetWindowY() * pitch + SwTargetWindowX();
+    lbDisplay.GraphicsScreenWidth = pitch;
+    wgpu_primitive_oracle_active++;
+    switch (p->kind) {
+    case WgpuPixel: LbDrawPixel(p->x, p->y, p->colour); break;
+    case WgpuPixelClip: LbDrawPixelClip(p->x, p->y, p->colour); break;
+    case WgpuHV: LbDrawHVLine(p->x, p->y, p->a, p->b, p->colour); break;
+    case WgpuBox: LbDrawBoxClip(p->x, p->y, p->a, p->b, p->colour); break;
+    case WgpuCircleFill: LbDrawCircleFilled(p->x, p->y, p->a, p->colour); break;
+    case WgpuCircleOutline: LbDrawCircleOutline(p->x, p->y, p->a, p->colour); break;
+    }
+    wgpu_primitive_oracle_active--;
+    lbDisplay.WScreen = screen;
+    lbDisplay.GraphicsWindowPtr = window;
+    lbDisplay.GraphicsScreenWidth = scanline;
+}
+
+static int wgpu_primitive(struct WgpuPrimitive primitive, uint32_t kind,
+    long x, long y, long width, long height, long radius)
+{
+    if (wgpu_primitive_oracle_active) return 0;
+    int32_t pitch = SwTargetScanline();
+    int32_t screen_height = SwTargetScreenHeight();
+    if (pitch <= 0 || screen_height <= 0 || !SwTargetWScreen()
+        || SwTargetGraphicsWindowPtr() != SwTargetWScreen() +
+            (ptrdiff_t)SwTargetWindowY() * pitch + SwTargetWindowX()) return 0;
+    x += SwTargetWindowX();
+    y += SwTargetWindowY();
+    if (x < -16384 || y < -16384 || x > 16384 || y > 16384 ||
+        width < 1 || height < 1 || width > 16384 || height > 16384 || radius > 8191) return 0;
+    if (primitive.kind == WgpuPixel) {
+        ptrdiff_t offset = (ptrdiff_t)y * pitch + x;
+        if (offset < 0 || offset >= (ptrdiff_t)pitch * screen_height) return 0;
+        x = offset % pitch;
+        y = offset / pitch;
+    }
+    struct KfxWgpuDrawCommand command = {0};
+    command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+    command.kind = kind;
+    command.colour = primitive.colour;
+    command.x = x;
+    command.y = y;
+    command.width = width;
+    command.height = height;
+    command.clip_x = SwTargetWindowX();
+    command.clip_y = SwTargetWindowY();
+    command.clip_width = SwTargetWindowWidth();
+    command.clip_height = SwTargetWindowHeight();
+    command.source_width = radius;
+    command.transparent = KFX_WGPU_DRAW_OPAQUE;
+    unsigned short flags = RendererGetDrawFlags();
+    if (primitive.kind == WgpuPixel || primitive.kind == WgpuHV) {
+        command.clip_x = command.clip_y = 0;
+        command.clip_width = pitch;
+        command.clip_height = screen_height;
+    }
+    if (primitive.kind != WgpuPixel && (flags & Lb_SPRITE_TRANSPAR4)) {
+        command.blend = KFX_WGPU_DRAW_SOURCE_DESTINATION;
+    } else if (primitive.kind != WgpuPixel && (flags & Lb_SPRITE_TRANSPAR8)) {
+        command.blend = KFX_WGPU_DRAW_DESTINATION_SOURCE;
+    }
+    struct KfxGpolyTarget target = {SwTargetWScreen(), pitch, screen_height, pitch};
+    struct KfxWgpuNativeResource table = {lbDisplay.GlassMap, 65536, 256, 256, 256};
+    return kfx_wgpu_native_draw(&target, &command, NULL,
+        command.blend ? &table : NULL, wgpu_primitive_oracle, &primitive);
+}
+
 /**  Prints horizontal or vertical line on current graphics window.
  *  Does no screen locking - screen must be lock before and unlocked
  *  after a call to this function.
@@ -77,6 +165,7 @@ long scale_up;
  */
 void LbDrawHVLine(long xpos1, long ypos1, long xpos2, long ypos2, TbPixel colour)
 {
+  struct WgpuPrimitive primitive = {WgpuHV, xpos1, ypos1, xpos2, ypos2, colour};
   long width_max = SwTargetWindowWidth() - 1;
   long height_max = SwTargetWindowHeight() - 1;
   if ( xpos1 > xpos2 )
@@ -121,6 +210,9 @@ void LbDrawHVLine(long xpos1, long ypos1, long xpos2, long ypos2, TbPixel colour
     if ( ypos2 > height_max )
       ypos2 = SwTargetWindowHeight() - 1;
   }
+  if (wgpu_primitive(primitive, KFX_WGPU_DRAW_RECT, xpos1, ypos1,
+      xpos2 == xpos1 ? 1 : xpos2 - xpos1 + 1,
+      xpos2 == xpos1 ? (ypos2 >= ypos1 ? ypos2 - ypos1 + 1 : 1) : 1, 0)) return;
   //And now to drawing
   unsigned char *screen_ptr = SwTargetGraphicsWindowPtr() + xpos1 +
           SwTargetScanline() * ypos1;
@@ -220,6 +312,7 @@ void LbDrawHVLine(long xpos1, long ypos1, long xpos2, long ypos2, TbPixel colour
  */
 void LbDrawBoxClip(long x, long y, unsigned long width, unsigned long height, TbPixel colour)
 {
+  struct WgpuPrimitive primitive = {WgpuBox, x, y, width, height, colour};
   long ypos = y;
   //Checking and clipping coordinates
   if ( y >= SwTargetWindowHeight() )
@@ -247,6 +340,8 @@ void LbDrawBoxClip(long x, long y, unsigned long width, unsigned long height, Tb
       width -= width + xpos - SwTargetWindowWidth();
   if ( (long)width <= 0 )
       return;
+  if (wgpu_primitive(primitive, KFX_WGPU_DRAW_RECT, xpos,
+      ypos / SwTargetScanline() - SwTargetWindowY(), width, height, 0)) return;
   //And now let's start drawing
   unsigned char *screen_ptr = &SwTargetWScreen()[SwTargetWindowX()] + xpos + ypos;
   unsigned long idxh = height;
@@ -1818,6 +1913,8 @@ int LbTiledSpriteHeight(struct TiledSprite *bigspr)
 
 void LbDrawPixel(long x, long y, TbPixel colour)
 {
+    if (wgpu_primitive((struct WgpuPrimitive){WgpuPixel, x, y, 0, 0, colour},
+        KFX_WGPU_DRAW_RECT, x, y, 1, 1, 0)) return;
     SwTargetGraphicsWindowPtr()[x + SwTargetScanline() * y] = colour;
 }
 
@@ -1827,6 +1924,8 @@ void LbDrawPixelClip(long x, long y, TbPixel colour)
         return;
     if ( (y < 0) || (y >= SwTargetWindowHeight()) )
         return;
+    if (wgpu_primitive((struct WgpuPrimitive){WgpuPixelClip, x, y, 0, 0, colour},
+        KFX_WGPU_DRAW_RECT, x, y, 1, 1, 0)) return;
     TbPixel *buf;
     int val;
     buf = SwTargetGraphicsWindowPtr() + SwTargetScanline() * y + x;
@@ -1848,6 +1947,11 @@ void LbDrawPixelClip(long x, long y, TbPixel colour)
 
 void LbDrawCircleFilled(long x, long y, long radius, TbPixel colour)
 {
+    long gpu_radius = radius > 0 ? radius : 0;
+    if (gpu_radius <= 8191 && wgpu_primitive(
+        (struct WgpuPrimitive){WgpuCircleFill, x, y, radius, 0, colour},
+        KFX_WGPU_DRAW_CIRCLE_FILLED, x - gpu_radius, y - gpu_radius,
+        2 * gpu_radius + 1, 2 * gpu_radius + 1, gpu_radius)) return;
     long r;
     long i;
     long n;
@@ -1946,6 +2050,11 @@ static inline void LbDrawPixelClipSolid(long x, long y, TbPixel colour)
 
 void LbDrawCircleOutline(long x, long y, long radius, TbPixel colour)
 {
+    long gpu_radius = radius > 0 ? radius : 0;
+    if (gpu_radius <= 8191 && wgpu_primitive(
+        (struct WgpuPrimitive){WgpuCircleOutline, x, y, radius, 0, colour},
+        KFX_WGPU_DRAW_CIRCLE_OUTLINE, x - gpu_radius, y - gpu_radius,
+        2 * gpu_radius + 1, 2 * gpu_radius + 1, gpu_radius)) return;
     int na;
     int nb;
     int n;
