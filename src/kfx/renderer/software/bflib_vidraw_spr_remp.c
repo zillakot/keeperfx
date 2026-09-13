@@ -21,6 +21,7 @@
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
 #include "bflib_vidraw.h"
+#include "kfx/renderer/software/WgpuSprite.h"
 
 #include <string.h>
 #include <stdarg.h>
@@ -1247,6 +1248,7 @@ TbResult LbSpriteDrawRemapUsingScalingDownDataSolidLR(uchar *outbuf, int scanlin
  */
 TbResult LbSpriteDrawRemapUsingScalingData(long posx, long posy, const struct TbSourceBuffer * src_buf, const TbPixel *cmap)
 {
+    if (kfx_wgpu_sprite(posx, posy, src_buf, NULL, cmap, 0, 1)) return 0;
     SYNCDBG(17,"Drawing at (%ld,%ld)",posx,posy);
     int32_t *xstep;
     int32_t *ystep;

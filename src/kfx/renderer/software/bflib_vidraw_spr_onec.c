@@ -22,6 +22,7 @@
 #include "kfx/renderer/software/SwDrawTarget.h"
 #include "kfx/renderer/RendererManager.h"
 #include "bflib_vidraw.h"
+#include "kfx/renderer/software/WgpuSprite.h"
 
 #include <string.h>
 #include <stdarg.h>
@@ -1269,6 +1270,7 @@ TbResult LbSpriteDrawOneColourUsingScalingDownDataSolidLR(uchar *outbuf, int sca
  */
 TbResult LbSpriteDrawOneColourUsingScalingData(long posx, long posy, const struct TbSprite *sprite, TbPixel colour)
 {
+    if (kfx_wgpu_sprite(posx, posy, NULL, sprite, NULL, colour, 2)) return 0;
     SYNCDBG(17,"Drawing at (%ld,%ld)",posx,posy);
     int32_t *xstep;
     int32_t *ystep;

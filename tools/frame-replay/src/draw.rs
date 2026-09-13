@@ -1,3 +1,6 @@
+#[path = "draw_sprites.rs"]
+mod sprites;
+
 use anyhow::{Context, Result, ensure};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,6 +13,7 @@ pub const IMAGE: u32 = 2;
 pub const GPOLY_SPAN: u32 = 3;
 pub const CIRCLE_FILLED: u32 = 4;
 pub const CIRCLE_OUTLINE: u32 = 5;
+pub const SPRITE: u32 = 6;
 pub const OPAQUE: u32 = 256;
 const MAX_COMMANDS: usize = 262_144;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
@@ -118,7 +122,14 @@ impl DrawRenderer {
         let queue = renderer.queue().clone();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ordered indexed drawing"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("draw.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("draw.wgsl"),
+                    "\n",
+                    include_str!("draw_sprites.wgsl")
+                )
+                .into(),
+            ),
         });
         let compute = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("ordered indexed drawing"),
@@ -495,7 +506,7 @@ fn pack_commands(
             "invalid command ABI"
         );
         ensure!(
-            c.kind <= CIRCLE_OUTLINE && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
+            c.kind <= SPRITE && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
             "invalid drawing operation"
         );
         let rectangle = if c.kind == CLEAR {
@@ -514,7 +525,7 @@ fn pack_commands(
         let mut source_offset = 0;
         let mut table_offset = 0;
         let mut source_pitch = 0;
-        if c.kind == IMAGE || c.kind == GPOLY_SPAN {
+        if c.kind == IMAGE || c.kind == GPOLY_SPAN || c.kind == SPRITE {
             let source = resources.get(&c.source).context("unknown source version")?;
             source_pitch = source.pitch;
             source_offset = pack_resource(c.source, source, &mut offsets, &mut assets, limit)?;
@@ -529,6 +540,8 @@ fn pack_commands(
                             <= u64::from(source.height),
                     "source rectangle exceeds asset"
                 );
+            } else if c.kind == SPRITE {
+                sprites::validate(c, source)?;
             } else {
                 ensure!(
                     source.pitch == 256 && source.width >= 32 && source.height >= 32,
@@ -678,7 +691,7 @@ mod tests {
                 ..Default::default()
             },
             Command {
-                kind: 6,
+                kind: 7,
                 ..Default::default()
             },
             Command {

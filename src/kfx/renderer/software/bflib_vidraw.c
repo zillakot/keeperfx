@@ -22,6 +22,7 @@
 #include "kfx/renderer/software/SwDrawTarget.h"
 #include "kfx/renderer/RendererManager.h"
 #include "bflib_vidraw.h"
+#include "kfx/renderer/software/WgpuSprite.h"
 #include "kfx/renderer/WgpuTerrainBridge.h"
 
 #include <string.h>
@@ -1123,6 +1124,7 @@ int LbSpriteDrawScaledRemap(long xpos, long ypos, const struct TbSprite *sprite,
 
 TbResult LbSpriteDrawImmediate(long x, long y, const struct TbSprite *spr)
 {
+    if (kfx_wgpu_sprite(x, y, NULL, spr, NULL, 0, 4)) return Lb_SUCCESS;
     struct TbSpriteDrawData spd;
     TbResult ret;
     SYNCDBG(19,"At (%ld,%ld)",x,y);
@@ -1411,6 +1413,7 @@ static inline TbResult LbSpriteDrawFCOneColour(const char *sp,short sprWd,short 
 
 TbResult LbSpriteDrawOneColourImmediate(long x, long y, const struct TbSprite *spr, const TbPixel colour)
 {
+    if (kfx_wgpu_sprite(x, y, NULL, spr, NULL, colour, 5)) return Lb_SUCCESS;
     struct TbSpriteDrawData spd;
     TbResult ret;
     SYNCDBG(19,"At (%ld,%ld)",x,y);

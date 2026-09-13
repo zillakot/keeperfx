@@ -14,6 +14,7 @@ extern "C" {
 #define KFX_WGPU_DRAW_GPOLY_SPAN 3u
 #define KFX_WGPU_DRAW_CIRCLE_FILLED 4u
 #define KFX_WGPU_DRAW_CIRCLE_OUTLINE 5u
+#define KFX_WGPU_DRAW_SPRITE 6u
 /* Circle radius is source_width; bounds are the inclusive diameter square. */
 #define KFX_WGPU_DRAW_REPLACE 0u
 #define KFX_WGPU_DRAW_SOURCE_DESTINATION 1u
