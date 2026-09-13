@@ -47,7 +47,7 @@ public:
     
     void Setup(unsigned char *lens_mem, unsigned char *fade, unsigned char *ghost,
                unsigned char pos_x_step, unsigned char pos_y_step,
-               unsigned char sec_x_step, unsigned char sec_y_step, unsigned fade_rows = 33);
+               unsigned char sec_x_step, unsigned char sec_y_step, unsigned input_fade_rows = 33);
     void SetAnimation(long counter, long speed);
     void Render(unsigned char *dstbuf, long dstpitch, 
                unsigned char *srcbuf, long srcpitch,
@@ -84,11 +84,11 @@ CMistFade::~CMistFade()
 
 void CMistFade::Setup(unsigned char *lens_mem, unsigned char *fade, unsigned char *ghost,
                      unsigned char pos_x_step, unsigned char pos_y_step,
-                     unsigned char sec_x_step, unsigned char sec_y_step, unsigned fade_rows)
+                     unsigned char sec_x_step, unsigned char sec_y_step, unsigned input_fade_rows)
 {
     this->lens_data = lens_mem;
     this->fade_data = fade;
-    this->fade_rows = fade_rows;
+    this->fade_rows = input_fade_rows;
     this->ghost_data = ghost;
     this->lens_dim = 256;
     this->position_offset_x = 0;

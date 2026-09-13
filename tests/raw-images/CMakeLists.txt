@@ -18,6 +18,9 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/SDL3_mixer/SDL_mixer.h" "#pragma once\n"
 add_executable(raw_image_fixture fixture.c "${KFX_ROOT}/src/front_simple.c"
     "${KFX_ROOT}/src/gui_draw.c" "${KFX_ROOT}/src/kfx/renderer/software/WgpuRawImage.c")
 target_include_directories(raw_image_fixture PRIVATE "${KFX_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}" ${KFX_SDL3_INCLUDE_DIR})
+if(NOT WIN32)
+    target_link_libraries(raw_image_fixture PRIVATE m)
+endif()
 target_compile_definitions(raw_image_fixture PRIVATE BFDEBUG_LEVEL=0)
 target_compile_options(raw_image_fixture PRIVATE -fwrapv -ffunction-sections -fdata-sections)
 if(APPLE)
