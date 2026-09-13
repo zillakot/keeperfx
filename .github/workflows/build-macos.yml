@@ -26,6 +26,11 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 -DPACKAGE_SUFFIX=Mac-CI
           cmake --build out/macos --target keeperfx --parallel 3
           test "$(lipo -archs out/macos/keeperfx)" = arm64
+      - name: Test sound registry layering
+        run: |
+          cmake -S . -B out/macos -DKFX_SOUND_REGISTRY_TESTS=ON
+          cmake --build out/macos --target sound_manager_registry_test --parallel 3
+          ctest --test-dir out/macos --output-on-failure -R '^sound_manager_registry$'
       - name: Check and link optional live Rust presenter
         run: |
           rustup update stable
