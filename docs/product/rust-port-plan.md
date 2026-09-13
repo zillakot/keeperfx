@@ -158,16 +158,18 @@ performance acceptance remain open.
 The user authorized the full drawing migration on 2026-09-13. Inventory and
 measurement are the first gate, followed by command extraction, GPU implementation,
 all drawing paths and native validation. A single family or framebuffer presenter
-does not complete this scope. Keep the delivery PR in draft while implementation
-or required validation remains incomplete; record exact source and evidence at each
-gate without marking untested paths complete.
+does not complete this scope. The foundation lands opt-in so the software path
+stays default while the remaining gates are worked; record exact source and
+evidence at each gate without marking untested paths complete.
 
-### Session handoff: 2026-09-14
+### Status: 2026-09-14
 
-The user requested a stop after validation and continuation next session. Keep
-[PR #16](https://github.com/zillakot/keeperfx/pull/16) in draft; the full migration
-and performance acceptance are unfinished. Resume `feat/wgpu-drawing`, retaining
-the software reference and personal assets/settings/saves.
+The objective is full Rust/wgpu ownership of drawing, with the C/C++ drawing
+retired afterwards, exact indexed parity and 60 FPS at a 1920×1080 framebuffer.
+[PR #16](https://github.com/zillakot/keeperfx/pull/16) merges to `master` as the
+opt-in foundation of that work: software drawing and SDL presentation stay the
+default, `KFX_RUST_PRESENTER` and `KFX_DRAW_BACKEND=wgpu` select the GPU path,
+and the restructuring below ships as small PRs against `master`.
 
 The tested runtime is `33ff16a4f65d1c310194d1ca7dd367f027d7ad0f`; executable SHA256
 `045ba991be5ebc193e659c4ba592a06e7418cdfed73fb7918b50dadf872f7de8`.
@@ -201,29 +203,47 @@ evolved populations and host conditions differ. Continuous unobscured window
 visibility was not independently established. Three zero-presentation surface
 acquisition attempts were rejected and contribute no timing claims.
 
-Next-session priorities:
+#### HD measurement
 
-1. Reduce shadow scratch transfers and transaction/resource costs before adding
-   features. A separate production diagnostic recorded 315 shadows, 82,575,360
-   scratch-readback bytes, 278 frame checkpoints and 266 validation waits. This
-   identifies work to measure; it does not assign their exact share of frame time.
-2. Add measured-window drawing-backend and transfer/checkpoint counters without
-   per-frame file I/O. Establish reliable surface availability, then repeat the
-   matched 640×480 comparison before expanding resolutions. GPU draw remains
-   roughly 20–24 ms and presentation 8–9 ms in these samples.
-3. Complete arbitrary Lua pixel/batch drawing, general striped-line coverage,
-   remaining valid-input/alias domains and persistent offscreen/scratch ownership.
-   Audit all remaining CPU writers and read leases; passing current fixtures or
-   achieving a frame-rate target does not complete the full drawing goal.
-4. Repeat final-source native/lifecycle checks and exact-head CI before considering
-   the full PR ready. Do not merge a partial migration merely because an earlier
-   head passed CI.
+The same binary, presenter and settings, capped host-wall timing at a 1920×1080
+framebuffer:
 
-Local detailed evidence and process cleanup are recorded in
-`out/wgpu-migration/batched-acceptance-report.md` in the orchestration checkout;
-the candidate worktree retains `out/batched-acceptance` with immutable source,
-binary, wrappers, settings and rejected-run evidence. All owned validation and
-keep-awake processes were stopped at this checkpoint.
+| Scene | Software draw mean / FPS | GPU draw mean / FPS | GPU presentation mean |
+| --- | ---: | ---: | ---: |
+| Quiet | 3.463 ms / 60.00 | 68.266 ms / 8.76 | 45.7 ms |
+| Busy | 3.318 ms / 60.00 | 70.442 ms / 8.00 | 54.2 ms |
+
+The GPU runs did not sustain 20 turns/s at 1280×800 or 1920×1080. Process CPU
+stayed flat while wall time grew, so the added cost is waiting rather than
+computation.
+
+#### Diagnosis and next step
+
+The current path performs about 125 queue submits, 17 blocking waits and 9
+checkpoints per frame, re-uploads immutable assets every frame (about 20 MB) and
+runs shadows as synchronous readback chains. The measured presentation cost is a
+checkpoint drain inside the presentation scope. Removing scaffolding cannot reach
+the target: the next step is a restructure to one ordered command stream per
+frame, a persistent asset arena, one or two submits and zero blocking waits,
+keeping the existing exact kernels.
+
+Per-frame acceptance metrics for that restructure: at most 4 submits; zero
+blocking waits outside verification and screenshots; at most 1 checkpoint;
+steady-state asset upload under 1 MB; allocation traffic under 1 MB; at most 3
+full-target dispatches; parity unchanged.
+
+Next PRs, in order:
+
+1. Measured-window drawing-backend, submit, wait and transfer counters, plus the
+   two free fixes (in progress).
+2. Shadows as queued commands rather than synchronous readback chains.
+3. The single-stream restructure, guided by a design document added under
+   [`docs/architecture/`](../architecture/).
+
+Coverage work remains independent of performance: arbitrary Lua pixel/batch
+drawing, general striped-line coverage, remaining valid-input/alias domains and
+persistent offscreen/scratch ownership are still open. Passing current fixtures
+or reaching a frame-rate target does not complete the full drawing goal.
 
 ### Inventory and measurement
 
@@ -295,12 +315,12 @@ ownership, synchronization, counters and failure behavior.
 
 | Gate | Status | Evidence and remaining work |
 | --- | --- | --- |
-| Inventory and measurement | Partial | Clean 640×480 measurements exposed the synchronous prototype regression: software drawing about 1.3–1.5 ms versus GPU drawing about 129–131 ms, with verifiers disabled. Full-frame readback dominated the separate stack sample. Queued-frame acceptance and the broader resolution/front-view matrix remain open. |
+| Inventory and measurement | Partial | Clean 640×480 measurements exposed the synchronous prototype regression: software drawing about 1.3–1.5 ms versus GPU drawing about 129–131 ms, with verifiers disabled. Full-frame readback dominated the separate stack sample. Queued frames are now measured at 640×480 and 1920×1080 (see the status section); the front-view matrix remains open. |
 | Extract commands | Partial | [Gpoly capture](../../src/kfx/renderer/GpolyCapture.h) owns span/resource snapshots; reviewed CPU oracle at `beec45800`: 615 fixtures and 20,389 spans matched native indices. Original-vertex native routing at `17e993a84` copies vertices before CPU setup and retains immutable texture/fade versions. Other families need immutable commands. |
 | Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h) cover the implemented families below. General triangles have all 27 kernels and deterministic thin-triangle setup. Queued frames, alias views, resource ownership and borrowed cursor integration are implemented; final combined runtime and performance evidence must match their exact source. |
 | Cover every drawing path | Open | Accepted original-vertex terrain bypasses CPU setup and rasterization; bounded 2D hooks suppress selected CPU pixel loops. The remaining families below and routine upload/readback bridges prevent complete GPU coverage. |
 | Native validation | Partial | Exact `e19ff26f7` sessions passed gameplay, parchment, save/reload and compound-lens possession, with 788 surface-verified presentations and no drawing failures. A real parchment oracle-recursion crash was fixed and retested. Later queued-frame source requires its own acceptance; complete views, languages, assets and failure coverage remain open. |
-| Performance and delivery | Open | The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. Keep the PR draft until full coverage and final validation; exact-head CI and final merge verification remain required. |
+| Performance and delivery | Open | The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
 
 | Drawing family and source boundary | Implemented coverage | Remaining GPU work / validation |
 | --- | --- | --- |
