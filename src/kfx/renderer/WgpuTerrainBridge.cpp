@@ -93,10 +93,29 @@ void WgpuTerrainBridge::BeginResident()
     ++m_counts.resident_sequences;
 }
 
+bool WgpuTerrainBridge::ValidateCpuLease()
+{
+    if (m_verify && m_resident_lease && m_gpu_valid) {
+        for (uint32_t row = 0; row < m_height; ++row) {
+            if (std::memcmp(m_gpu_native_target.pixels + static_cast<size_t>(row) * m_gpu_native_target.pitch,
+                    m_cpu_checkpoint.data() + static_cast<size_t>(row) * m_width, m_width) != 0) {
+                ++m_counts.missing_cpu_barriers;
+                std::snprintf(m_error.data(), m_error.size(), "CPU target changed during GPU lease without a barrier");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool WgpuTerrainBridge::Materialize()
 {
     if (m_frame_invalid) return false;
     if (!m_gpu_dirty) return true;
+    if (!ValidateCpuLease()) {
+        Fail(nullptr);
+        return false;
+    }
     if (kfx_wgpu_draw_readback(m_context, m_target, m_readback.data(), m_readback.size(),
             m_width, m_error.data(), m_error.size()) != 1) {
         Fail(nullptr);
@@ -409,16 +428,7 @@ void WgpuTerrainBridge::ReplayPending()
 
 bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_context)
 {
-    if (m_verify && m_resident_lease && m_gpu_valid) {
-        for (uint32_t row = 0; row < m_height; ++row) {
-            if (std::memcmp(m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch,
-                    m_cpu_checkpoint.data() + static_cast<size_t>(row) * m_width, m_width) != 0) {
-                ++m_counts.missing_cpu_barriers;
-                std::snprintf(m_error.data(), m_error.size(), "CPU target changed during GPU lease without a barrier");
-                return false;
-            }
-        }
-    }
+    if (!ValidateCpuLease()) return false;
     if (m_fail_after != 0 && m_counts.gpu_batches >= m_fail_after) {
         std::snprintf(m_error.data(), m_error.size(), "injected GPU drawing batch failure");
         return false;

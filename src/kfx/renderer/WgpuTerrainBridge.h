@@ -93,6 +93,7 @@ private:
     bool ExecutePending(KfxWgpuNativeOracle oracle = nullptr, void* oracle_context = nullptr);
     bool SameTarget(const KfxGpolyTarget& target) const;
     bool Materialize();
+    bool ValidateCpuLease();
     bool m_resident_enabled = false, m_resident_lease = false, m_gpu_valid = false, m_gpu_dirty = false;
     bool m_frame_invalid = false, m_borrowed_context = false;
     KfxGpolyTarget m_gpu_native_target = {};

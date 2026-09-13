@@ -247,7 +247,7 @@ int main()
         oracle(resident_pixels, resident.pitch, a, texture, fade);
         assert(bridge.CpuBarrier() && bridge.FrameValid() && resident_pixels != clear_checkpoint);
     }
-    {
+    for (bool at_barrier : {false, true}) {
         std::vector<uint8_t> resident_pixels(240, 0x6a);
         KfxGpolyTarget resident = {resident_pixels.data(), 20, 10, 24};
         WgpuTerrainBridge bridge(0, false, true, true);
@@ -255,8 +255,12 @@ int main()
         assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
         bridge.Flush();
         resident_pixels[0] ^= 1;
-        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &b, texture.data(), fade.data()) == 1);
-        bridge.Flush();
+        if (at_barrier) {
+            assert(!bridge.CpuBarrier());
+        } else {
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &b, texture.data(), fade.data()) == 1);
+            bridge.Flush();
+        }
         assert(bridge.Failed() && !bridge.FrameValid());
         assert(bridge.GetCounters().missing_cpu_barriers == 1);
     }
