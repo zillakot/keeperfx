@@ -22,7 +22,7 @@ pub struct Renderer {
     parameters: wgpu::Buffer,
     inputs: Option<Inputs>,
     target: Option<Target>,
-    failure: Arc<Mutex<Option<String>>>,
+    pub(crate) failure: Arc<Mutex<Option<String>>>,
 }
 
 impl Renderer {

@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/out/rust-target
+      KFX_GPOLY_FIXTURE: ${{ github.workspace }}/out/gpoly-fixture.bin
     steps:
       - uses: actions/checkout@v4
       - name: Install software Vulkan driver
@@ -26,9 +27,22 @@ jobs:
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml
       - name: Check capture isolation and completeness
         run: python3 -m unittest discover -s scripts/tests -v
+      - uses: actions/checkout@v4
+        with:
+          repository: libsdl-org/SDL
+          ref: release-3.4.12
+          path: out/sdl-headers
+          sparse-checkout: include
+      - name: Generate native gpoly drawing oracle
+        run: |
+          cmake -S tests/gpoly -B out/gpoly-tests -DKFX_GPOLY_ASAN=ON \
+            -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
+          cmake --build out/gpoly-tests --parallel 2
+          ctest --test-dir out/gpoly-tests --output-on-failure
+          out/gpoly-tests/gpoly_capture_test "$KFX_GPOLY_FIXTURE"
       - name: Replay synthetic frames and sequences
         run: |
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml -- --ignored
+          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml -- --ignored --test-threads=1
           cargo build --locked --manifest-path tools/frame-replay/Cargo.toml
           python3 tools/frame-replay/tests/replay.py out/rust-target/debug/keeperfx-frame-replay out/synthetic-replay
       - uses: actions/upload-artifact@v4

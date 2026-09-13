@@ -48,6 +48,7 @@ struct Presenter {
     pending: Option<wgpu::SurfaceTexture>,
     surface: wgpu::Surface<'static>,
     renderer: Renderer,
+    drawing: Option<Box<crate::draw::DrawRenderer>>,
     instance: wgpu::Instance,
     layer: *mut c_void,
     config: wgpu::SurfaceConfiguration,
@@ -117,6 +118,7 @@ impl Presenter {
             pending: None,
             surface,
             renderer,
+            drawing: None,
             instance,
             layer,
             config,
@@ -127,6 +129,18 @@ impl Presenter {
             verify,
             verified_frames: 0,
         })
+    }
+
+    fn drawing(&mut self) -> Result<&mut crate::draw::DrawRenderer> {
+        ensure!(!self.failed, "presenter is terminal");
+        self.renderer.check_status()?;
+        if self.drawing.is_none() {
+            self.drawing = Some(Box::new(crate::draw::DrawRenderer::new(
+                &self.renderer,
+                self.config.format,
+            )?));
+        }
+        Ok(self.drawing.as_mut().unwrap())
     }
 
     fn acquire(&mut self, width: u32, height: u32, vsync: bool) -> Result<bool> {
@@ -670,5 +684,393 @@ mod tests {
         let value: i32 = unsafe { boundary(error.as_mut_ptr(), error.len(), || panic!("test")) };
         assert_eq!(value, 0);
         assert_eq!(error[3], 0);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_create(error: *mut c_char, capacity: usize) -> *mut c_void {
+    unsafe {
+        boundary(error, capacity, || {
+            Ok(Box::into_raw(Box::new(crate::draw::DrawRenderer::headless()?)).cast())
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_destroy(handle: *mut c_void) {
+    if !handle.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+            drop(Box::from_raw(handle.cast::<crate::draw::DrawRenderer>()));
+        }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_context(
+    handle: *mut c_void,
+    error: *mut c_char,
+    capacity: usize,
+) -> *mut c_void {
+    unsafe {
+        boundary(error, capacity, || {
+            ensure!(!handle.is_null(), "null presenter");
+            let drawing = (&mut *handle.cast::<Presenter>()).drawing()?;
+            Ok((drawing as *mut crate::draw::DrawRenderer).cast())
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_target_create(
+    handle: *mut c_void,
+    width: u32,
+    height: u32,
+    error: *mut c_char,
+    capacity: usize,
+) -> u64 {
+    unsafe {
+        boundary(error, capacity, || {
+            ensure!(!handle.is_null(), "null presenter");
+            let drawing = &mut *handle.cast::<crate::draw::DrawRenderer>();
+            let id = drawing.create_target(width, height)?;
+            drawing.check_status()?;
+            Ok(id)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_target_release(
+    handle: *mut c_void,
+    target: u64,
+    error: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    unsafe {
+        boundary(error, capacity, || {
+            ensure!(!handle.is_null(), "null presenter");
+            (&mut *handle.cast::<crate::draw::DrawRenderer>()).release_target(target)?;
+            Ok(1)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_resource_create(
+    handle: *mut c_void,
+    bytes: *const u8,
+    length: usize,
+    width: u32,
+    height: u32,
+    pitch: u32,
+    error: *mut c_char,
+    capacity: usize,
+) -> u64 {
+    unsafe {
+        boundary(error, capacity, || {
+            ensure!(
+                !handle.is_null() && !bytes.is_null(),
+                "null presenter or asset"
+            );
+            crate::draw::validate_resource(length, width, height, pitch)?;
+            (&mut *handle.cast::<crate::draw::DrawRenderer>()).create_resource(
+                std::slice::from_raw_parts(bytes, length),
+                width,
+                height,
+                pitch,
+            )
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_resource_release(
+    handle: *mut c_void,
+    resource: u64,
+    error: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    unsafe {
+        boundary(error, capacity, || {
+            ensure!(!handle.is_null(), "null presenter");
+            (&mut *handle.cast::<crate::draw::DrawRenderer>()).release_resource(resource)?;
+            Ok(1)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_submit(
+    handle: *mut c_void,
+    target: u64,
+    commands: *const crate::draw::Command,
+    count: usize,
+    error: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    unsafe {
+        let result: Option<i32> = boundary(error, capacity, || {
+            ensure!(
+                !handle.is_null() && (!commands.is_null() || count == 0),
+                "null presenter or commands"
+            );
+            ensure!(count <= 262_144, "command count exceeds limit");
+            let commands = if count == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(commands, count)
+            };
+            let drawing = &mut *handle.cast::<crate::draw::DrawRenderer>();
+            drawing.submit(target, commands)?;
+            drawing.check_status()?;
+            Ok(Some(1))
+        });
+        result.unwrap_or(-1)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_readback(
+    handle: *mut c_void,
+    target: u64,
+    indices: *mut u8,
+    length: usize,
+    pitch: u32,
+    error: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    unsafe {
+        let result: Option<i32> = boundary(error, capacity, || {
+            ensure!(
+                !handle.is_null() && !indices.is_null(),
+                "null presenter or output"
+            );
+            let drawing = &mut *handle.cast::<crate::draw::DrawRenderer>();
+            let (width, height) = drawing.target_dimensions(target)?;
+            crate::draw::validate_resource(length, width, height, pitch)?;
+            let bytes = drawing.readback(target)?;
+            drawing.check_status()?;
+            for (row, source) in bytes.chunks_exact(width as usize).enumerate() {
+                std::ptr::copy_nonoverlapping(
+                    source.as_ptr(),
+                    indices.add(row * pitch as usize),
+                    width as usize,
+                );
+            }
+            Ok(Some(1))
+        });
+        result.unwrap_or(-1)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_prepare_present(
+    handle: *mut c_void,
+    target: u64,
+    palette: *const u8,
+    palette_length: usize,
+    output_width: u32,
+    output_height: u32,
+    vsync: i32,
+    error: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    unsafe {
+        let result: Option<i32> = boundary(error, capacity, || {
+            ensure!(
+                !handle.is_null() && !palette.is_null(),
+                "null presenter or palette"
+            );
+            ensure!(
+                palette_length == 1024 && (0..=1).contains(&vsync),
+                "invalid palette or VSync"
+            );
+            let presenter = &mut *handle.cast::<Presenter>();
+            presenter.drawing()?.target_dimensions(target)?;
+            if !presenter.acquire(output_width, output_height, vsync != 0)? {
+                return Ok(Some(0));
+            }
+            let view = presenter
+                .pending
+                .as_ref()
+                .unwrap()
+                .texture
+                .create_view(&Default::default());
+            presenter.drawing()?.present_into(
+                target,
+                std::slice::from_raw_parts(palette, palette_length),
+                output_width,
+                output_height,
+                &view,
+            )?;
+            presenter.renderer.check_status()?;
+            Ok(Some(1))
+        });
+        if result.is_none() && !handle.is_null() {
+            (*handle.cast::<Presenter>()).failed = true;
+        }
+        result.unwrap_or(-1)
+    }
+}
+
+#[repr(C)]
+pub struct DrawCounters {
+    batches: u64,
+    commands: u64,
+    asset_upload_bytes: u64,
+    command_upload_bytes: u64,
+    readback_bytes: u64,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_counters(
+    handle: *mut c_void,
+    output: *mut DrawCounters,
+    error: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    unsafe {
+        let result: Option<i32> = boundary(error, capacity, || {
+            ensure!(
+                !handle.is_null() && !output.is_null(),
+                "null drawing context or counters"
+            );
+            let counters = (&*handle.cast::<crate::draw::DrawRenderer>()).counters();
+            output.write(DrawCounters {
+                batches: counters.batches,
+                commands: counters.commands,
+                asset_upload_bytes: counters.asset_upload_bytes,
+                command_upload_bytes: counters.command_upload_bytes,
+                readback_bytes: counters.readback_bytes,
+            });
+            Ok(Some(1))
+        });
+        result.unwrap_or(-1)
+    }
+}
+
+#[cfg(test)]
+mod draw_abi_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_null_draw_inputs_without_gpu() {
+        unsafe {
+            let mut error = [0; 128];
+            assert_eq!(
+                kfx_wgpu_draw_target_create(
+                    std::ptr::null_mut(),
+                    1,
+                    1,
+                    error.as_mut_ptr(),
+                    error.len()
+                ),
+                0
+            );
+            assert_eq!(
+                kfx_wgpu_draw_submit(
+                    std::ptr::null_mut(),
+                    1,
+                    std::ptr::null(),
+                    0,
+                    error.as_mut_ptr(),
+                    error.len()
+                ),
+                -1
+            );
+            assert_eq!(
+                kfx_wgpu_draw_readback(
+                    std::ptr::null_mut(),
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    error.as_mut_ptr(),
+                    error.len()
+                ),
+                -1
+            );
+            assert_eq!(
+                kfx_wgpu_draw_counters(
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    error.as_mut_ptr(),
+                    error.len()
+                ),
+                -1
+            );
+            assert!(
+                kfx_wgpu_draw_context(std::ptr::null_mut(), error.as_mut_ptr(), error.len())
+                    .is_null()
+            );
+            kfx_wgpu_draw_destroy(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn headless_draw_abi_owns_and_copies_inputs() {
+        unsafe {
+            let mut error = [0; 512];
+            let context = kfx_wgpu_draw_create(error.as_mut_ptr(), error.len());
+            assert!(
+                !context.is_null(),
+                "{}",
+                std::ffi::CStr::from_ptr(error.as_ptr()).to_string_lossy()
+            );
+            let target =
+                kfx_wgpu_draw_target_create(context, 7, 3, error.as_mut_ptr(), error.len());
+            assert_ne!(target, 0);
+            let mut command = crate::draw::Command {
+                kind: crate::draw::CLEAR,
+                colour: 37,
+                ..Default::default()
+            };
+            assert_eq!(
+                kfx_wgpu_draw_submit(
+                    context,
+                    target,
+                    &command,
+                    1,
+                    error.as_mut_ptr(),
+                    error.len()
+                ),
+                1
+            );
+            command.colour = 211;
+            let mut bytes = [99u8; 27];
+            assert_eq!(
+                kfx_wgpu_draw_readback(
+                    context,
+                    target,
+                    bytes.as_mut_ptr(),
+                    bytes.len(),
+                    9,
+                    error.as_mut_ptr(),
+                    error.len()
+                ),
+                1
+            );
+            for row in bytes.chunks_exact(9) {
+                assert_eq!(&row[..7], &[37; 7]);
+                assert_eq!(&row[7..], &[99; 2]);
+            }
+            assert_eq!(
+                kfx_wgpu_draw_submit(
+                    context,
+                    target,
+                    &command,
+                    usize::MAX,
+                    error.as_mut_ptr(),
+                    error.len()
+                ),
+                -1
+            );
+            assert_eq!(
+                kfx_wgpu_draw_target_release(context, target, error.as_mut_ptr(), error.len()),
+                1
+            );
+            kfx_wgpu_draw_destroy(context);
+        }
     }
 }
