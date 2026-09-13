@@ -1,3 +1,6 @@
+#[path = "draw_target_resources.rs"]
+mod target_resources;
+pub use target_resources::TargetResourceCounters;
 #[path = "draw_effects.rs"]
 mod effects;
 #[path = "draw_trig.rs"]
@@ -122,6 +125,8 @@ pub struct DrawRenderer {
     present: wgpu::RenderPipeline,
     targets: HashMap<u64, Target>,
     resources: HashMap<u64, Resource>,
+    target_snapshots: HashMap<u64, target_resources::TargetSnapshot>,
+    target_resource_counters: TargetResourceCounters,
     counters: Counters,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
@@ -208,6 +213,8 @@ impl DrawRenderer {
             present,
             targets: HashMap::new(),
             resources: HashMap::new(),
+            target_snapshots: HashMap::new(),
+            target_resource_counters: TargetResourceCounters::default(),
             counters: Counters::default(),
             failure: renderer.failure.clone(),
         })

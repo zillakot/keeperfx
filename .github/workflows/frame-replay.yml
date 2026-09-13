@@ -17,6 +17,7 @@ jobs:
       KFX_GPOLY_FIXTURE: ${{ github.workspace }}/out/gpoly-fixture.bin
       KFX_GPOLY_TRIANGLE_FIXTURE: ${{ github.workspace }}/out/gpoly-tests/triangles.bin
       KFX_RAW_IMAGE_FIXTURE: ${{ github.workspace }}/out/raw-image-tests/raw-images.bin
+      KFX_SPRITE_COPY_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprite-copies.bin
       KFX_SPRITE_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprites.bin
       KFX_TRIG_FIXTURE: ${{ github.workspace }}/out/trig-tests/trig.bin
       KFX_LENS_FIXTURE: ${{ github.workspace }}/out/lens-tests/lenses.bin
@@ -83,6 +84,8 @@ jobs:
           cmake --build out/lens-tests --parallel 2
           ctest --test-dir out/lens-tests --output-on-failure
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_lenses_gpu -- --ignored --nocapture --test-threads=1
+      - name: Verify GPU target snapshots and ordered sampling
+        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_target_resources_gpu -- --ignored --nocapture --test-threads=1
       - name: Replay synthetic frames and sequences
         run: |
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --lib -- --ignored --test-threads=1

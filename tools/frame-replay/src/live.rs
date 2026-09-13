@@ -1,3 +1,6 @@
+#[path = "live_target_resources.rs"]
+mod target_resources;
+
 use crate::gpu::{Renderer, validate_rows};
 use anyhow::{Context, Result, bail, ensure};
 use std::{
