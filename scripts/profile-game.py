@@ -39,7 +39,7 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "gpu_raster_ns", "gpu_terrain_prepare_ns",
                     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
                     "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
-                    "gpu_timed_passes", "gpu_untimed_passes", "gpu_frame_ns",
+                    "gpu_timed_passes", "gpu_untimed_passes", "gpu_pass_union_ns",
                     "host_staged_asset_bytes", "arena_bytes_resident")
 DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident")
 SETTINGS = {
@@ -60,7 +60,7 @@ DRAWING_LIMITATIONS = [
     "Drawing counters are deltas between consecutive presented frames inside the measured window; the first presentation only establishes the baseline, so there is one fewer counter frame than presentation sample.",
     "wait_ns is host time blocked inside device polls, not GPU execution time; it is already included in the enclosing draw and presentation wall-clock scopes.",
     "Only the gpu_*_ns counters are GPU execution time, and only when KFX_WGPU_GPU_TIMING is 1 or 2; they are per-pass durations resolved from timestamp queries and are not comparable with the host wall-clock scopes. gpu_untimed_passes counts passes that went unstamped, so a window with a nonzero value under-reports.",
-    "A gpu_*_ns pass window runs from that pass's begin stamp to its end stamp, so it includes time the pass spent stalled on its dependencies; windows may overlap and their sum is not an exclusive decomposition of the frame. gpu_frame_ns is the frame's first-begin to last-end window and is the only one that bounds the whole GPU cost. --serial-gpu-timing drains the queue between timed submissions, which makes the per-pass windows exclusive but changes the workload being measured.",
+    "A gpu_*_ns pass window runs from that pass's begin stamp to its end stamp, so it includes time the pass spent stalled on its dependencies: it attributes cost rather than measuring it, and the sum of the windows decomposes nothing. gpu_pass_union_ns is the union of the frame's pass intervals, so overlapping windows count once; it is an upper bound on GPU occupancy and equals the window sum whenever the windows do not overlap, which is what this Metal adapter shows. Only --serial-gpu-timing measures pass cost exclusively, and it serialises the frame to do so, so that run is a diagnostic and not a throughput baseline.",
     "Counters cover the drawing context the bridge owns. Presenter surface acquisition and any drawing done outside that context are not counted.",
     "host_staged_asset_bytes is a host-side gauge sampled at frame end: the CPU copies the drawing context stages, not GPU memory, and not a per-frame delta, so its window total is meaningless.",
     "arena_bytes_resident is a gauge sampled at frame end: GPU bytes suballocated in the persistent asset arena, free-listed slots and power-of-two class padding included, and not a per-frame delta.",

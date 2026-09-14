@@ -77,7 +77,7 @@ pub(super) struct PassTimings {
     pub(super) dropped: u64,
     /// Scratch for the union below, kept to avoid a per-drain allocation.
     spans: Vec<(u64, u64)>,
-    pub(super) frame_ns: u64,
+    pub(super) union_ns: u64,
 }
 
 impl PassTimings {
@@ -120,7 +120,7 @@ impl PassTimings {
             passes: 0,
             dropped: 0,
             spans: Vec::new(),
-            frame_ns: 0,
+            union_ns: 0,
         })
     }
 
@@ -192,12 +192,15 @@ impl PassTimings {
         self.slots[index].pending = Some(receiver);
     }
 
-    /// Adds the length of the union of this batch's pass intervals to `frame_ns`, so a
-    /// pass that ran while another was still in flight is counted once. Passes that
-    /// overlap but resolve in different batches are still counted twice, which makes
-    /// `frame_ns` an upper bound on the exclusive GPU pass time and never more than the
-    /// sum of the per-pass windows.
-    fn settle(&mut self) {
+    /// Adds the length of the union of the pass intervals collected since the last call
+    /// to `union_ns`, so passes that were in flight together are counted once. The caller
+    /// closes one accumulation per frame, and a readback lag of a frame or two only moves
+    /// a pass between adjacent frames. Two passes that overlap but land either side of a
+    /// close are still counted twice, so this is an upper bound on the frame's GPU
+    /// occupancy. On an adapter whose pass windows never overlap it is exactly the sum of
+    /// them, which is what a Metal adapter measures here; the overlap the per-pass windows
+    /// hide is stall inside each window, and only `serialized()` removes that.
+    pub(super) fn settle(&mut self) {
         if self.spans.is_empty() {
             return;
         }
@@ -214,8 +217,12 @@ impl PassTimings {
         }
         union += open.1 - open.0;
         self.spans.clear();
-        self.frame_ns += (union as f64 * self.period) as u64;
+        self.union_ns += (union as f64 * self.period) as u64;
     }
+
+    /// Spans held between two closes. A caller that never closes still bounds its memory
+    /// and keeps reporting, at the cost of merging across more of the timeline.
+    const SPAN_LIMIT: usize = 4096;
 
     pub(super) fn drain(&mut self, device: &wgpu::Device) {
         if self.slots.iter().all(|slot| slot.pending.is_none()) {
@@ -250,6 +257,8 @@ impl PassTimings {
             self.slots[index].reserved = false;
             self.slots[index].pending = None;
         }
-        self.settle();
+        if self.spans.len() >= Self::SPAN_LIMIT {
+            self.settle();
+        }
     }
 }

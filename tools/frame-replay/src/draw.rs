@@ -212,16 +212,19 @@ pub struct Counters {
     pub prepared_row_allocations: u64,
     /// GPU time per pass kind, in `timing::PASS_NAMES` order; zero unless timing is on.
     /// A pass window runs from its own begin stamp to its own end stamp, so it includes
-    /// any time the pass spent stalled on a dependency and the windows may overlap.
-    /// Their sum is not an exclusive decomposition of the frame; `gpu_frame_ns` is.
+    /// any time the pass spent stalled on a dependency. Their sum attributes cost; it
+    /// does not decompose the frame, and no counter here makes it exclusive —
+    /// `KFX_WGPU_GPU_TIMING=2` does, by serialising the frame.
     pub pass_ns: [u64; PASS_KINDS],
     pub timed_passes: u64,
     pub untimed_passes: u64,
-    /// The union of the frame's timed pass intervals, so a pass that ran while another
-    /// was in flight is counted once; zero unless timing is on. It never exceeds the sum
-    /// of `pass_ns`. `KFX_WGPU_GPU_TIMING=2` drains the queue after every timed
-    /// submission, which makes the per-pass windows exclusive at a throughput cost.
-    pub gpu_frame_ns: u64,
+    /// The union of the frame's timed pass intervals: overlapping windows count once,
+    /// so this is an upper bound on the frame's GPU occupancy, up to rounding equal to
+    /// the sum of `pass_ns` whenever the windows do not overlap. Zero unless timing is
+    /// on. It does not remove the stall inside a window; only `KFX_WGPU_GPU_TIMING=2`,
+    /// which drains the queue after every timed submission, measures pass cost
+    /// exclusively, and it serialises the frame to do so.
+    pub gpu_pass_union_ns: u64,
 }
 
 pub struct DrawRenderer {
@@ -471,7 +474,7 @@ impl DrawRenderer {
             counters.pass_ns = timings.ns;
             counters.timed_passes = timings.passes;
             counters.untimed_passes = timings.dropped;
-            counters.gpu_frame_ns = timings.frame_ns;
+            counters.gpu_pass_union_ns = timings.union_ns;
         }
         counters
     }

@@ -299,7 +299,7 @@ void RendererSoftware::report_drawing()
          gpu.tile_entries_by_kind[15], gpu.tile_entries_by_kind[16], gpu.tile_entries_by_kind[17]},
         gpu.pass_ns[0], gpu.pass_ns[1], gpu.pass_ns[2], gpu.pass_ns[3],
         gpu.pass_ns[4], gpu.pass_ns[5], gpu.pass_ns[6], gpu.pass_ns[7],
-        gpu.timed_passes, gpu.untimed_passes, gpu.gpu_frame_ns,
+        gpu.timed_passes, gpu.untimed_passes, gpu.gpu_pass_union_ns,
         gpu.host_staged_asset_bytes, gpu.arena_bytes_resident};
     performance_drawing_frame(&sample);
     const char* path = SDL_getenv("KFX_WGPU_DRAW_STATS");
@@ -328,7 +328,7 @@ void RendererSoftware::report_drawing()
                 "\"gpu_ordered_sprite_ns\":%llu,\"gpu_minimap_ns\":%llu,"
                 "\"gpu_lens_ns\":%llu,\"gpu_present_ns\":%llu,"
                 "\"gpu_timed_passes\":%llu,\"gpu_untimed_passes\":%llu,"
-                "\"gpu_frame_ns\":%llu,"
+                "\"gpu_pass_union_ns\":%llu,"
                 "\"rejected_commands\":%llu,\"rejected_spans\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
@@ -396,7 +396,7 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.pass_ns[7]),
                 static_cast<unsigned long long>(gpu.timed_passes),
                 static_cast<unsigned long long>(gpu.untimed_passes),
-                static_cast<unsigned long long>(gpu.gpu_frame_ns),
+                static_cast<unsigned long long>(gpu.gpu_pass_union_ns),
                 static_cast<unsigned long long>(counts.rejected_commands),
                 static_cast<unsigned long long>(counts.rejected_spans));
             fclose(output);

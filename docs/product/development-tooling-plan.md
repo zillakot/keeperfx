@@ -16,7 +16,7 @@ M (a session) and L (more than one session).
 
 | # | Item | Size | Depends on |
 | --- | --- | --- | --- |
-| 1 | [GPU time attribution](#1-gpu-time-attribution) | M | 2 for reliable capture; counters delivered, trace profiler open |
+| 1 | [GPU time attribution](#1-gpu-time-attribution) | M | 2 for reliable capture; counters and serialised mode delivered, trace profiler open |
 | 2 | [Offscreen measurement mode](#2-offscreen-measurement-mode) | M | None |
 | 3 | [Deterministic scene mode](#3-deterministic-scene-mode) | M | None |
 | 4 | [Command-stream capture and offline replay](#4-command-stream-capture-and-offline-replay) | L | 1 for per-pass timing, 3 for a stable capture |
@@ -35,32 +35,48 @@ the stall to itself, so the measurement redistributed a roughly constant total.
 **Deliverable.** Counter and statement parts delivered with the tight-bin-boxes PR;
 the trace profiler is open.
 
-`gpu_frame_ns` is **the union of the frame's timed pass intervals**, not the
-first-begin-to-last-end span this plan originally named. That span was implemented
-first and discarded: grouping stamps by frame let one stale absolute timestamp
-inflate a frame's window to about a second, whereas a union can only ever be wrong
-by one interval's own length. The union also excludes the host gaps between
-submissions, which the encoder span would have counted as GPU time. `KFX_WGPU_GPU_TIMING=2`
-(`profile-game.py --serial-gpu-timing`) drains the queue after every timed submission,
-so the per-pass windows become exclusive at a throughput cost — the diagnostic that
-settles an attribution question directly. The statement that per-pass windows include
-dependency stalls is in the renderer design, the
-[live guide](../live-rust-presentation.md), the profiler's own limitations and
-[performance baselines](../performance-baselines.md).
+The frame-wide timestamp pair this plan named does not exist, and the reason is the
+plan's own finding measured properly. Two designs were built and both are recorded
+here because the negative result is the deliverable.
+
+A first-begin-to-last-end span per frame was implemented first and discarded: it
+reported about a second per frame natively, because grouping absolute stamps by frame
+lets one stale timestamp swallow the whole window, and an encoder span also counts the
+host gaps between submissions as GPU time. What shipped instead is
+`gpu_pass_union_ns`, the union of the frame's timed pass intervals closed once per
+frame, which a single bad interval can only inflate by its own length.
+
+**The union collapses nothing on this adapter.** Measured on a busy 1080p frame it is
+8.006 ms against an 8.006 ms window sum, and at 640x480 3.910 against 3.910 — the pass
+windows are disjoint in GPU time. The overlap the incident inferred is therefore not
+concurrency between passes: each window *contains* its own stall. The same run
+serialised (`KFX_WGPU_GPU_TIMING=2`, `profile-game.py --serial-gpu-timing`) reports
+**3.549 ms**, so 56 % of the unserialised window total is waiting inside the windows.
+`gpu_pass_union_ns` is published as an upper bound on GPU occupancy and nothing more;
+the serialised sum is the exclusive number, and it is what the acceptance tables cite.
+
+The statement that per-pass windows include dependency stalls is in the renderer
+design, the [live guide](../live-rust-presentation.md), the profiler's own limitations
+and [performance baselines](../performance-baselines.md).
 
 Still open: a profiling script that launches an isolated game session under
 `xctrace record --template "Metal System Trace"` and summarizes per-pass GPU time
 from the trace.
 
-**Acceptance.** `gpu_frame_ns >= max(gpu_*_ns)` — met: 7.779 ms against a 3.069 ms
-raster on a busy 1080p frame. **`gpu_frame_ns <= presentation` is not the right bound
-and is withdrawn**: `presentation` is a host scope that ends when the submission is
-handed over, while the GPU keeps running into the rest of the frame, so once the
-frame hit the 60 FPS cap the same run measured `gpu_frame_ns` 7.779 ms against a
-4.681 ms presentation mean. The frame interval bounds it instead, and does: 7.779 ms
-against 16.667 ms. Remaining acceptance for the trace profiler: a per-pass summary for
-a busy 1080p run whose totals agree with `gpu_frame_ns`, after which every published
-pass attribution cites the profiler rather than the counter windows.
+**Acceptance.** Two earlier criteria are withdrawn because neither discriminates.
+`gpu_frame_ns <= presentation` is wrong: `presentation` is a host scope that ends at
+hand-off while the GPU runs past it, and the capped 1080p run measures 8.006 against
+4.765 ms. `frame_interval >= gpu_frame_ns >= max(gpu_*_ns)` is satisfied by the window
+sum itself, so it cannot tell an overlap-free counter from the counter it replaces, and
+it is not an invariant either — a GPU-bound frame breaks it.
+
+What is left is a property only a serialised run can establish: **the frame interval
+must exceed the serialised GPU sum**, and **the serialised sum is the figure an
+acceptance table cites for GPU cost**. Met on a busy 1080p pair: 17.284 ms interval
+against 3.549 ms of serialised GPU work. Remaining acceptance for the trace profiler: a
+per-pass summary for a busy 1080p run whose totals agree with that serialised sum, after
+which every published pass attribution cites the profiler rather than the counter
+windows.
 
 **Size.** M. **Dependencies.** Item 2 for a capture that does not depend on a
 visible window.

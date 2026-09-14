@@ -88,14 +88,16 @@ struct KfxWgpuDrawCounters {
     uint64_t prepared_row_words, prepared_row_allocations;
     /* Opt-in per-pass GPU execution time, in KFX_WGPU_DRAW_PASS_KINDS order; zero
      * unless KFX_WGPU_GPU_TIMING is 1 or 2 and the adapter supports timestamp queries.
-     * A pass window includes time the pass spent stalled on its dependencies, so the
-     * windows may overlap and their sum is not an exclusive decomposition. */
+     * A pass window includes time the pass spent stalled on its dependencies, so it
+     * attributes cost rather than measuring it, and their sum decomposes nothing. */
     uint64_t pass_ns[KFX_WGPU_DRAW_PASS_KINDS];
     uint64_t timed_passes, untimed_passes;
-    /* First pass begin to last pass end within a frame; a real GPU window, so it never
-     * exceeds the frame's wall clock. KFX_WGPU_GPU_TIMING=2 drains the queue after every
-     * timed submission, which makes the per-pass windows exclusive and costs throughput. */
-    uint64_t gpu_frame_ns;
+    /* Union of the frame's timed pass intervals: overlapping windows count once, so this
+     * is an upper bound on GPU occupancy and, up to rounding, the sum of pass_ns whenever
+     * the windows do not overlap. It does not remove the stall inside a window.
+     * KFX_WGPU_GPU_TIMING=2 drains the queue after every timed submission, which does,
+     * by serialising the frame. */
+    uint64_t gpu_pass_union_ns;
 };
 #pragma pack(pop)
 

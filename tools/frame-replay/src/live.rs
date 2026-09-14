@@ -1019,7 +1019,7 @@ pub struct DrawCounters {
     pass_ns: [u64; crate::draw::timing::PASS_KINDS],
     timed_passes: u64,
     untimed_passes: u64,
-    gpu_frame_ns: u64,
+    gpu_pass_union_ns: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1066,7 +1066,7 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 pass_ns: counters.pass_ns,
                 timed_passes: counters.timed_passes,
                 untimed_passes: counters.untimed_passes,
-                gpu_frame_ns: counters.gpu_frame_ns,
+                gpu_pass_union_ns: counters.gpu_pass_union_ns,
             });
             Ok(Some(1))
         });

@@ -244,21 +244,24 @@ pass spends stalled on its dependencies, so they attribute cost rather than deco
 
 Serial matched pairs on the wgpu presenter with `KFX_DRAW_BACKEND=wgpu`, busy scene,
 200 measured turns, VSync off, a 60 FPS cap and `--gpu-timing`, before (`dc31cabe0`) and
-after tight bin boxes, on the same host and assets. Simulation stayed at 0.343/0.362 ms
-and 0.315/0.334 ms across the pairs, so host contention did not move between runs.
+after tight bin boxes, on the same host and assets. Simulation stayed at 0.343/0.347 ms
+and 0.315/0.337 ms across the pairs, so host contention did not move between runs. A
+`gpu_*_ns` window includes the stall the pass waited through, so the rows below attribute
+GPU cost rather than decomposing the frame; the serialised row is the exclusive figure.
 
 | | 640x480 before | 640x480 after | 1080p before | 1080p after |
 | --- | ---: | ---: | ---: | ---: |
-| `tile_entries` | 126,750 | 9,912 | 897,385 | 46,196 |
+| `tile_entries` | 126,750 | 9,917 | 897,385 | 46,149 |
 | Pixel-command evaluations | 32.4 M | 2.5 M | 229.7 M | 11.8 M |
-| `tile_entries` sprite / trig / terrain / clear | — | 1,135 / 347 / 7,230 / 1,200 | — | 6,184 / 1,193 / 30,660 / 8,160 |
-| GPU raster | 5.223 ms | 1.287 ms | 46.124 ms | 3.069 ms |
-| GPU shadow triangles | 1.314 ms | 0.685 ms | 7.876 ms | 0.982 ms |
-| GPU minimap | 3.175 ms | 0.869 ms | 16.901 ms | 2.436 ms |
-| Sum of pass windows | 11.033 ms | 4.060 ms | 76.804 ms | 7.779 ms |
-| `gpu_frame_ns` | absent | 4.060 ms | absent | 7.779 ms |
-| Presentation mean | 4.748 ms | 5.473 ms | 76.369 ms | 4.681 ms |
-| Frame interval / FPS | 16.666 ms / 60.00 | 16.667 ms / 60.00 | 78.133 ms / 12.80 | 16.667 ms / 60.00 |
+| `tile_entries` sprite / trig / terrain / clear | — | 1,135 / 352 / 7,230 / 1,200 | — | 6,136 / 1,193 / 30,660 / 8,160 |
+| GPU raster | 5.223 ms | 1.184 ms | 46.124 ms | 2.859 ms |
+| GPU shadow triangles | 1.314 ms | 0.663 ms | 7.876 ms | 1.001 ms |
+| GPU minimap | 3.175 ms | 0.805 ms | 16.901 ms | 2.414 ms |
+| Sum of pass windows | 11.033 ms | 3.910 ms | 76.804 ms | 8.006 ms |
+| Serialised GPU sum | not collected | not collected | not collected | **3.549 ms** |
+| `gpu_pass_union_ns` | absent | 3.910 ms | absent | 8.006 ms |
+| Presentation mean | 4.748 ms | 5.604 ms | 76.369 ms | 4.765 ms |
+| Frame interval / FPS | 16.666 ms / 60.00 | 16.666 ms / 60.00 | 78.133 ms / 12.80 | 16.667 ms / 60.00 |
 | Turns/s over the window | 20.02 | 20.02 | 12.86 | 20.04 |
 
 A quiet 1080p pair on the same builds: `tile_entries` 755,382 → 48,938, raster
@@ -269,9 +272,18 @@ Both 1080p scenes now reach the 60 FPS cap and 20 turns/s, so the remaining GPU 
 longer what bounds the frame; the cap is. The minimap window fell with everything else
 without any minimap change, which confirms that its earlier 16.9 ms was attribution rather
 than cost. A serialised repeat of the busy 1080p run (`--serial-gpu-timing`) puts the sum
-of pass windows at 3.648 ms against 7.779 ms unserialised — over half of the per-pass
-window total is dependency stall, not work — while presentation rises to 15.375 ms because
-the host now blocks on the queue, so that mode measures attribution, not throughput.
+of pass windows at **3.549 ms against 8.006 ms** unserialised — 56 % of the per-pass
+window total is waiting inside the windows, not work — while presentation rises to
+15.444 ms because the host now blocks on the queue, so that mode measures cost, not
+throughput. `gpu_pass_union_ns` equals the unserialised window sum in every column, which
+is the same finding from the other side: the windows are disjoint in GPU time, so the
+stall is inside each one rather than between them.
+
+`RAW_IMAGE` is the residual. Its box is exact — it writes index 0 outside its destination
+rectangle, so it really does own the whole clip — but at 8,160 tiles per full-view record
+it is most of what remains after terrain's 30,660 at 1080p. Splitting it into the
+destination rectangle plus up to four index-0 fill rectangles would be exact and is the
+next binning item.
 
 Validation: 99,298 GPU batches verified against the CPU oracle with 0 failures under
 `KFX_WGPU_DRAW_VERIFY=1` on level 20, and a `KFX_WGPU_VERIFY=1` session presented and
@@ -419,7 +431,7 @@ ownership, synchronization, counters and failure behavior.
 
 | Gate | Status | Evidence and remaining work |
 | --- | --- | --- |
-| Inventory and measurement | Partial | Per-pass GPU execution time is collected on request (`KFX_WGPU_GPU_TIMING=1`, `profile-game.py --gpu-timing`), and `tile_entries_<kind>` splits the binning index per record kind. A pass window includes the stalls that pass waited through, so the windows overlap and their sum is not a decomposition of the frame; `gpu_frame_ns` is the union of the frame's pass intervals and `KFX_WGPU_GPU_TIMING=2` (`--serial-gpu-timing`) drains the queue between timed submissions to make the per-pass windows exclusive at a throughput cost. A serialised busy 1080p run puts the pass-window sum at 3.648 ms against 7.779 ms unserialised. Clean 640×480 measurements exposed the synchronous prototype regression: software drawing about 1.3–1.5 ms versus GPU drawing about 129–131 ms, with verifiers disabled. Full-frame readback dominated the separate stack sample. Queued frames are now measured at 640×480 and 1920×1080 (see the status section); the front-view matrix remains open. |
+| Inventory and measurement | Partial | Per-pass GPU execution time is collected on request (`KFX_WGPU_GPU_TIMING=1`, `profile-game.py --gpu-timing`), and `tile_entries_<kind>` splits the binning index per record kind. A pass window includes the stall that pass waited through, so it attributes cost rather than measuring it and the window sum decomposes nothing. `gpu_pass_union_ns` is the union of the frame's pass intervals and bounds GPU occupancy from above; measured, it equals the window sum, so the windows are disjoint and the stall sits inside them. Only `KFX_WGPU_GPU_TIMING=2` (`--serial-gpu-timing`) is exclusive: a serialised busy 1080p run reports 3.549 ms of GPU work against an 8.006 ms window sum, and that serialised figure is what acceptance tables cite. Clean 640×480 measurements exposed the synchronous prototype regression: software drawing about 1.3–1.5 ms versus GPU drawing about 129–131 ms, with verifiers disabled. Full-frame readback dominated the separate stack sample. Queued frames are now measured at 640×480 and 1920×1080 (see the status section); the front-view matrix remains open. |
 | Extract commands | Partial | [Gpoly capture](../../src/kfx/renderer/GpolyCapture.h) owns span/resource snapshots; reviewed CPU oracle at `beec45800`: 615 fixtures and 20,389 spans matched native indices. Original-vertex native routing at `17e993a84` copies vertices before CPU setup and retains immutable texture/fade versions. Other families need immutable commands. |
 | Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h) cover the implemented families below. General triangles have all 27 kernels and deterministic thin-triangle setup. Queued frames, alias views, resource ownership and borrowed cursor integration are implemented; final combined runtime and performance evidence must match their exact source. |
 | Cover every drawing path | Open | Accepted original-vertex terrain bypasses CPU setup and rasterization; bounded 2D hooks suppress selected CPU pixel loops. The remaining families below and routine upload/readback bridges prevent complete GPU coverage. |
