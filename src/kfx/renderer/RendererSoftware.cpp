@@ -461,6 +461,9 @@ bool RendererSoftware::present_rust_frame()
             SDL_DestroySurface(rgba);
         }
     }
+    // Records the cursor restore into the present tail before it is finished, so the
+    // backup, composition, palette pass and restore share one submission.
+    LbMouseOnEndSwap();
     performance_begin(PerfPresentWait);
     if (result == 1) {
         result = kfx_wgpu_present(m_rust, error, sizeof(error));
@@ -472,7 +475,6 @@ bool RendererSoftware::present_rust_frame()
         }
     }
     performance_end(PerfPresentWait);
-    LbMouseOnEndSwap();
     performance_end(PerfPresentation);
     if (m_vsync != (vsync_enabled ? 1 : 0)) {
         m_vsync = vsync_enabled ? 1 : 0;
