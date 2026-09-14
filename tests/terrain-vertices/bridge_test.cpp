@@ -55,11 +55,19 @@ int main()
         for (auto& vertex : invalid.vertices) vertex.shade = 64*65536;
         vertex_draw(&target, &invalid, texture.data(), fade.data(), 0);
         bridge.Boundary(false);
-        assert(bridge.Failed());
-        assert(actual == initial);
-        assert(bridge.GetCounters().rejected_triangles == 2);
+        // Verification cannot reject what the kernels flag and skip: the CPU oracle and the
+        // GPU disagree by construction, so the batch is counted and the bridge keeps drawing.
+        assert(!bridge.Failed());
+        assert(actual != initial);
+        assert(bridge.GetCounters().rejected_triangles == 0);
         assert(bridge.GetCounters().replayed_triangles == 0);
-        assert(bridge.GetCounters().gpu_triangles == 0);
+        assert(bridge.GetCounters().gpu_triangles == 2);
+        assert(bridge.GetCounters().verification_flagged_shades == 1);
+        assert(bridge.GetCounters().verified_triangles == 0);
+        uint32_t flags = 0;
+        char error[1024] = {};
+        assert(kfx_wgpu_draw_frame_status(bridge.Context(), &flags, error, sizeof(error)) == 1);
+        assert(flags != 0);
     }
     for (bool verify : {false, true}) {
         std::vector<uint8_t> actual(83*61+32, 167), expected = actual;

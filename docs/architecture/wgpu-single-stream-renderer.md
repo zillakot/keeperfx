@@ -272,15 +272,22 @@ writes nothing, the frame presents as drawn, the flag reaches the CPU one or two
 bridge counts the frame and calls `FullRedraw()`, the recovery protocol that already exists. Host
 validation still rejects a batch before any target write, but batches accepted earlier in the same frame
 stay in the root: an aborted frame is redrawn, not rolled back. `frame_flush`'s rollback of
-`minimap.background` and `target_snapshots` was dropped explicitly with the transactional scratch.
+`minimap.background` and `target_snapshots` was dropped explicitly with the transactional scratch, which
+bounds the recovery: a snapshot already taken from a flagged frame keeps those pixels until its owner
+releases it, and `capture_map_fade_buffer` holds one across a whole map fade. The two-frame report is
+likewise typical, not guaranteed, while `checkpoint_target` publishes the status word several times per
+frame and a still-mapped ring slot defers a publish; PR 12's single encoder removes both.
 Device loss is unchanged: `check_status()` reads `Renderer::failure` without blocking, the bridge's `Fail`
 marks the frame invalid and attempts `ReplayPending` CPU reconstruction for the families that have a CPU
 rasterizer (terrain spans and triangles only), and `RendererSoftware` falls back to SDL.
 
 ## C ABI
 
-**Unchanged.** `struct KfxWgpuDrawCommand` and every kind constant, so there are **no C command producer
-changes**: the 128-byte stream record is an internal Rust/WGSL layout, not the C wire format. Also
+**Unchanged.** `struct KfxWgpuDrawCommand`, every kind constant and therefore
+`KFX_WGPU_DRAW_ABI_VERSION`, which tags that record rather than the library: PR 6 appended
+fields to `KfxWgpuFrameCounters` and added `kfx_wgpu_draw_frame_status`, and the crate is a
+`staticlib` linked into the same binary, so no mismatched build can observe either. There are
+**no C command producer changes**: the 128-byte stream record is an internal Rust/WGSL layout, not the C wire format. Also
 unchanged: `kfx_wgpu_draw_target_create/release`, `_target_view`, `_submit`, `_submit_triangles`,
 `_readback`, `_prepare_present`, `kfx_wgpu_present`, `kfx_wgpu_draw_counters`, the
 `frame_begin/flush/end/abort` names and signatures, and the `kfx_wgpu_native_read_barrier` /

@@ -946,7 +946,7 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
         else for (uint32_t row = 0; row < m_height; ++row)
             std::memcpy(expected.data() + static_cast<size_t>(row) * m_width,
                 m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch, m_width);
-        bool prior_diverged = false;
+        bool prior_diverged = false, flagged_shade = false;
         if (oracle != nullptr) {
             const bool compare_scratch = shadow_route && m_shadow_scratch != nullptr;
             // The oracle runs on the scratch the software path would have used, so a resident
@@ -978,21 +978,24 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
                 m_shadow_prior = std::move(resident);
             }
             m_counts.verification_cpu_commands += m_pending.size();
+        } else if (!RasterizePending(expected.data() + ExpectedOffset(), m_width)) {
+            // The kernels flag and skip an out-of-range shade that the CPU oracle rejects
+            // outright, so the two disagree by construction: count the batch rather than
+            // compare it, and leave the GPU result authoritative as the frame flag reports it.
+            flagged_shade = true;
+            ++m_counts.verification_flagged_shades;
         } else {
-            if (!RasterizePending(expected.data() + ExpectedOffset(), m_width)) {
-                std::snprintf(m_error.data(), m_error.size(), "invalid triangle shade in native oracle");
-                return false;
-            }
             m_counts.verification_cpu_spans += m_pending.size();
         }
         // A diverged prior makes the two masks legitimately different, so the batch is counted
         // instead of compared; the GPU result stays authoritative for the resident checkpoint.
-        if (!prior_diverged && expected != m_readback) {
+        if (!prior_diverged && !flagged_shade && expected != m_readback) {
             std::snprintf(m_error.data(), m_error.size(), "GPU terrain index comparison failed");
             return false;
         }
-        if (m_resident_lease) m_expected = prior_diverged ? m_readback : std::move(expected);
-        if (!prior_diverged) {
+        if (m_resident_lease)
+            m_expected = prior_diverged || flagged_shade ? m_readback : std::move(expected);
+        if (!prior_diverged && !flagged_shade) {
             m_counts.verified_triangles += m_triangles.size();
             ++m_counts.verified_batches;
         }
