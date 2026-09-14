@@ -624,11 +624,11 @@ impl DrawRenderer {
         &mut self,
         target: &Target,
         buffers: &(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer),
+        tiles: u32,
         segment: usize,
         commands: usize,
     ) -> Result<()> {
         let (command_buffer, tile_buffer, asset_buffer) = buffers;
-        let tiles = self.tile_index.tiles;
         let parameters = buffer(
             &self.device,
             &mut self.counters,
