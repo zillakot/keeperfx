@@ -167,258 +167,95 @@ does not complete this scope. The foundation lands opt-in so the software path
 stays default while the remaining gates are worked; record exact source and
 evidence at each gate without marking untested paths complete.
 
-### Status: 2026-09-14
+### Status: 2026-09-14, closing
 
-The objective is full Rust/wgpu ownership of drawing, with the C/C++ drawing
-retired afterwards, exact indexed parity and 60 FPS at a 1920×1080 framebuffer.
-[PR #16](https://github.com/zillakot/keeperfx/pull/16) merges to `master` as the
-opt-in foundation of that work: software drawing and SDL presentation stay the
-default, `KFX_RUST_PRESENTER` and `KFX_DRAW_BACKEND=wgpu` select the GPU path,
-and the restructuring below ships as small PRs against `master`.
+The objective is unchanged: full Rust/wgpu ownership of drawing, the C/C++ drawing
+retired afterwards, exact indexed parity and 60 FPS at a 1920×1080 framebuffer. It
+stays opt-in: `KFX_RUST_PRESENTER` and `KFX_DRAW_BACKEND=wgpu` select it.
 
-The tested runtime is `33ff16a4f65d1c310194d1ca7dd367f027d7ad0f`; executable SHA256
-`045ba991be5ebc193e659c4ba592a06e7418cdfed73fb7918b50dadf872f7de8`.
-It was built with AppleClang 21, release Rust 1.98.1 and native RelWithDebInfo.
-The later `2afba22c2` changes only fixture prerequisites and generated audio cue
-references. Original assets and the earlier playable binary remain unchanged.
+The morning's HD measurement had GPU drawing at 8.0 FPS busy at 1080p against
+60.00 FPS software, dominated by 45.7–54.2 ms of presentation. The diagnosis was
+structural: about 125 queue submits, 17 blocking waits and 9 checkpoints per
+frame, 20 MB of immutable assets re-uploaded every frame and shadows as
+synchronous readback chains — waiting rather than computation.
 
-Native validation found and fixed resident presentation bypassing
-`KFX_WGPU_VERIFY`. The rebuilt runtime passed 94/94 acquired-surface comparisons
-and 76,859 independent drawing-batch comparisons, with zero drawing failures,
-invalid frames or missing barriers. A separate production queued-cursor run
-passed 21/21 surface comparisons. Parchment, resize and cursor checks passed;
-save/reload and compound-lens evidence also exist at their separately recorded
-runtime identities. This is not complete coverage of every view, language, asset
-or failure path.
+[PRs #16 through #35](https://github.com/zillakot/keeperfx/pulls?q=is%3Apr+is%3Amerged)
+carried out the restructure: the opt-in foundation and guards
+(#16, #17), the [design](../architecture/wgpu-single-stream-renderer.md) (#18) and
+its counters (#19), bridge batching and recovery (#20, #22), fixture CI (#23), the
+persistent asset arena (#21), shadow residency (#24), non-blocking validation
+(#25, #26), one command stream in root space (#27), terrain tile binning with
+per-pass GPU timestamps (#28), the cursor present tail (#29), ordered-sprite layers
+(#30), tight bin boxes (#31), the [tooling plan](development-tooling-plan.md),
+parity policy and agent workflow (#32), the uncapped runner (#33), the status-ring
+test (#34) and one encoder and one submit per frame (#35).
 
-Clean serial runs used the same binary and wgpu Metal presenter, 640×480 framebuffer
-and output, VSync off, 20 turns/s and a 60 FPS cap. Verification, control/API,
-audio and per-frame statistics-file I/O were disabled. Each run measured 200 turns.
+Final measurement on `56a5eee8b`, wgpu presenter, host wall clock, 200 measured
+turns per cell, one run per cell. Capped at 60 FPS, milliseconds, busy / quiet:
 
-| Scene | Software draw mean | GPU draw mean / p95 | Software / GPU observed FPS |
-| --- | ---: | ---: | ---: |
-| Quiet | 0.894 ms | 23.535 / 25.494 ms | 60.01 / 31.62 |
-| Busy | 0.949 ms | 20.179 / 23.175 ms | 60.00 / 33.75 |
+| Drawing | Logical | draw mean | presentation mean | FPS | Turns/s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| GPU | 640x480 | 0.787 / 0.775 | 5.622 / 4.649 | 60.00 | 20.00 |
+| GPU | 1920x1080 | 0.848 / 0.813 | 5.014 / 4.677 | 60.00 | 20.00 |
+| software | 640x480 | 1.313 / 1.097 | 0.445 / 0.449 | 59.99 / 60.00 | 20.00 |
+| software | 1920x1080 | 2.400 / 2.668 | 0.519 / 0.465 | 59.99 / 60.00 | 20.00 |
 
-The earlier synchronous prototype reached only about 7.6–7.7 FPS in its recorded
-clean runs. Batching removed ordinary per-command framebuffer transfers in the
-exercised paths, but the current GPU path still misses the software reference.
-These are host wall timings, not GPU timestamps or uncapped throughput; seeds,
-evolved populations and host conditions differ. Continuous unobscured window
-visibility was not independently established. Three zero-presentation surface
-acquisition attempts were rejected and contribute no timing claims.
+All eight cells hold the cap at 20.000 ± 0.004 turns/s, both 1080p GPU cells
+included, with blocking device polls, status stalls, invalid frames and arena
+evictions zero. Uncapped ceilings, same source, observed FPS, busy / quiet:
 
-#### Terrain binning, 2026-09-14
+| Presenter / drawing | 640x480 | 1920x1080 |
+| --- | ---: | ---: |
+| wgpu / GPU | 142.6 / 203.1 | 189.7 / 201.3 |
+| wgpu / software | 195.1\* / 206.4\* | 225.3 / 201.7 |
+| SDL / software | 288.9\* / 290.3\* | 312.4 / 318.3 |
 
-Serial matched pairs on the wgpu presenter with `KFX_DRAW_BACKEND=wgpu`, busy scene,
-200 measured turns, VSync off and a 60 FPS cap, before and after terrain tile binning on
-the same host and assets. Per-pass GPU time is from `TIMESTAMP_QUERY`; every other figure
-is host wall clock. Simulation stayed at 0.343/0.317 ms and 0.325/0.312 ms across the
-pairs, so host contention did not move between runs.
+\* Lower bounds: background CPU contention, simulation canary 1.7–2.0x their 1080p
+partners. Every cell held 20.000 ± 0.005 turns/s, so none is a degraded loop.
 
-| | 640x480 before | 640x480 after | 1080p before | 1080p after |
-| --- | ---: | ---: | ---: | ---: |
-| GPU raster | 4.489 ms | 4.437 ms | 44.891 ms | 56.890 ms |
-| GPU terrain setup | 1.164 ms | 0.042 ms | 1.737 ms | 0.036 ms |
-| GPU terrain raster | 4.076 ms | folded | 24.656 ms | folded |
-| GPU all passes | 14.005 ms | 9.292 ms | 88.070 ms | 87.807 ms |
-| Terrain iterations | 308 M *derived* | 1.85 M | 2,065 M *derived* | 7.85 M |
-| Dispatches / submits | 128.7 / 83.9 | 59.1 / 45.2 | 113.1 / 76.1 | 48.6 / 39.1 |
-| Draw mean | 1.550 ms | 1.484 ms | 1.409 ms | 1.332 ms |
-| Presentation mean | 16.258 ms | 5.706 ms | 103.163 ms | 76.825 ms |
-| Frame interval / FPS | 18.197 ms / 54.95 | 16.667 ms / 60.00 | 105.046 ms / 9.52 | 79.030 ms / 12.65 |
-| Turns/s over the window | 20.02 | 20.03 | 9.57 | 13.98 |
+Parity: 1,857,396 verified batches and 1,018,767 verified triangles over 2,117
+frames of an isolated control session against the CPU oracle, at 0 comparison
+failures, 0 invalid frames and 0 flagged shades, with 1 `shadow_prior_divergence`
+event in 106 creature shadows; a separate run verified 718 of 718 surfaces.
 
-A quiet 1080p pair on the same builds: GPU all passes 76.05 → 59.57 ms, presentation
-91.66 → 62.06 ms, 10.74 → 15.75 FPS and 10.79 → 15.83 turns/s, with `terrain_tile_entries` 33,588, i.e. 8.60 M
-iterations. Terrain is a larger share of a quiet scene, so it gains more there.
+**Presentation now bounds the ceiling, not GPU execution.** Serialized timing puts
+exclusive GPU work at 1.60 ms busy at 640x480 and 3.68 ms busy at 1080p, well
+inside frame intervals of 7.01 and 5.27 ms, and 1080p — with 2.3x the GPU work —
+reaches a higher uncapped FPS than 640x480. The host spends 4.28–6.29 ms in
+`presentation` against 0.57–0.64 ms in `draw`, with blocking polls at zero:
+surface acquisition, the per-frame uploads, the frame replay itself and the
+palette pass, not device execution and not the present call.
 
-640x480 reaches the 60 FPS cap with 20.03 turns/s. 1080p gains a third but stays 4.7x
-short. The 1080p GPU total did not fall: the terrain pass's 26.4 ms became about 12 ms of
-extra raster time, and the minimap and ordered-sprite passes took the rest back — those
-passes are unchanged by this work, so the shift is either scheduling or an effect of the
-halved submission count, and it is not explained here. Per-pass GPU windows include time a
-pass spends stalled on its dependencies, so they attribute cost rather than decompose it.
+[PR #35](https://github.com/zillakot/keeperfx/pull/35) merged after that
+measurement and supersedes it where it gives a figure. A presented frame is now
+one command buffer: `submits` 37 → 1.0 and `checkpoints` 1 → 0 per frame, capped
+presentation 5.15 → 3.92 ms at 640x480 and 6.17 → 4.73 ms at 1080p, uncapped busy
+640x480 141 → 190 FPS with 1080p inside its spread, and `buffers` unchanged at
+about 87. Three review items stay open: arena headroom can still refuse a batch
+inside a frame, because `fits()` counts only resource bytes, taking the rare
+`OVERFLOW` then full-redraw path; `shadow_scratch_reset` on that path holds the
+arena until the next `frame_begin`; and peak GPU memory is unmeasured and higher by
+construction, about 38 shadow arenas coexisting.
 
-#### Tight bin boxes, 2026-09-14
+Next, in order:
 
-Serial matched pairs on the wgpu presenter with `KFX_DRAW_BACKEND=wgpu`, busy scene,
-200 measured turns, VSync off, a 60 FPS cap and `--gpu-timing`, before (`dc31cabe0`) and
-after tight bin boxes, on the same host and assets. Simulation stayed at 0.343/0.347 ms
-and 0.315/0.337 ms across the pairs, so host contention did not move between runs. A
-`gpu_*_ns` window includes the stall the pass waited through, so the rows below attribute
-GPU cost rather than decomposing the frame; the serialised row is the exclusive figure.
+1. **Presenter cost.** Host timers for drawable acquisition and for the frame
+   replay, the replay moved out of the presentation scope, the 12–14 MB of
+   per-frame uploads cut, persistent palette and parameter buffers, late
+   acquisition. Acceptance: presentation minus acquisition wait at most 1.0 ms
+   and at least 260 uncapped FPS at 1080p with GPU drawing.
+2. **Fold lens and minimap**, [migration step 12](../architecture/wgpu-single-stream-renderer.md#migration-sequence),
+   after a minimap pass counter establishes what that pass costs.
+3. **Sprite artwork interning** — about 1 MB of per-frame uploads, keyed by
+   content hash because sprite banks are per-sprite heap blocks.
+4. **Byte-packed arena**, [migration step 14](../architecture/wgpu-single-stream-renderer.md#migration-sequence).
+5. **Coverage before C/C++ drawing can be retired**: arbitrary Lua pixel drawing,
+   alias and oversized-input fallbacks, persistent offscreen scratch ownership.
+   Reaching a frame-rate target does not complete the drawing goal.
 
-| | 640x480 before | 640x480 after | 1080p before | 1080p after |
-| --- | ---: | ---: | ---: | ---: |
-| `tile_entries` | 126,750 | 9,917 | 897,385 | 46,149 |
-| Pixel-command evaluations | 32.4 M | 2.5 M | 229.7 M | 11.8 M |
-| `tile_entries` sprite / trig / terrain / clear | — | 1,135 / 352 / 7,230 / 1,200 | — | 6,136 / 1,193 / 30,660 / 8,160 |
-| GPU raster | 5.223 ms | 1.184 ms | 46.124 ms | 2.859 ms |
-| GPU shadow triangles | 1.314 ms | 0.663 ms | 7.876 ms | 1.001 ms |
-| GPU minimap | 3.175 ms | 0.805 ms | 16.901 ms | 2.414 ms |
-| Sum of pass windows | 11.033 ms | 3.910 ms | 76.804 ms | 8.006 ms |
-| Serialised GPU sum | not collected | not collected | not collected | **3.549 ms** |
-| `gpu_pass_union_ns` | absent | 3.910 ms | absent | 8.006 ms |
-| Presentation mean | 4.748 ms | 5.604 ms | 76.369 ms | 4.765 ms |
-| Frame interval / FPS | 16.666 ms / 60.00 | 16.666 ms / 60.00 | 78.133 ms / 12.80 | 16.667 ms / 60.00 |
-| Turns/s over the window | 20.02 | 20.02 | 12.86 | 20.04 |
-
-A quiet 1080p pair on the same builds: `tile_entries` 755,382 → 48,938, raster
-30.874 → 2.861 ms, sum of pass windows 51.530 → 6.741 ms, presentation 60.340 → 4.476 ms,
-16.16 → 60.00 FPS and 10.78 → 20.03 turns/s.
-
-Both 1080p scenes now reach the 60 FPS cap and 20 turns/s, so the remaining GPU cost is no
-longer what bounds the frame; the cap is. The minimap window fell with everything else
-without any minimap change, which confirms that its earlier 16.9 ms was attribution rather
-than cost. A serialised repeat of the busy 1080p run (`--serial-gpu-timing`) puts the sum
-of pass windows at **3.549 ms against 8.006 ms** unserialised — 56 % of the per-pass
-window total is waiting inside the windows, not work — while presentation rises to
-15.444 ms because the host now blocks on the queue, so that mode measures cost, not
-throughput. `gpu_pass_union_ns` equals the unserialised window sum in every column, which
-is the same finding from the other side: the windows are disjoint in GPU time, so the
-stall is inside each one rather than between them.
-
-#### One encoder and one submit per frame, 2026-09-14
-
-Serial matched pairs on the wgpu presenter with `KFX_DRAW_BACKEND=wgpu`, busy scene,
-200 measured turns, VSync off and `--gpu-timing`, before (`56a5eee8b`, engine SHA256
-`f620916791…`) and after (engine SHA256 `d77e0f1825…`), on the same host and assets.
-Every pass of a frame — asset deltas and the command stream, the terrain prepare, each
-raster segment, each shadow mask and its triangles, the ordered-sprite layers, the lens
-and minimap passes, the snapshot copies, the cursor backup, composition and restore and
-the palette render pass — records into one `CommandEncoder` that `kfx_wgpu_present`
-finishes and submits.
-
-| | 640x480 before | 640x480 after | 1080p before | 1080p after |
-| --- | ---: | ---: | ---: | ---: |
-| `submits` | 37.204 | **1.000** | 38.324 | **1.000** |
-| `checkpoints` | 1.000 | **0** | 1.000 | **0** |
-| Blocking waits | 0 | 0 | 0 | 0 |
-| `dispatches` | 44.851 | 44.846 | 46.180 | 46.189 |
-| `buffers` | 87.319 | 87.314 | 90.379 | 90.386 |
-| Sum of pass windows | 3.825 ms | 4.390 ms | 7.809 ms | 9.569 ms |
-| Serialised GPU sum | 4.881 ms | 4.801 ms | 8.212 ms | 7.853 ms |
-| Presentation mean | 5.154 ms | 3.917 ms | 6.167 ms | 4.729 ms |
-| Frame interval / FPS | 16.666 ms / 60.00 | 16.667 ms / 60.00 | 16.666 ms / 60.00 | 16.667 ms / 60.00 |
-| Turns/s over the window | 20.00 | 20.00 | 20.01 | 20.00 |
-
-**The acceptance counter is met**: a presented frame is one command buffer at both
-resolutions, with no blocking wait and no flush that cuts the submission. Presentation
-falls about 23% at both, and both scenes stay on the 60 FPS cap, so the capped rows
-cannot show what that is worth.
-
-Uncapped, three matched pairs per resolution: at 640x480 observed FPS **141.14 → 189.62**
-and the frame interval **7.105 → 5.290 ms**, with presentation 6.359 → 4.546 ms — a gain
-well outside the run-to-run spread. At 1080p 163.98 → 168.42 FPS and 6.138 → 6.047 ms,
-inside a spread of 145.9-175.5 before and 138.6-190.7 after, so **no 1080p change is
-attributable**. The busy scene is not frame-identical between runs; its per-frame submit
-and buffer counts vary by 15% across repeats of the same build, which is why the uncapped
-rows are triples and the capped rows are not read for throughput.
-
-**`buffers` did not move.** The step removes submissions, not allocations: the per-call
-command, tile and parameter buffers each serial route builds are unchanged, and the
-design's `≤ 8` needs the byte-packed arena and persistent uniforms. The sum of pass
-windows *rose* — a window now runs from its own begin stamp through the barrier the next
-pass waits on, where a submission boundary used to end it — while the serialised,
-exclusive sum did not. The two builds serialise at different granularity (per pass after,
-per encoder before), so that row is indicative rather than a matched comparison, and the
-1080p serialised pair is 60 turns because the finer serialisation overruns the runner's
-budget at 200.
-
-`arena_scratch_bytes_peak`, the new gauge for what encoder-scoped pinning costs, reads
-2 KB at 640x480 and 16 KB at 1080p; `arena_bytes_resident` is unchanged at 13.1 and
-15.1 MB, and `arena_overflows`, `status_stalls` and `gpu_untimed_passes` are zero
-throughout.
-
-Validation: an isolated native session on busy level 20 through `game-control.py` —
-camera movement, parchment open and return, pause and resume, two resizes and a clean
-quit, every state predicate reached, 4,007 GPU batches and no failure, invalid frame or
-fallback; a `KFX_WGPU_DRAW_VERIFY=1` run with **216,189 batches verified against the CPU
-oracle at zero failures**; and a `KFX_WGPU_VERIFY=1` session that presented and verified
-**250 of 250** acquired surfaces.
-
-`RAW_IMAGE` is the residual. Its box is exact — it writes index 0 outside its destination
-rectangle, so it really does own the whole clip — but at 8,160 tiles per full-view record
-it is most of what remains after terrain's 30,660 at 1080p. Splitting it into the
-destination rectangle plus up to four index-0 fill rectangles would be exact and is the
-next binning item.
-
-Validation: 99,298 GPU batches verified against the CPU oracle with 0 failures under
-`KFX_WGPU_DRAW_VERIFY=1` on level 20, and a `KFX_WGPU_VERIFY=1` session presented and
-verified 546 of 546 acquired surfaces, which earlier sessions could not reach.
-
-#### HD measurement
-
-The same binary, presenter and settings, capped host-wall timing at a 1920×1080
-framebuffer:
-
-| Scene | Software draw mean / FPS | GPU draw mean / FPS | GPU presentation mean |
-| --- | ---: | ---: | ---: |
-| Quiet | 3.463 ms / 60.00 | 68.266 ms / 8.76 | 45.7 ms |
-| Busy | 3.318 ms / 60.00 | 70.442 ms / 8.00 | 54.2 ms |
-
-The GPU runs did not sustain 20 turns/s at 1280×800 or 1920×1080. Process CPU
-stayed flat while wall time grew, so the added cost is waiting rather than
-computation.
-
-#### Diagnosis and next step
-
-The current path performs about 125 queue submits, 17 blocking waits and 9
-checkpoints per frame, re-uploads immutable assets every frame (about 20 MB) and
-runs shadows as synchronous readback chains. The measured presentation cost is a
-checkpoint drain inside the presentation scope. Removing scaffolding cannot reach
-the target: the next step is a restructure to one ordered command stream per
-frame, a persistent asset arena, one or two submits and zero blocking waits,
-keeping the existing exact kernels.
-
-Per-frame acceptance metrics for that restructure: at most 4 submits; zero
-blocking waits outside verification and screenshots; at most 1 checkpoint;
-steady-state asset upload under 1 MB; allocation traffic under 1 MB; at most 3
-full-target dispatches; parity unchanged.
-
-Next PRs, in order:
-
-1. Measured-window drawing-backend, submit, wait and transfer counters, plus the
-   two free fixes (in progress).
-2. Shadows as queued commands rather than synchronous readback chains (landed: with
-   the counters PR and bridge batching, per-frame checkpoints fall 9.4 → 1.0, blocking
-   waits 29.8 → 2.9 and shadow readback bytes 2.43 MB → 0 at busy 640x480; the two
-   remaining waits are the bridge's full-target readbacks for CPU presentation).
-3. Non-blocking validation and no double copy (landed: the validation flag lives in the
-   raster kernels and reaches the CPU through a mapped ring one or two frames later, and
-   queued frames write the root directly). At busy 640x480 with GPU drawing behind the SDL
-   presenter: blocking waits 3.0 → 2.0 per frame, aggregate validation waits 1.0 → 0,
-   checkpoint copy bytes 2.46 MB → 0, submits 116.7 → 76.4, buffer allocations 241.6 → 200.6,
-   frame interval 19.75 ms → 18.58 ms and observed 50.6 → 53.8 frames/s. The two remaining
-   waits are the CPU presenter's full-target readbacks; the wgpu-presenter pair is outstanding.
-4. One command stream per frame in root space with one tile index (landed: every record
-   names the view it was issued against, so views are offset aliases of the root and a
-   target change no longer flushes; one counting sort over renderer-owned scratch bins the
-   whole frame, and each serial segment rasters once over the tiles its own records reach).
-   At busy 640x480 with GPU drawing behind the SDL presenter, matched pairs: bridge
-   target-change flushes 39.3 → 0 per frame, tile-list allocations 0, buffer allocations
-   198.5 → 161.3, Rust allocator calls 30.0 M → 5.7 M per measured window, CPU drawing
-   0.506 → 0.470-0.531 ms and presentation 0.943 → 0.884-0.903 ms. The allocator drop is the
-   per-batch tile lists this step deletes: a wgpu-presenter profile of `master` attributes 15%
-   of `frame_flush` samples to `RawVec` growth, and the frame's record buffers are now reused
-   across frames as well. **Rust batches did not
-   fall** (72.5 → 71.7-75.1): ~38 creature shadows per frame each close a raster segment, so
-   the design's "≈ 4" needs the mask chain hoisted as well as terrain, ordered sprites and
-   the lens/minimap folds. GPU blocking wait rose 9.08 → 10.91 ms per frame and observed FPS
-   fell 56.5 → 54.5-56.1. That cost is unattributed: the record layout and root-space tile
-   misalignment were both measured and rejected (the latter at 3.5% more tile entries than a
-   view-space binning of the same frame). Under the wgpu presenter on `master` the frame is
-   GPU-bound — 82% of main-thread samples in the swapchain wait at 1920x1080, 9.8 FPS, with
-   drawing at 0.5-0.7 ms and no blocking waits — so the presenter pair is the measurement that
-   decides whether this matters, and it is outstanding.
-5. The rest of the single-stream restructure, guided by the design document under
-   [`docs/architecture/`](../architecture/).
-
-Coverage work remains independent of performance: arbitrary Lua pixel/batch
-drawing, general striped-line coverage, remaining valid-input/alias domains and
-persistent offscreen/scratch ownership are still open. Passing current fixtures
-or reaching a frame-rate target does not complete the full drawing goal.
+In parallel, work the tooling plan's
+[recommended order](development-tooling-plan.md#recommended-order), offscreen
+measurement first: it unblocks every other measurement.
 
 ### Inventory and measurement
 

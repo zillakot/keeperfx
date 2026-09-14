@@ -131,11 +131,11 @@ records exactly which paths are implemented and validated. Full GPU drawing and
 a speedup are not established.
 
 This path merges to `master` as an opt-in partial foundation; software drawing
-and SDL presentation stay default. At 1920×1080 it currently costs about 68–70 ms
-per drawn frame against 3.3–3.5 ms software, dominated by waiting rather than
-computation. The [status section](product/rust-port-plan.md#status-2026-09-14)
-records the measurement, the diagnosis and the single-stream restructure that
-follows.
+and SDL presentation stay default. After the single-stream restructure it holds
+the 60 FPS cap at 1920×1080 with `draw` at 0.78–0.85 ms, and the remaining host
+cost sits in presentation. The
+[status section](product/rust-port-plan.md#status-2026-09-14-closing) records the
+final measurement, the parity results and the work that follows.
 
 The [indexed backend](../tools/frame-replay/src/draw.rs) stores one `u32` palette
 index per pixel. A frame is one immutable command stream in the root's coordinates:
