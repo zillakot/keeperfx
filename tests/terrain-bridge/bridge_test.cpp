@@ -31,11 +31,8 @@ extern "C" uint64_t kfx_wgpu_draw_target_view(void* handle, uint64_t root, uint3
 }
 extern "C" void* kfx_wgpu_draw_context(void* presenter, char*, size_t) { return presenter; }
 static std::vector<std::vector<uint32_t>> submit_log;
-static bool packable(uint32_t kind)
-{
-    return kind <= KFX_WGPU_DRAW_TRIG || kind == KFX_WGPU_DRAW_MOVIE ||
-        kind == KFX_WGPU_DRAW_MAP_VIEW || kind == KFX_WGPU_DRAW_BITMAP;
-}
+// The mock ABI rejects what the Rust packer rejects, through the bridge's own predicate.
+static bool packable(uint32_t kind) { return WgpuTerrainBridge::PacksInBatch(kind); }
 extern "C" int32_t kfx_wgpu_draw_submit_shadow(void*, uint64_t, const KfxWgpuDrawCommand*, uint8_t*, size_t, char*, size_t) { return -1; }
 extern "C" uint64_t kfx_wgpu_draw_target_snapshot(void*, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, char*, size_t) { return 0; }
 extern "C" int32_t kfx_wgpu_draw_target_snapshot_release(void*, uint64_t, char*, size_t) { return -1; }

@@ -91,6 +91,8 @@ public:
     int SubmitShadow(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table, uint8_t* scratch,
         KfxWgpuNativeOracle oracle, void* oracle_context);
+    // The single C-side mirror of the Rust packer whitelist in tools/frame-replay/src/draw.rs.
+    static bool PacksInBatch(uint32_t kind);
     const Counters& GetCounters() const { return m_counts; }
     KfxWgpuDrawCounters GetGpuCounters() const;
     const char* GetError() const { return m_error.data(); }

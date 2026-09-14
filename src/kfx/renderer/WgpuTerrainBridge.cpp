@@ -918,10 +918,15 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
     return true;
 }
 
+bool WgpuTerrainBridge::PacksInBatch(uint32_t kind)
+{
+    return kind <= KFX_WGPU_DRAW_TRIG || kind == KFX_WGPU_DRAW_MOVIE ||
+        kind == KFX_WGPU_DRAW_MAP_VIEW || kind == KFX_WGPU_DRAW_BITMAP;
+}
+
 bool WgpuTerrainBridge::NeedsSoloBatch(const KfxWgpuDrawCommand& command)
 {
-    return !(command.kind <= KFX_WGPU_DRAW_TRIG || command.kind == KFX_WGPU_DRAW_MOVIE ||
-        command.kind == KFX_WGPU_DRAW_MAP_VIEW || command.kind == KFX_WGPU_DRAW_BITMAP);
+    return !PacksInBatch(command.kind);
 }
 
 bool WgpuTerrainBridge::OrderedSprite(const KfxWgpuDrawCommand& command)
