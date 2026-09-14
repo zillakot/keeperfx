@@ -112,13 +112,15 @@ impl DrawRenderer {
         let assets = packer.finish();
         self.triangles
             .get_or_insert_with(|| TrianglePipelines::new(&self.device));
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = self.begin_encoder();
+        let stamp = self.stamp(PASS_TERRAIN_PREPARE);
         let prepared = self.triangles.as_ref().unwrap().prepare.encode(
             &self.device,
             &mut encoder,
             &triangles,
             target.width,
             target.height,
+            stamp.compute(),
         )?;
         let params = buffer(
             &self.device,
@@ -173,6 +175,7 @@ impl DrawRenderer {
             &metadata,
             wgpu::BufferUsages::STORAGE,
         );
+        let render_stamp = self.stamp(PASS_TERRAIN_RENDER);
         {
             let pipelines = self.triangles.as_ref().unwrap();
             let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -187,7 +190,10 @@ impl DrawRenderer {
                     entry(6, self.status_binding()),
                 ],
             });
-            let mut pass = encoder.begin_compute_pass(&Default::default());
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("terrain triangle raster"),
+                timestamp_writes: render_stamp.compute(),
+            });
             pass.set_pipeline(&pipelines.render);
             pass.set_bind_group(0, &bindings, &[]);
             pass.dispatch_workgroups(target.width.div_ceil(8), target.height.div_ceil(8), 1);

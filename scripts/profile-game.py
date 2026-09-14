@@ -29,6 +29,10 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "arena_evictions", "arena_overflows", "arena_bytes_uploaded",
                     "tile_allocations", "tile_entries",
                     "bridge_target_flushes", "bridge_target_runs",
+                    "gpu_raster_ns", "gpu_terrain_prepare_ns", "gpu_terrain_render_ns",
+                    "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
+                    "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
+                    "gpu_timed_passes", "gpu_untimed_passes",
                     "host_staged_asset_bytes", "arena_bytes_resident")
 DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident")
 SETTINGS = {
@@ -38,7 +42,7 @@ SETTINGS = {
 }
 LIMITATIONS = [
     "Per-scope timings are monotonic wall-clock durations, including scheduling and blocking; they are not CPU-time counters.",
-    "GPU execution time is not collected. Presentation and present_wait are host-side durations, not GPU timings.",
+    "GPU execution time is collected only when KFX_WGPU_GPU_TIMING=1 and the adapter supports timestamp queries: the gpu_*_ns drawing counters are per-pass GPU durations. Presentation and present_wait remain host-side wall clock.",
     "Presentation includes present_wait; these overlapping scopes must not be added together.",
     "Frame intervals measure observed presentation pacing; simulation samples count actual game updates.",
     "Seeds and population snapshots are observations, not a guarantee of deterministic replay.",
@@ -48,7 +52,7 @@ LIMITATIONS = [
 DRAWING_LIMITATIONS = [
     "Drawing counters are deltas between consecutive presented frames inside the measured window; the first presentation only establishes the baseline, so there is one fewer counter frame than presentation sample.",
     "wait_ns is host time blocked inside device polls, not GPU execution time; it is already included in the enclosing draw and presentation wall-clock scopes.",
-    "GPU execution time is not implemented: no counter here is a GPU timing, and none may be read as one.",
+    "Only the gpu_*_ns counters are GPU execution time, and only when KFX_WGPU_GPU_TIMING=1; they are per-pass durations resolved from timestamp queries and are not comparable with the host wall-clock scopes. gpu_untimed_passes counts passes that went unstamped, so a window with a nonzero value under-reports.",
     "Counters cover the drawing context the bridge owns. Presenter surface acquisition and any drawing done outside that context are not counted.",
     "host_staged_asset_bytes is a host-side gauge sampled at frame end: the CPU copies the drawing context stages, not GPU memory, and not a per-frame delta, so its window total is meaningless.",
     "arena_bytes_resident is a gauge sampled at frame end: GPU bytes suballocated in the persistent asset arena, free-listed slots and power-of-two class padding included, and not a per-frame delta.",

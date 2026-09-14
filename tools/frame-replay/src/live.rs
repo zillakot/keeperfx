@@ -99,7 +99,9 @@ impl Presenter {
                 )
             })
             .context("surface has no display-byte unorm format")?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&crate::draw::timing::device_descriptor(&adapter)),
+        )?;
         let renderer = Renderer::with_format(device, queue, format)?;
         let present_mode = present_mode(&capabilities.present_modes, vsync)?;
         let verify = std::env::var("KFX_WGPU_VERIFY").is_ok_and(|value| value == "1");
@@ -1002,6 +1004,9 @@ pub struct DrawCounters {
     arena_bytes_resident: u64,
     tile_allocations: u64,
     tile_entries: u64,
+    pass_ns: [u64; crate::draw::timing::PASS_KINDS],
+    timed_passes: u64,
+    untimed_passes: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1039,6 +1044,9 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 arena_bytes_resident: arena.bytes_resident,
                 tile_allocations: counters.tile_allocations,
                 tile_entries: counters.tile_entries,
+                pass_ns: counters.pass_ns,
+                timed_passes: counters.timed_passes,
+                untimed_passes: counters.untimed_passes,
             });
             Ok(Some(1))
         });

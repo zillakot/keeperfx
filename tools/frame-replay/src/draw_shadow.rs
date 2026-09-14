@@ -179,7 +179,7 @@ impl DrawRenderer {
             &[base, 0, 0, 0],
             wgpu::BufferUsages::UNIFORM,
         );
-        let pipeline = self.shadow.as_ref().unwrap();
+        let pipeline = self.shadow.clone().unwrap();
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &pipeline.get_bind_group_layout(0),
@@ -197,9 +197,13 @@ impl DrawRenderer {
                 },
             ],
         });
+        let stamp = self.stamp(PASS_SHADOW_MASK);
         {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
-            pass.set_pipeline(pipeline);
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("creature shadow mask"),
+                timestamp_writes: stamp.compute(),
+            });
+            pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(32, 32, 1);
         }

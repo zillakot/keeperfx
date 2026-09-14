@@ -177,6 +177,7 @@ impl DrawRenderer {
             wgpu::BufferUsages::STORAGE,
         );
         let state = self.minimap.as_ref().unwrap();
+        let pipeline = state.pipeline.clone();
         let background = if h[0] == 0 {
             &self.target_snapshots[&state.background.unwrap().0].indices
         } else {
@@ -192,7 +193,7 @@ impl DrawRenderer {
         );
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
-            layout: &state.pipeline.get_bind_group_layout(0),
+            layout: &pipeline.get_bind_group_layout(0),
             entries: &[
                 entry(0, &self.targets[&target_id].indices),
                 entry(1, &assets),
@@ -200,10 +201,14 @@ impl DrawRenderer {
                 entry(3, &view),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = self.begin_encoder();
+        let stamp = self.stamp(PASS_MINIMAP);
         {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
-            pass.set_pipeline(&state.pipeline);
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("minimap production"),
+                timestamp_writes: stamp.compute(),
+            });
+            pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(h[5].div_ceil(8), h[5].div_ceil(8), 1);
         }

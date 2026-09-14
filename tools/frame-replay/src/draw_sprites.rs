@@ -205,11 +205,12 @@ impl DrawRenderer {
                     entry(3, &parameters),
                 ],
             });
-            let mut encoder = self.device.create_command_encoder(&Default::default());
+            let mut encoder = self.begin_encoder();
+            let stamp = self.stamp(PASS_ORDERED_SPRITES);
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("native sprite write and row-copy order"),
-                    timestamp_writes: None,
+                    timestamp_writes: stamp.compute(),
                 });
                 pass.set_pipeline(&self.compute_sprite_ordered);
                 pass.set_bind_group(0, &binding, &[]);

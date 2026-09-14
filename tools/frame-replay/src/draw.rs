@@ -32,6 +32,12 @@ mod sprites;
 #[path = "draw_triangles.rs"]
 mod triangles;
 pub use triangles::TriangleCommand;
+#[path = "draw_timing.rs"]
+pub mod timing;
+use timing::{
+    PASS_KINDS, PASS_LENS, PASS_MINIMAP, PASS_ORDERED_SPRITES, PASS_PRESENT, PASS_RASTER,
+    PASS_SHADOW_MASK, PASS_TARGET_TRIG, PASS_TERRAIN_PREPARE, PASS_TERRAIN_RENDER, PassTimings,
+};
 
 use anyhow::{Context, Result, ensure};
 use std::collections::HashMap;
@@ -167,6 +173,10 @@ pub struct Counters {
     pub buffer_bytes: u64,
     pub tile_allocations: u64,
     pub tile_entries: u64,
+    /// GPU time per pass kind, in `timing::PASS_NAMES` order; zero unless timing is on.
+    pub pass_ns: [u64; PASS_KINDS],
+    pub timed_passes: u64,
+    pub untimed_passes: u64,
 }
 
 pub struct DrawRenderer {
@@ -182,6 +192,7 @@ pub struct DrawRenderer {
     shadow_next_slot: u32,
     minimap: Option<minimap::MinimapState>,
     triangles: Option<triangles::TrianglePipelines>,
+    timings: Option<PassTimings>,
     status: wgpu::Buffer,
     status_ring: [wgpu::Buffer; frame_queue::STATUS_RING],
     status_pending: [Option<frame_queue::StatusReceiver>; frame_queue::STATUS_RING],
@@ -293,6 +304,7 @@ impl DrawRenderer {
             })
         });
         let limits = device.limits();
+        let timings = PassTimings::new(&device, &queue);
         Ok(Self {
             device,
             queue,
@@ -306,6 +318,7 @@ impl DrawRenderer {
             shadow_next_slot: 0,
             minimap: None,
             triangles: None,
+            timings,
             status,
             status_ring,
             status_pending: [const { None }; frame_queue::STATUS_RING],
@@ -342,7 +355,8 @@ impl DrawRenderer {
     pub fn headless() -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&timing::device_descriptor(&adapter)))?;
         let renderer = crate::gpu::Renderer::new(device, queue)?;
         Self::new(&renderer, wgpu::TextureFormat::Rgba8Unorm)
     }
@@ -362,7 +376,13 @@ impl DrawRenderer {
     }
 
     pub fn counters(&self) -> Counters {
-        self.counters
+        let mut counters = self.counters;
+        if let Some(timings) = &self.timings {
+            counters.pass_ns = timings.ns;
+            counters.timed_passes = timings.passes;
+            counters.untimed_passes = timings.dropped;
+        }
+        counters
     }
 
     pub fn arena_counters(&self) -> ArenaCounters {
@@ -381,9 +401,32 @@ impl DrawRenderer {
         self.resource_bytes as u64
     }
 
-    pub(super) fn submit_encoder(&mut self, encoder: wgpu::CommandEncoder) {
+    /// Opens an encoder and, when GPU timing is on, the ring slot its passes stamp into.
+    pub(super) fn begin_encoder(&mut self) -> wgpu::CommandEncoder {
+        if let Some(timings) = &mut self.timings {
+            timings.open(&self.device);
+        }
+        self.device.create_command_encoder(&Default::default())
+    }
+
+    pub(super) fn stamp(&mut self, kind: usize) -> Stamp {
+        Stamp(
+            self.timings
+                .as_mut()
+                .and_then(|timings| timings.reserve(kind)),
+        )
+    }
+
+    pub(super) fn submit_encoder(&mut self, mut encoder: wgpu::CommandEncoder) {
+        let slot = self
+            .timings
+            .as_mut()
+            .and_then(|timings| timings.close(&mut encoder));
         self.counters.submits += 1;
         self.queue.submit([encoder.finish()]);
+        if let Some(slot) = slot {
+            self.timings.as_mut().unwrap().map(slot);
+        }
     }
 
     pub(super) fn tracked_buffer(&mut self, descriptor: &wgpu::BufferDescriptor) -> wgpu::Buffer {
@@ -589,11 +632,12 @@ impl DrawRenderer {
                 entry(7, self.status_binding()),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = self.begin_encoder();
+        let stamp = self.stamp(PASS_RASTER);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("exclusive destination pixel ownership"),
-                timestamp_writes: None,
+                timestamp_writes: stamp.compute(),
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &binding, &[]);
@@ -669,11 +713,12 @@ impl DrawRenderer {
                 entry(7, self.status_binding()),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = self.begin_encoder();
+        let stamp = self.stamp(PASS_RASTER);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("exclusive destination pixel ownership"),
-                timestamp_writes: None,
+                timestamp_writes: stamp.compute(),
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &binding, &[]);
@@ -799,7 +844,8 @@ impl DrawRenderer {
                 entry(2, &parameters),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = self.begin_encoder();
+        let stamp = self.stamp(PASS_PRESENT);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("GPU-owned presentation"),
@@ -813,7 +859,7 @@ impl DrawRenderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: stamp.render(),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -1233,6 +1279,31 @@ fn buffer(
         contents: &bytes,
         usage,
     })
+}
+
+/// A reserved timestamp pair, empty when the run is not timing passes.
+pub(super) struct Stamp(Option<(wgpu::QuerySet, u32, u32)>);
+
+impl Stamp {
+    pub(super) fn compute(&self) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+        self.0
+            .as_ref()
+            .map(|(set, begin, end)| wgpu::ComputePassTimestampWrites {
+                query_set: set,
+                beginning_of_pass_write_index: Some(*begin),
+                end_of_pass_write_index: Some(*end),
+            })
+    }
+
+    pub(super) fn render(&self) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        self.0
+            .as_ref()
+            .map(|(set, begin, end)| wgpu::RenderPassTimestampWrites {
+                query_set: set,
+                beginning_of_pass_write_index: Some(*begin),
+                end_of_pass_write_index: Some(*end),
+            })
+    }
 }
 
 fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {

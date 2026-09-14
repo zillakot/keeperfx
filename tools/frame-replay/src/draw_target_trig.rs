@@ -148,12 +148,16 @@ impl DrawRenderer {
                 entry(7, self.status_binding()),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = self.begin_encoder();
         if let Some(source) = mask {
             self.record_shadow_mask(&mut encoder, source, slot)?;
         }
+        let stamp = self.stamp(PASS_TARGET_TRIG);
         {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("shadow-masked target triangles"),
+                timestamp_writes: stamp.compute(),
+            });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);

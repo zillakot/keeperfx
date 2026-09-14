@@ -103,6 +103,7 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
                 &triangles[..count],
                 width,
                 rows,
+                None,
             )
             .err()
             .context("oversized triangle batch was accepted")?;
@@ -112,22 +113,22 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     let mut encoder = device.create_command_encoder(&Default::default());
     assert!(
         preparer
-            .encode(&device, &mut encoder, &[], width, height)
+            .encode(&device, &mut encoder, &[], width, height, None)
             .is_err()
     );
     assert!(
         preparer
-            .encode(&device, &mut encoder, &triangles, 32768, height)
+            .encode(&device, &mut encoder, &triangles, 32768, height, None)
             .is_err()
     );
     let mut unsupported = triangles[0];
     unsupported.vertices[0].x = 32768;
     assert!(
         preparer
-            .encode(&device, &mut encoder, &[unsupported], width, height)
+            .encode(&device, &mut encoder, &[unsupported], width, height, None)
             .is_err()
     );
-    let prepared = preparer.encode(&device, &mut encoder, &triangles, width, height)?;
+    let prepared = preparer.encode(&device, &mut encoder, &triangles, width, height, None)?;
     assert_eq!(
         (prepared.width, prepared.height, prepared.triangle_count),
         (width, height, count)

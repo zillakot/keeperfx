@@ -26,6 +26,11 @@ struct PerformanceDrawingCounters {
     unsigned long long buffers, buffer_bytes, batches, commands, ordered_sprites;
     unsigned long long arena_evictions, arena_overflows, arena_bytes_uploaded;
     unsigned long long tile_allocations, tile_entries, bridge_target_flushes, bridge_target_runs;
+    /* Per-pass GPU execution time; zero unless KFX_WGPU_GPU_TIMING=1. */
+    unsigned long long gpu_raster_ns, gpu_terrain_prepare_ns, gpu_terrain_render_ns;
+    unsigned long long gpu_shadow_mask_ns, gpu_target_trig_ns, gpu_ordered_sprite_ns;
+    unsigned long long gpu_minimap_ns, gpu_lens_ns, gpu_present_ns;
+    unsigned long long gpu_timed_passes, gpu_untimed_passes;
     /* Trailing gauges are stored as observed, not differenced. */
     unsigned long long host_staged_asset_bytes, arena_bytes_resident;
 };

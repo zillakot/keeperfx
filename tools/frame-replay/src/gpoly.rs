@@ -59,6 +59,7 @@ impl GpolyPreparer {
         triangles: &[Triangle],
         width: u32,
         height: u32,
+        stamp: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) -> Result<PreparedTriangles> {
         ensure!(
             width > 0 && height > 0 && width <= 32767 && height <= 32767,
@@ -132,7 +133,10 @@ impl GpolyPreparer {
             ],
         });
         {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpoly triangle preparation"),
+                timestamp_writes: stamp,
+            });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bindings, &[]);
             pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
