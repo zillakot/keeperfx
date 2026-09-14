@@ -223,13 +223,14 @@ pairs, so host contention did not move between runs.
 | Dispatches / submits | 128.7 / 83.9 | 59.1 / 45.2 | 113.1 / 76.1 | 48.6 / 39.1 |
 | Draw mean | 1.550 ms | 1.484 ms | 1.409 ms | 1.332 ms |
 | Presentation mean | 16.258 ms | 5.706 ms | 103.163 ms | 76.825 ms |
-| Frame interval / FPS | 18.197 ms / 55.0 | 16.667 ms / 60.0 | 105.046 ms / 9.5 | 79.030 ms / 12.7 |
+| Frame interval / FPS | 18.197 ms / 54.95 | 16.667 ms / 60.00 | 105.046 ms / 9.52 | 79.030 ms / 12.65 |
+| Turns/s over the window | 20.02 | 20.03 | 9.57 | 13.98 |
 
 A quiet 1080p pair on the same builds: GPU all passes 76.05 → 59.57 ms, presentation
-91.66 → 62.06 ms and 10.7 → 15.8 FPS, with `terrain_tile_entries` 33,588, i.e. 8.60 M
+91.66 → 62.06 ms, 10.74 → 15.75 FPS and 10.79 → 15.83 turns/s, with `terrain_tile_entries` 33,588, i.e. 8.60 M
 iterations. Terrain is a larger share of a quiet scene, so it gains more there.
 
-640x480 reaches the 60 FPS cap with 20.00 turns/s. 1080p gains a third but stays 4.7x
+640x480 reaches the 60 FPS cap with 20.03 turns/s. 1080p gains a third but stays 4.7x
 short. The 1080p GPU total did not fall: the terrain pass's 26.4 ms became about 12 ms of
 extra raster time, and the minimap and ordered-sprite passes took the rest back — those
 passes are unchanged by this work, so the shift is either scheduling or an effect of the
@@ -383,7 +384,7 @@ ownership, synchronization, counters and failure behavior.
 | Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h) cover the implemented families below. General triangles have all 27 kernels and deterministic thin-triangle setup. Queued frames, alias views, resource ownership and borrowed cursor integration are implemented; final combined runtime and performance evidence must match their exact source. |
 | Cover every drawing path | Open | Accepted original-vertex terrain bypasses CPU setup and rasterization; bounded 2D hooks suppress selected CPU pixel loops. The remaining families below and routine upload/readback bridges prevent complete GPU coverage. |
 | Native validation | Partial | The terrain-binning build passed an isolated native session on busy level 20 through `game-control.py` — camera movement, parchment open and return, pause and resume, two resizes and a clean quit, every state predicate reached, 2,424 GPU terrain batches and no failure, invalid frame or fallback — and a separate `KFX_WGPU_DRAW_VERIFY=1` run against the CPU oracle with 5,986 verified batches and 21,223 verified triangles at zero failures. Exact `e19ff26f7` sessions passed gameplay, parchment, save/reload and compound-lens possession, with 788 surface-verified presentations and no drawing failures. A real parchment oracle-recursion crash was fixed and retested. Later queued-frame source requires its own acceptance; complete views, languages, assets and failure coverage remain open. |
-| Performance and delivery | Open | Terrain binning is the first step that pays: on the wgpu presenter with GPU drawing, observed FPS rose 55.0 → 60.0 at busy 640x480, hitting the cap, and 9.5 → 12.7 at 1920x1080, with per-frame GPU time 14.00 → 9.29 ms and 88.07 → 87.81 ms. 1080p is still 4.7x off the target. The single command stream before it moved its structural counters without paying for itself: observed FPS fell about 2 at busy 640x480 while CPU drawing and presentation improved. The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
+| Performance and delivery | Open | Terrain binning is the first step that pays: on the wgpu presenter with GPU drawing, observed FPS rose 54.95 → 60.00 at busy 640x480, hitting the cap, and 9.52 → 12.65 at 1920x1080, with per-frame GPU time 14.00 → 9.29 ms and 88.07 → 87.81 ms. 1080p is still 4.7x off the target. The single command stream before it moved its structural counters without paying for itself: observed FPS fell about 2 at busy 640x480 while CPU drawing and presentation improved. The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
 
 | Drawing family and source boundary | Implemented coverage | Remaining GPU work / validation |
 | --- | --- | --- |
