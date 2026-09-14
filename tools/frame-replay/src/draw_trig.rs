@@ -82,7 +82,13 @@ impl DrawRenderer {
             self.asset_generation,
             limit,
         );
-        let words = pack_commands(&mut packer, commands, &self.resources, width, height, limit)?;
+        let words = pack_commands(
+            &mut packer,
+            commands,
+            &self.resources,
+            ViewSpace::whole(width, height),
+            limit,
+        )?;
         packer.finish();
         bin_commands(&words, width, height, self.storage_limit() as usize)?;
         Ok(())

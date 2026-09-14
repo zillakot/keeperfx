@@ -123,7 +123,13 @@ impl DrawRenderer {
             self.asset_generation,
             limit,
         );
-        pack_commands(&mut packer, commands, &self.resources, width, height, limit)?;
+        pack_commands(
+            &mut packer,
+            commands,
+            &self.resources,
+            ViewSpace::whole(width, height),
+            limit,
+        )?;
         packer.finish();
         for c in commands.iter().filter(|c| ordered(c)) {
             validate_target(c, &self.resources[&c.source], target.width, target.height)?;
@@ -145,8 +151,7 @@ impl DrawRenderer {
                 &mut packer,
                 std::slice::from_ref(c),
                 &self.resources,
-                width,
-                height,
+                ViewSpace::whole(width, height),
                 limit,
             )?;
             let assets = packer.finish();

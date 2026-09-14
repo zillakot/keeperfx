@@ -18,7 +18,7 @@ impl DrawRenderer {
         self.shadow_residency()?;
         let limit = self.storage_limit() as usize;
         ensure!(
-            commands.len() <= MAX_COMMANDS && commands.len() * 112 <= limit,
+            commands.len() <= MAX_COMMANDS && commands.len() * RECORD_BYTES <= limit,
             "snapshot triangle batch exceeds limit"
         );
         let dispatch = self.device.limits().max_compute_workgroups_per_dimension;
@@ -89,6 +89,7 @@ impl DrawRenderer {
             words.extend([c.source_x, 65536, 64, 0]);
             words.extend([0; 4]);
             words.extend([OPAQUE, 0, 0, 0]);
+            words.extend([0, 0, width, 0]);
         }
         if commands.is_empty() {
             return Ok(());

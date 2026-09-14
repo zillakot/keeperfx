@@ -6,6 +6,7 @@ struct Command {
     source: vec4<u32>,
     accumulator: vec4<u32>,
     options: vec4<u32>,
+    origin: vec4<u32>,
 }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<storage, read> commands: array<Command>;

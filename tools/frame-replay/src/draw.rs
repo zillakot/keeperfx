@@ -71,6 +71,8 @@ const DRAW_SHADER: &str = concat!(
     include_str!("draw_transition.wgsl")
 );
 const MAX_COMMANDS: usize = 262_144;
+pub(super) const RECORD_WORDS: usize = 32;
+pub(super) const RECORD_BYTES: usize = RECORD_WORDS * 4;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 #[repr(C)]
@@ -507,8 +509,7 @@ impl DrawRenderer {
             &mut packer,
             commands,
             &self.resources,
-            target_width,
-            target_height,
+            ViewSpace::whole(target_width, target_height),
             limit,
         )?;
         let assets = packer.finish();
@@ -885,20 +886,67 @@ pub(crate) fn packable(kind: u32) -> bool {
     kind <= TRIG || kind == MOVIE || kind == MAP_VIEW || kind == BITMAP
 }
 
+/// The rectangle a command was issued against, and its origin in the space the
+/// dispatch addresses; a root-space stream carries one per view, a single-view
+/// batch the view itself at the origin.
+#[derive(Clone, Copy)]
+pub(super) struct ViewSpace {
+    pub origin_x: u32,
+    pub origin_y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ViewSpace {
+    pub(super) fn whole(width: u32, height: u32) -> Self {
+        Self {
+            origin_x: 0,
+            origin_y: 0,
+            width,
+            height,
+        }
+    }
+
+    fn rebase(&self, rectangle: [u32; 4]) -> [u32; 4] {
+        [
+            rectangle[0].wrapping_add(self.origin_x),
+            rectangle[1].wrapping_add(self.origin_y),
+            rectangle[2].wrapping_add(self.origin_x),
+            rectangle[3].wrapping_add(self.origin_y),
+        ]
+    }
+}
+
 fn pack_commands(
     packer: &mut AssetPacker,
     commands: &[Command],
     resources: &HashMap<u64, Resource>,
-    width: u32,
-    height: u32,
+    view: ViewSpace,
+    limit: usize,
+) -> Result<Vec<u32>> {
+    pack_records(
+        packer,
+        commands.iter().map(|c| (c, view)),
+        commands.len(),
+        resources,
+        limit,
+    )
+}
+
+fn pack_records<'a>(
+    packer: &mut AssetPacker,
+    records: impl Iterator<Item = (&'a Command, ViewSpace)>,
+    count: usize,
+    resources: &HashMap<u64, Resource>,
     limit: usize,
 ) -> Result<Vec<u32>> {
     ensure!(
-        commands.len() <= MAX_COMMANDS && commands.len() * 112 <= limit,
+        count <= MAX_COMMANDS && count * RECORD_BYTES <= limit,
         "command batch exceeds limit"
     );
-    let mut words = Vec::with_capacity(commands.len() * 28);
-    for c in commands {
+    let mut words = Vec::with_capacity(count * RECORD_WORDS);
+    for (c, view) in records {
+        let (width, height) = (view.width, view.height);
         ensure!(
             c.abi_version == ABI_VERSION && c.reserved == [0; 3],
             "invalid command ABI"
@@ -1017,12 +1065,13 @@ fn pack_commands(
             table_offset = packer.offset(c.table, &table.bytes)?;
         }
         words.extend([c.kind, c.blend, 0, c.colour]);
-        words.extend(rectangle);
-        words.extend(clip);
+        words.extend(view.rebase(rectangle));
+        words.extend(view.rebase(clip));
         words.extend([source_offset, table_offset, source_pitch, 0]);
         words.extend([c.source_x, c.source_y, c.source_width, c.source_height]);
         words.extend([c.start_low, c.start_high, c.step_low, c.step_high]);
         words.extend([c.transparent, 0, 0, 0]);
+        words.extend([view.origin_x, view.origin_y, view.width, 0]);
     }
     Ok(words)
 }
@@ -1056,7 +1105,7 @@ fn bin_commands(words: &[u32], width: u32, height: u32, limit: usize) -> Result<
     let rows = height.div_ceil(16);
     let mut lists = vec![Vec::new(); (columns * rows) as usize];
     let mut length = lists.len() * 2;
-    for (index, command) in words.as_chunks::<28>().0.iter().enumerate() {
+    for (index, command) in words.as_chunks::<RECORD_WORDS>().0.iter().enumerate() {
         let x0 = (command[4] as i32)
             .max(command[8] as i32)
             .max(0)
@@ -1163,7 +1212,16 @@ mod tests {
             },
         ] {
             let mut packer = AssetPacker::batch(1 << 20);
-            assert!(pack_commands(&mut packer, &[command], &resources, 32, 32, 1 << 20).is_err());
+            assert!(
+                pack_commands(
+                    &mut packer,
+                    &[command],
+                    &resources,
+                    ViewSpace::whole(32, 32),
+                    1 << 20
+                )
+                .is_err()
+            );
         }
         assert!(validate_resource(31, 32, 1, 32).is_err());
         assert!(validate_resource(256, 32, 8, 31).is_err());
@@ -1195,8 +1253,14 @@ mod tests {
             },
         ];
         let mut packer = AssetPacker::batch(1 << 20);
-        let words =
-            pack_commands(&mut packer, &commands, &HashMap::new(), 32, 32, 1 << 20).unwrap();
+        let words = pack_commands(
+            &mut packer,
+            &commands,
+            &HashMap::new(),
+            ViewSpace::whole(32, 32),
+            1 << 20,
+        )
+        .unwrap();
         let tiles = bin_commands(&words, 32, 32, 1024).unwrap();
         for (tile, expected) in [&[0, 1, 2][..], &[0, 1], &[0, 1], &[0, 1]]
             .iter()
