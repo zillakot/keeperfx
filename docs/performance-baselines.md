@@ -35,9 +35,9 @@ Defaults are a 640×480 window, 20 simulation turns per second, interpolation on
 60 drawing frames per second, VSync off, warmup to turn 40 and 200 measured turns
 (about ten seconds). Possession waits for the controlled creature view before
 starting. Options support other resolutions and bounded warmup/durations; use `--help`
-for accepted values. Frame cap, VSync, interpolation and turn rate are fixed by
-the runner. Keep settings,
-engine build, assets and host conditions identical for comparisons.
+for accepted values. VSync, interpolation and turn rate are fixed by the runner;
+the frame cap is 60 FPS unless [`--uncapped`](#uncapped-measurement-mode) removes it.
+Keep settings, engine build, assets and host conditions identical for comparisons.
 
 ## Scenarios and reproducibility
 
@@ -131,7 +131,7 @@ bookkeeping. Scene preparation also includes existing state updates at that boun
 These scopes describe host work and do not establish GPU execution time.
 
 The flag sets `KFX_PERF_DRAW_BREAKDOWN=1`; the default explicitly sets it to `0`.
-Both modes keep the existing top-level timing boundaries and 60 FPS cap. Compare
+Both modes keep the existing top-level timing boundaries and the run's frame cap. Compare
 serial matched runs from the same executable with and without this flag to quantify
 the added clock, bookkeeping and sample overhead before interpreting the breakdown.
 The default mode still has inactive hook calls. Four extra records per drawn frame
@@ -235,6 +235,143 @@ results for later comparison; original game data and captured results stay under
 ignored `out`. PRs may record aggregate timings and conditions without uploading
 original assets.
 
+## Uncapped measurement mode
+
+```sh
+python3 scripts/profile-game.py --scene busy --resolution 1920x1080 --uncapped --out out/perf-uncapped
+```
+
+`--uncapped` writes `FRAMES_PER_SECOND=0` into the isolated configuration instead
+of `60`. Everything else is unchanged: `DELTA_TIME=ON`, `TURNS_PER_SECOND=20`,
+`VSYNC=OFF`, the same scenes, warmup, durations and collector.
+
+### What uncapped means in this engine
+
+`FRAMES_PER_SECOND` is parsed by
+[`parse_draw_fps_config_val`](../src/config_keeperfx.c) into
+`start_params.num_fps_draw_main`, which
+[`redetect_screen_refresh_rate_for_draw`](../src/main.cpp) turns into
+`fps_limit_current`: `-1` means the display refresh rate, a positive value is that
+value, and `0` leaves `fps_limit_current` at zero. The frame limiter in
+[`gameplay_loop_draw`](../src/game_loop.c) is guarded by `fps_limit_current > 0`;
+with zero it is skipped entirely, so nothing accumulates `process_frame_time`, the
+`SDL_Delay(1)` in that block never runs and no frame is suppressed by the limiter.
+
+The simulation rate is independent of it. With interpolation on,
+`gameplay_loop_timestep` skips `keeper_wait_for_next_turn` entirely, so the only
+pacing is `game.process_turn_time`, which accumulates elapsed seconds times
+`turns_per_second`. Drawing fills the gap: `gameplay_loop_logic` spins
+`gameplay_loop_draw` until the next turn is due. Uncapped therefore means drawing
+as fast as the host allows while the simulation still targets 20 turns per second.
+
+VSync is off on both presenters and independently confirmed. `vsync_enabled` is
+false, so the SDL path calls `SDL_SetRenderVSync(renderer, 0)`
+([`RendererSoftware`](../src/kfx/renderer/RendererSoftware.cpp)) and the wgpu path
+selects `Immediate`, falling back to `Mailbox` and otherwise failing rather than
+silently configuring `Fifo` ([`live.rs`](../tools/frame-replay/src/live.rs)). The
+runner already rejects a Rust run whose reported present mode is neither.
+
+### Runner and report contract
+
+The engine reports `fps_limit_current` as `fps_limit` in its metadata sidecar. The
+runner requires it to equal the requested cap: `60` by default, `0` under
+`--uncapped`. A run whose engine did not apply the requested cap is rejected, in
+both directions, so a stale configuration cannot be read as an uncapped result.
+
+`report.json` carries a `frame_cap` object (`uncapped`, `requested_fps_limit`,
+`engine_fps_limit`, `label`) and an `observed` object with the derived
+frames-per-second and turns-per-second figures. `report.md` states the cap beside
+its title, beside the engine frame limit, and after every frame-rate figure, and
+reports observed turns per second beside observed FPS. The uncapped limitation
+list replaces the capped-FPS caveat with its own.
+
+`benchmark-presenters.py` accepts the same `--uncapped` and applies it to every
+run in the experiment. `compare` refuses a set of reports that mixes capped and
+uncapped runs, and the cap is part of each scene's recorded identity, so an
+uncapped run can never be paired against a capped one.
+
+### Limits
+
+An uncapped figure is host wall-clock pacing of this process on this host under
+the conditions of that run. It is not a portable frame-rate claim, and uncapped
+numbers must never be compared with capped ones.
+
+Observed turns per second is the load-bearing check. The measured window is paced
+by the simulation, so a value below 20.00 means the host could not sustain the
+simulation while drawing; such a run measures a degraded loop, not a drawing
+ceiling, and its FPS figure describes that degraded loop.
+
+Uncapped runs present far more frames than capped ones for the same turn count, so
+the 100,000-sample limit is reached sooner; keep `--turns` bounded and check the
+sample counts in the report. Presentation tails also widen, because the swapchain
+is queried continuously rather than once per vertical interval.
+
+### Recorded uncapped matrix
+
+Source `e00fcd322`, Apple M5, Metal, `Bgra8Unorm`, present mode `Immediate`, one
+engine and asset set across every run, 200 measured turns each, collected serially
+under the timing lock with audio, control/API and readback disabled. One run per
+cell: descriptive, not a repeated experiment.
+
+First, the cap semantics themselves, busy 640×480 on the SDL presenter:
+
+| Frame cap | Frame interval mean / p95 ms | Observed FPS | Turns/s | Presentations |
+| --- | ---: | ---: | ---: | ---: |
+| 60 FPS | 16.665 / 17.491 | 60.01 | 20.00 | 600 |
+| uncapped | 2.901 / 8.699 | 344.67 | 20.00 | 3,447 |
+
+The cap holds the frame interval at the 16.67 ms period; removing it drops the
+interval to 2.9 ms and leaves the simulation at exactly 20.00 turns per second.
+
+| Presenter | Drawing | Scene | Logical | Frame interval mean / p95 ms | FPS | Turns/s | Draw mean | Presentation mean |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| SDL | software | busy | 640×480 | 3.085 / 11.131 | 324.17 | 20.02 | 2.083 | 0.954 |
+| SDL | software | quiet | 640×480 | 5.404 / 13.758 | 185.06 | 20.00 | 2.348 | 3.021 |
+| SDL | software | busy | 1920×1080 | 10.139 / 12.772 | 98.63 | 19.99 | 8.737 | 1.289 |
+| SDL | software | quiet | 1920×1080 | 13.346 / 18.537 | 74.93 | 20.00 | 9.190 | 4.104 |
+| wgpu | software | busy | 640×480 | 4.629 / 12.987 | 216.01 | 20.01 | 2.268 | 2.305 |
+| wgpu | software | quiet | 640×480 | 4.475 / 12.643 | 223.45 | 19.99 | 2.372 | 2.084 |
+| wgpu | software | busy | 1920×1080 | 13.353 / 18.281 | 74.89 | 19.99 | 8.514 | 4.713 |
+| wgpu | software | quiet | 1920×1080 | 10.755 / 16.461 | 92.98 | 20.02 | 9.236 | 1.474 |
+| wgpu | wgpu | busy | 640×480 | 12.994 / 17.574 | 76.96 | 19.99 | 1.520 | 11.307 |
+| wgpu | wgpu | quiet | 640×480 | 10.649 / 13.643 | 93.91 | 20.00 | 1.476 | 9.107 |
+| wgpu | wgpu | busy | 1920×1080 | 85.258 / 100.505 | 11.73 | **11.73** | 1.609 | 83.163 |
+| wgpu | wgpu | quiet | 1920×1080 | 67.449 / 70.853 | 14.83 | **14.83** | 1.366 | 65.923 |
+
+Per-frame GPU pass means for the GPU-drawing rows, summed over pass kinds:
+
+| Scene | Logical | raster | minimap | target_trig | ordered_sprite | shadow_mask | Sum | Submits | Blocking waits |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| busy | 640×480 | 4.450 | 2.169 | 1.833 | 0.582 | 0.272 | 9.571 | 45.5 | 0 |
+| quiet | 640×480 | 3.472 | 1.469 | 1.636 | 0.213 | 0.201 | 7.287 | 31.5 | 0 |
+| busy | 1920×1080 | 57.644 | 18.604 | 8.489 | 6.589 | 0.194 | 91.649 | 38.4 | 0 |
+| quiet | 1920×1080 | 35.188 | 10.909 | 10.678 | 1.444 | 0.220 | 58.478 | 31.4 | 0 |
+
+`gpu_untimed_passes` was zero in all four, so no pass went unstamped. Passes can
+overlap on the device, so the sum is an upper bound on attributed GPU time per
+frame, not a serial total; the busy 1080p sum exceeds that row's frame interval
+for exactly that reason.
+
+**The two 1080p GPU-drawing rows do not measure a ceiling.** Their turns per second
+is 11.73 and 14.83, below the requested 20, and equals their FPS exactly: the frame
+is longer than a turn, so the loop presents once per turn and the simulation falls
+behind. Those figures describe a degraded loop.
+
+What bounds each measured ceiling:
+
+- **Software drawing** is bound by CPU drawing. `draw` is 2.1–2.4 ms at 640×480 and
+  8.5–9.2 ms at 1080p, and the frame interval tracks it.
+- **The wgpu presenter costs about 2.3 ms per frame at 640×480** with `present_wait`
+  at 0.005 ms. Surface acquisition, the index and palette uploads and the palette
+  pass — not the present call — are what hold the wgpu software path at 216 FPS
+  where SDL reaches 324 FPS. Capped at 60 that cost is invisible.
+- **GPU drawing is bound by GPU execution.** `draw` falls to ~1.5 ms because the CPU
+  only encodes, and the host then blocks in `presentation` (9–11 ms at 640×480,
+  66–83 ms at 1080p) for the frame's GPU work to complete. The per-pass totals
+  match, and raster is 60% of them at 1080p.
+
+Every figure here is uncapped host wall-clock timing on this host.
+
 ## Repeated native A/B comparison
 
 After all builds and other performance work stop, collect five serial pairs for
@@ -266,10 +403,11 @@ beside percentages and report scenes separately. Five pairs support descriptive
 results; varied signs or wide ranges warrant an inconclusive result or further
 complete rounds, not a significance claim.
 
-Both paths remain capped at 60 FPS. Lower presentation duration means reduced
-host overhead; 60 versus 60 FPS does not prove an uncapped gameplay speedup.
-An uncapped comparison would need a separately validated matched configuration
-and a new complete matrix. Rust VSync-off measurements require actual Immediate
+Both paths remain capped at 60 FPS by default. Lower presentation duration means
+reduced host overhead; 60 versus 60 FPS does not prove an uncapped gameplay
+speedup. `--uncapped` collects a matched uncapped experiment instead, and the
+driver refuses to mix the two; its results remain a separate matrix and do not
+reinterpret the capped one. Rust VSync-off measurements require actual Immediate
 or Mailbox present mode; silent FIFO fallback is rejected.
 
 The timing matrix does not replace the live milestone's pixel, lifecycle,
@@ -311,9 +449,9 @@ The [active graphics migration](product/rust-port-plan.md#active-delivery-full-w
 starts by separating CPU scene preparation, rasterization and overlays, evaluating
 higher framebuffer resolution and choosing a pre-rasterization command boundary,
 then continues through GPU implementation and complete drawing coverage. The
-current scripts have no uncapped option; such a study needs a validated runner
-extension and a separate matched matrix. Existing presenter results do not validate
-the drawing migration.
+runner's [uncapped mode](#uncapped-measurement-mode) supplies the ceiling figures
+that migration needs, in a matrix kept separate from the capped one. Existing
+presenter results do not validate the drawing migration.
 
 ## Asset-free checks and headless validation
 

@@ -47,13 +47,22 @@ SETTINGS = {
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
     "CURSOR_EDGE_CAMERA_PANNING": "OFF", "LOCK_CURSOR_IN_POSSESSION": "OFF",
 }
+CAPPED_FPS_LIMIT = 60
+UNCAPPED_FPS_LIMIT = 0
+CAPPED_LIMITATION = "The 60 FPS cap limits observed frame rate; lower presentation duration is not an uncapped gameplay FPS speedup."
+UNCAPPED_LIMITATIONS = [
+    "UNCAPPED RUN: FRAMES_PER_SECOND=0 removes the engine frame limiter, so drawing runs as fast as the host allows. Its FPS figures are not comparable with capped runs.",
+    "Uncapped figures are host wall-clock pacing of this process on this host under these conditions, not a portable frame-rate claim.",
+    "The simulation still targets 20 turns per second. A measured turns-per-second below 20 means the host could not sustain the simulation, so the run does not measure a drawing ceiling.",
+    "VSync stays off and the presenter must report a non-VSync present mode; an uncapped run behind VSync would measure the display, not the engine.",
+]
 LIMITATIONS = [
     "Per-scope timings are monotonic wall-clock durations, including scheduling and blocking; they are not CPU-time counters.",
     "GPU execution time is collected only when KFX_WGPU_GPU_TIMING is 1 or 2 and the adapter supports timestamp queries: the gpu_*_ns drawing counters are per-pass GPU durations. Presentation and present_wait remain host-side wall clock.",
     "Presentation includes present_wait; these overlapping scopes must not be added together.",
     "Frame intervals measure observed presentation pacing; simulation samples count actual game updates.",
     "Seeds and population snapshots are observations, not a guarantee of deterministic replay.",
-    "The 60 FPS cap limits observed frame rate; lower presentation duration is not an uncapped gameplay FPS speedup.",
+    CAPPED_LIMITATION,
     "Rust allocation counts cover successful Rust global-allocator alloc/realloc calls and requested bytes only; C/C++, SDL and driver/GPU allocations are excluded. SDL zeros do not establish a total-heap advantage.",
 ]
 DRAWING_LIMITATIONS = [
@@ -90,14 +99,32 @@ def asset_identity(directory):
             "algorithm": "SHA256 of sorted relative UTF-8 path, NUL, file SHA256 hex, newline"}
 
 
-def configure(work):
+def uncapped(args):
+    return bool(getattr(args, "uncapped", False))
+
+
+def settings_for(args):
+    """Isolated engine settings; FRAMES_PER_SECOND=0 disables the engine frame limiter."""
+    values = dict(SETTINGS)
+    if uncapped(args):
+        values["FRAMES_PER_SECOND"] = str(UNCAPPED_FPS_LIMIT)
+    return values
+
+
+def frame_cap_for(args):
+    limit = UNCAPPED_FPS_LIMIT if uncapped(args) else CAPPED_FPS_LIMIT
+    return {"uncapped": uncapped(args), "requested_fps_limit": limit,
+            "label": "uncapped" if uncapped(args) else f"capped at {limit} FPS"}
+
+
+def configure(work, settings=SETTINGS):
     path = work / "keeperfx.cfg"
-    settings = path.read_text()
-    for key, value in SETTINGS.items():
-        settings, count = re.subn(rf"^{key}\s*=.*$", f"{key}={value}", settings, flags=re.M)
+    values = path.read_text()
+    for key, value in settings.items():
+        values, count = re.subn(rf"^{key}\s*=.*$", f"{key}={value}", values, flags=re.M)
         if not count:
-            settings += f"\n{key}={value}\n"
-    path.write_text(settings)
+            values += f"\n{key}={value}\n"
+    path.write_text(values)
 
 
 def gpu_timing_level(args):
@@ -148,9 +175,11 @@ def summarize(output, args):
         raise RuntimeError("engine scene or view does not match the request")
     if (metadata["width"], metadata["height"]) != args.resolution:
         raise RuntimeError("engine logical resolution does not match the request")
+    cap = frame_cap_for(args)
     if (metadata["vsync_actual"] != 0 or metadata["turns_per_second"] != 20
-            or metadata["fps_limit"] != 60 or metadata["interpolation"] not in (True, 1)):
+            or metadata["fps_limit"] != cap["requested_fps_limit"] or metadata["interpolation"] not in (True, 1)):
         raise RuntimeError("engine did not apply the requested VSync, turn rate, frame cap or interpolation")
+    cap["engine_fps_limit"] = metadata["fps_limit"]
     if args.backend == "rust" and (args.headless or sys.platform != "darwin"):
         raise RuntimeError("Rust measurements require a native macOS window")
     expected_backend = (("cocoa", "wgpu-metal") if args.backend == "rust" else
@@ -222,7 +251,9 @@ def summarize(output, args):
         samples["draw_unaccounted"] = unaccounted
     resource_report = summarize_resources(metadata.get("resources"), args.turns, len(presentations))
     drawing_report = summarize_drawing(metadata.get("drawing"), len(presentations))
-    limitations = LIMITATIONS + ([] if resource_report["process_cpu"] is not None else ["Process CPU time is not available in this run."])
+    limitations = ([item for item in LIMITATIONS if item != CAPPED_LIMITATION] + UNCAPPED_LIMITATIONS
+                   if cap["uncapped"] else list(LIMITATIONS))
+    limitations += [] if resource_report["process_cpu"] is not None else ["Process CPU time is not available in this run."]
     if drawing_report is None:
         limitations += ["Drawing-backend counters are absent from this engine build."]
     else:
@@ -238,7 +269,12 @@ def summarize(output, args):
             "Breakdown zero samples mean the scope was not visited or took less than clock resolution; they do not prove a drawing family was absent.",
             "Compare matched runs with and without --draw-breakdown to measure instrumentation overhead; overhead is not assumed negligible.",
         ]
-    return {"engine": metadata, "wall_ms": {kind: distribution(values) for kind, values in samples.items()},
+    wall_ms = {kind: distribution(values) for kind, values in samples.items()}
+    window_ms = resource_report.get("wall_ms")
+    observed = {"frames_per_second": 1000 / wall_ms["frame_interval"]["mean"],
+                "turns_per_second": None if not window_ms else args.turns / (window_ms / 1000),
+                "frame_cap": cap["label"]}
+    return {"engine": metadata, "frame_cap": cap, "observed": observed, "wall_ms": wall_ms,
             "resources": resource_report, "drawing": drawing_report,
             "percentile_method": "linear interpolation at (sample_count - 1) * percentile / 100",
             "limitations": limitations + (["HEADLESS SOFTWARE SMOKE TEST: not a native presentation baseline."] if args.headless else [])}
@@ -325,12 +361,15 @@ def write_json(path, value):
 
 def write_report(output, report):
     request, actual = report["request"], report["engine"]
+    cap = report.get("frame_cap") or frame_cap_for(argparse.Namespace(uncapped=not actual["fps_limit"]))
     label = "HEADLESS SOFTWARE SMOKE TEST" if request["headless"] else "Native performance baseline"
+    label += " (uncapped)" if cap["uncapped"] else " (60 FPS cap)"
     lines = [f"# {label}", "", f"Scene: {request['scene']}; campaign: {request['campaign']}; level: {request['level']}.",
              f"Actual turns: {actual['start']['turn']}–{actual['end']['turn'] - 1} ({request['turns']} simulation updates).",
              f"Backend: {actual['video_driver']} / {actual['renderer']}; logical resolution: {actual['width']}×{actual['height']}; "
              f"output: {actual['output_width']}×{actual['output_height']}.",
-             f"Frame cap: {actual['fps_limit']}; VSync: {actual['vsync_actual']}; interpolation: {actual['interpolation']}.",
+             f"Frame cap: {cap['label']} (engine frame limit {actual['fps_limit']}); "
+             f"VSync: {actual['vsync_actual']}; interpolation: {actual['interpolation']}.",
              f"Population at start/end: creatures {actual['start']['creatures']}/{actual['end']['creatures']}; "
              f"things {actual['start']['things']}/{actual['end']['things']}.", "",
              "Wall-clock milliseconds; percentile estimates use linear interpolation.", "",
@@ -340,7 +379,12 @@ def write_report(output, report):
         lines.append(f"| {kind} | {stats['count']} | " + " | ".join(f"{stats[key]:.3f}" for key in ("mean", "median", "p90", "p95", "p99", "max")) + " |")
     interval = report["wall_ms"]["frame_interval"]["mean"]
     if interval:
-        lines += ["", f"Observed presentation rate from mean frame interval: {1000 / interval:.2f} frames/s."]
+        lines += ["", f"Observed presentation rate from mean frame interval: {1000 / interval:.2f} frames/s "
+                  f"({cap['label']})."]
+    turns = (report.get("observed") or {}).get("turns_per_second")
+    if turns:
+        lines += ["", f"Observed simulation rate over the measured window: {turns:.2f} turns/s "
+                  "(requested 20; an uncapped run that falls below it did not sustain the simulation)."]
     details = actual.get("renderer_details")
     if details:
         lines += ["", f"Actual renderer details: `{details}`."]
@@ -390,6 +434,8 @@ def main():
     parser.add_argument("--draw-breakdown", action="store_true", help="coarse nested CPU drawing timings; compare against a matched run without this flag")
     parser.add_argument("--gpu-timing", action="store_true", help="resolve per-pass GPU execution time into the gpu_*_ns drawing counters")
     parser.add_argument("--serial-gpu-timing", action="store_true", help="as --gpu-timing, but drain the queue after every timed submission so the per-pass windows are exclusive; costs throughput and is not a performance baseline")
+    parser.add_argument("--uncapped", action="store_true",
+                        help="remove the engine frame limiter (FRAMES_PER_SECOND=0); simulation stays at 20 turns/s and VSync stays off")
     parser.add_argument("--headless", action="store_true", help="dummy/software smoke test, not a native performance baseline")
     args = parser.parse_args()
     if args.backend == "rust" and (args.headless or sys.platform != "darwin"):
@@ -414,14 +460,14 @@ def main():
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "platform": {"system": platform.system(), "release": platform.release(),
                            "version": platform.version(), "machine": platform.machine(), "processor": platform.processor()},
-              "engine_sha256": sha256(engine), "settings": SETTINGS}
+              "engine_sha256": sha256(engine), "settings": settings_for(args), "frame_cap": frame_cap_for(args)}
     write_json(output / "report.json", report)
     try:
         with tempfile.TemporaryDirectory(prefix="profile-game-", dir=work_root) as temporary:
             work = Path(temporary)
             try:
                 capture.clone_assets(game, work, args.resolution)
-                configure(work)
+                configure(work, report["settings"])
                 (output / "keeperfx.cfg").write_bytes((work / "keeperfx.cfg").read_bytes())
                 report["assets"] = asset_identity(work)
                 report["config_sha256"] = sha256(work / "keeperfx.cfg")
@@ -455,7 +501,7 @@ def main():
         write_json(output / "report.json", report)
         raise RuntimeError(f"profiling failed: {error}; diagnostics preserved in {output}") from error
     write_json(output / "report.json", report)
-    print(f"Profiled {args.turns} {args.scene} simulation turns: {output / 'report.md'}")
+    print(f"Profiled {args.turns} {args.scene} simulation turns ({report['frame_cap']['label']}): {output / 'report.md'}")
 
 
 if __name__ == "__main__":

@@ -68,7 +68,17 @@ both. GPU drawing today: 25.863 / 9.350 ms at 640x480 (28.23 FPS) and 70.442 / 5
 | --- | --- |
 | 640x480 logical, 60 FPS cap | Observed FPS ≥ 59.9 and 20.00 turns/s. `PerfDraw` mean ≤ 1.5 ms, p95 ≤ 3.0 ms. `PerfPresentation` mean ≤ 0.6 ms. Process CPU per presentation ≤ 5.0 ms. |
 | 1920x1080 logical, 60 FPS cap | Observed FPS ≥ 59.9 and 20.00 turns/s sustained. `PerfDraw` mean ≤ 9 ms, p95 ≤ 12 ms. `PerfPresentation` mean ≤ 1.0 ms. GPU pass total by `TIMESTAMP_QUERY` ≤ 8 ms. Process CPU per presentation ≤ 8 ms. |
-| 1920x1080 logical, uncapped | Frame interval mean ≤ 16.7 ms, p95 ≤ 20.0 ms. |
+| 1920x1080 logical, uncapped | Frame interval mean ≤ 16.7 ms, p95 ≤ 20.0 ms at 20.00 turns/s. **Measured `e00fcd322`, busy, wgpu drawing: 85.258 / 100.505 ms — not met**, and at 11.73 turns/s that run does not measure a ceiling at all. Software drawing on the same presenter does meet the row: 13.353 / 18.281 ms at 19.99 turns/s. |
+
+This row is now measurable: [`profile-game.py --uncapped`](../performance-baselines.md#uncapped-measurement-mode)
+clears `fps_limit_current`, leaving the simulation at 20 turns/s and VSync off. The
+full uncapped matrix, including the per-pass GPU totals behind the 1080p figure and
+the 640x480 rows (76.96 FPS busy, 93.91 quiet), is recorded there. The uncapped
+ceiling is GPU execution: `PerfDraw` falls to ~1.5 ms because the CPU only encodes,
+and the host blocks in `PerfPresentation` for the frame's passes, of which raster is
+57.644 ms of a 91.649 ms 1080p total. That raster figure predates step 9, which cuts the
+capped 1080p raster window 46.124 → 2.859 ms, so the row is stale rather than wrong and
+needs its own uncapped re-run; nothing here claims what it will read.
 
 Estimated 1080p budget: CPU 0.6–1.2 ms to build, bin and encode; ≤ 1 MB of uploads; one prepare pass, ~10
 shadow mask passes over 256x256, 1–3 raster dispatches at 2–5 ms, one palette pass at ≤ 0.4 ms.
