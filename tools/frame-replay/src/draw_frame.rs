@@ -12,6 +12,8 @@ pub(super) type StatusReceiver = std::sync::mpsc::Receiver<Result<(), wgpu::Buff
 #[derive(Default, Clone, Copy, Debug)]
 pub struct FrameCounters {
     pub queued_commands: u64,
+    /// Frame flushes that had to cut the frame's single submission. Structurally zero
+    /// since the flush became a replay into the open encoder.
     pub checkpoints: u64,
     pub validation_waits: u64,
     pub validation_bytes: u64,
@@ -69,16 +71,6 @@ impl DrawRenderer {
         encoder.clear_buffer(&self.status, 0, None);
         self.status_cursor += 1;
         Some(slot)
-    }
-
-    /// One submit until the frame owns a single encoder; skipped when the ring is full.
-    pub(super) fn status_publish(&mut self) {
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        let Some(slot) = self.status_record(&mut encoder) else {
-            return;
-        };
-        self.submit_encoder(encoder);
-        self.status_map(slot);
     }
 
     pub(super) fn status_map(&mut self, slot: usize) {
@@ -171,6 +163,9 @@ impl DrawRenderer {
 
     pub fn frame_begin(&mut self, root: u64) -> Result<()> {
         self.check_status()?;
+        // A presenter that never reached its present call still owes the queue what it
+        // recorded; nothing may straddle two frames' worth of staged writes.
+        self.frame_submit()?;
         self.status_drain();
         // One GPU-occupancy union per frame: passes that were in flight together are
         // counted once, which the per-drain close could not do because a drain usually
@@ -180,6 +175,14 @@ impl DrawRenderer {
         }
         self.frame_index += 1;
         ensure!(self.frame.is_none(), "frame already active");
+        // Growth is forbidden once the encoder is open, so it happens here, sized to
+        // the demand the previous frames showed.
+        self.arena.grow_to(
+            &self.device,
+            &self.queue,
+            &mut self.counters,
+            self.resource_bytes as u64,
+        );
         let target = self.targets.get(&root).context("unknown frame target")?;
         ensure!(target.root == root, "frame target must be canonical");
         let (mut stream, mut views, mut serials) = self.frame_buffers.take().unwrap_or_default();
@@ -451,18 +454,9 @@ impl DrawRenderer {
         }
     }
 
-    /// Whether a flush would replay anything, and so whether the present tail has to
-    /// be submitted before the replay's batches recycle arena scratch under it.
-    pub(super) fn frame_pending(&self) -> bool {
-        self.frame
-            .as_ref()
-            .is_some_and(|frame| !frame.stream.is_empty() || !frame.serials.is_empty())
-    }
-
+    /// Replays whatever the frame has queued into the open encoder. It is no longer a
+    /// submission boundary, so a checkpoint costs a replay and nothing else.
     pub fn frame_flush(&mut self) -> Result<()> {
-        if self.frame_pending() {
-            self.tail_submit();
-        }
         let Some(mut frame) = self.frame.take() else {
             return Ok(());
         };
@@ -482,6 +476,8 @@ impl DrawRenderer {
         let mut serials = std::mem::take(&mut frame.serials);
         // The whole stream is packed before the serial routes between its raster passes
         // open batches of their own, so its residents stay pinned until the last dispatch.
+        // The encoder holds the same pin for the whole frame; this covers a replay that
+        // records nothing and so never opens one.
         self.arena.hold();
         let mut result = self.replay_stream(root, &stream, &views, &mut serials);
         self.arena.release_hold();
@@ -497,8 +493,6 @@ impl DrawRenderer {
         if result.is_ok() {
             result = self.check_status();
         }
-        self.frame_counters.checkpoints += 1;
-        self.status_publish();
         if result.is_err() {
             self.frame_counters.rejected_checkpoints += 1;
             self.deferred_snapshot_releases.clear();
@@ -550,13 +544,12 @@ impl DrawRenderer {
         let mut raster = None;
         let mut prepare = None;
         if !boundaries.is_empty() {
-            self.open_batch();
+            self.arena_headroom(0)?;
             let mut packer = asset_packer(
                 &self.device,
                 &self.queue,
                 &mut self.arena,
                 &mut self.counters,
-                &self.tail,
                 self.asset_generation,
                 limit,
             );
@@ -671,17 +664,19 @@ impl DrawRenderer {
         ));
     }
 
+    /// Never reached on the wgpu presenter, which submits inside the present call and
+    /// ends the frame from the next `BeginFrame`; every other caller ends it here.
     pub fn frame_end(&mut self) -> Result<()> {
         ensure!(self.frame.is_some(), "no active frame");
         self.frame_flush()?;
         if let Some(mut frame) = self.frame.take() {
             self.retire(&mut frame);
         }
-        Ok(())
+        self.frame_submit()
     }
 
     pub fn frame_abort(&mut self) -> Result<()> {
-        self.tail = None;
+        self.frame_discard();
         if let Some(mut frame) = self.frame.take() {
             self.drain_releases(&mut frame);
             self.retire(&mut frame);
@@ -728,10 +723,7 @@ mod tests {
         assert_eq!(draw.counters().submits, 0);
         draw.frame_end().unwrap();
         let after = draw.counters();
-        assert_eq!(
-            after.submits, 2,
-            "one batch submit and the status publish, and nothing else"
-        );
+        assert_eq!(after.submits, 1, "one command buffer for the whole frame");
         assert_eq!(after.dispatches, 1);
         assert_eq!(draw.staged_asset_bytes(), 64);
         assert_eq!(
@@ -741,7 +733,7 @@ mod tests {
         );
         assert!(after.buffers > baseline.buffers);
         let frame = draw.frame_counters();
-        assert_eq!(frame.checkpoints, 1);
+        assert_eq!(frame.checkpoints, 0);
         assert_eq!(
             (
                 frame.checkpoint_copy_bytes,

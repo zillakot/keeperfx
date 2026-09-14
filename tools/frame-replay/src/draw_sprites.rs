@@ -225,13 +225,12 @@ impl DrawRenderer {
             (target.width, target.height)
         };
         let limit = self.storage_limit() as usize;
-        self.open_batch();
+        self.arena_headroom(0)?;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -274,13 +273,12 @@ impl DrawRenderer {
             .context("unknown sprite target")?
             .clone();
         let limit = self.storage_limit() as usize;
-        self.open_batch();
+        self.arena_headroom(0)?;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -342,8 +340,8 @@ impl DrawRenderer {
             ],
             wgpu::BufferUsages::UNIFORM,
         );
-        let mut encoder = self.begin_encoder();
         let mut layer_buffers = Vec::with_capacity(layers.len());
+        let ordered = self.compute_sprite_ordered.clone();
         for layer in &layers {
             let indices = if layer.iter().enumerate().all(|(i, at)| *at as usize == i) {
                 self.identity_layer(layer.len())
@@ -370,20 +368,21 @@ impl DrawRenderer {
             });
             let stamp = self.stamp(PASS_ORDERED_SPRITES);
             {
+                let encoder = self.frame_encoder();
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("native sprite write and row-copy order"),
                     timestamp_writes: stamp.compute(),
                 });
-                pass.set_pipeline(&self.compute_sprite_ordered);
+                pass.set_pipeline(&ordered);
                 pass.set_bind_group(0, &binding, &[]);
                 pass.dispatch_workgroups(layer.len() as u32, 1, 1);
             }
             self.counters.dispatches += 1;
             self.counters.ordered_sprite_passes += 1;
+            self.pass_boundary();
             layer_buffers.push((indices, binding));
         }
         self.counters.ordered_sprite_layers += layers.len() as u64;
-        self.submit_encoder(encoder);
         self.check_status()?;
         self.counters.batches += layers.len() as u64;
         self.counters.commands += run.len() as u64;

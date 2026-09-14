@@ -77,7 +77,7 @@ std::string json_quote(const std::string& value)
 }
 
 constexpr int DrawingCounterCount = sizeof(PerformanceDrawingCounters) / sizeof(unsigned long long);
-constexpr int DrawingGaugeCount = 2;
+constexpr int DrawingGaugeCount = 3;
 /* Names must stay in PerformanceDrawingCounters member order; gauges come last. */
 const char* const drawing_counter_names[DrawingCounterCount] = {
     "submits", "dispatches", "waits", "wait_ns", "checkpoints", "checkpoint_copy_bytes",
@@ -97,7 +97,7 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
     "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
     "gpu_timed_passes", "gpu_untimed_passes", "gpu_pass_union_ns",
-    "host_staged_asset_bytes", "arena_bytes_resident"};
+    "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak"};
 static_assert(sizeof(PerformanceDrawingCounters) == DrawingCounterCount * sizeof(unsigned long long),
     "drawing counters must be a packed array of unsigned long long");
 

@@ -363,10 +363,17 @@ pub unsafe extern "C" fn kfx_wgpu_present(
             ensure!(!handle.is_null(), "null presenter");
             let presenter = &mut *handle.cast::<Presenter>();
             ensure!(!presenter.failed, "presenter is terminal");
-            let frame = presenter.pending.take().context("no submitted frame")?;
+            // The frame's one submit. It happens here and not in `prepare_present`
+            // because the cursor restore is recorded between the two, and it happens on
+            // the acquisition-skip path too, where the encoder holds the same work
+            // minus the palette pass.
             if let Some(drawing) = presenter.drawing.as_mut() {
-                drawing.tail_submit();
+                drawing.frame_submit()?;
             }
+            let Some(frame) = presenter.pending.take() else {
+                presenter.renderer.check_status()?;
+                return Ok(Some(0));
+            };
             presenter.renderer.queue().present(frame);
             presenter.renderer.check_status()?;
             Ok(Some(1))
@@ -374,7 +381,13 @@ pub unsafe extern "C" fn kfx_wgpu_present(
     };
     if result.is_none() && !handle.is_null() {
         unsafe {
-            (*handle.cast::<Presenter>()).failed = true;
+            let presenter = &mut *handle.cast::<Presenter>();
+            presenter.failed = true;
+            // A terminal failure drops the recording rather than submitting half a
+            // frame; the SDL fallback redraws from scratch.
+            if let Some(drawing) = presenter.drawing.as_mut() {
+                drawing.frame_discard();
+            }
         }
     }
     result.unwrap_or(-1)
@@ -947,10 +960,13 @@ pub unsafe extern "C" fn kfx_wgpu_draw_prepare_present(
             );
             let presenter = &mut *handle.cast::<Presenter>();
             presenter.drawing()?.target_dimensions(target)?;
+            // Flush what the frame has queued before the swapchain image is held, so
+            // the surface is acquired for the shortest possible window.
+            presenter.drawing()?.frame_flush()?;
             if !presenter.acquire(output_width, output_height, vsync != 0)? {
-                // The tail already holds the cursor backup and composition; dropping it
-                // would leave the cursor background one frame behind the root.
-                presenter.drawing()?.tail_submit();
+                // The encoder stays open and unsubmitted: `kfx_wgpu_present` still runs
+                // and submits it, with the cursor restore recorded in between and the
+                // palette pass omitted.
                 return Ok(Some(0));
             }
             let view = presenter
@@ -984,7 +1000,11 @@ pub unsafe extern "C" fn kfx_wgpu_draw_prepare_present(
             Ok(Some(1))
         });
         if result.is_none() && !handle.is_null() {
-            (*handle.cast::<Presenter>()).failed = true;
+            let presenter = &mut *handle.cast::<Presenter>();
+            presenter.failed = true;
+            if let Some(drawing) = presenter.drawing.as_mut() {
+                drawing.frame_discard();
+            }
         }
         result.unwrap_or(-1)
     }
@@ -1020,6 +1040,7 @@ pub struct DrawCounters {
     timed_passes: u64,
     untimed_passes: u64,
     gpu_pass_union_ns: u64,
+    arena_scratch_bytes_peak: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1067,6 +1088,7 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 timed_passes: counters.timed_passes,
                 untimed_passes: counters.untimed_passes,
                 gpu_pass_union_ns: counters.gpu_pass_union_ns,
+                arena_scratch_bytes_peak: arena.scratch_bytes_peak,
             });
             Ok(Some(1))
         });

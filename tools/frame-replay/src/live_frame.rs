@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a GPU adapter"]
-    fn gpu_c_abi_frame_offscreen_cursor_and_alias_checkpoints() {
+    fn gpu_c_abi_frame_offscreen_cursor_and_alias_flushes() {
         unsafe {
             let mut error = [0i8; 1024];
             let context = kfx_wgpu_draw_create(error.as_mut_ptr(), error.len());
@@ -227,7 +227,7 @@ mod tests {
             ));
             assert_eq!(pixels, [77; 4]);
             accepted!(call!(kfx_wgpu_draw_frame_counters, &mut counters));
-            assert_eq!(counters.checkpoints, 1);
+            assert_eq!(counters.checkpoints, 0);
             let interleaved = Command {
                 colour: 90,
                 width: 1,
@@ -277,11 +277,11 @@ mod tests {
             accepted!(call!(kfx_wgpu_draw_target_release, dead));
             assert_eq!(call!(kfx_wgpu_draw_target_snapshot, dead, 0, 0, 1, 1, 1), 0);
             accepted!(call!(kfx_wgpu_draw_frame_counters, &mut counters));
-            assert_eq!(counters.checkpoints, 2);
+            assert_eq!(counters.checkpoints, 0);
             assert_eq!(counters.validation_waits, 0);
             accepted!(call!(kfx_wgpu_draw_frame_end));
             accepted!(call!(kfx_wgpu_draw_frame_counters, &mut counters));
-            assert_eq!(counters.checkpoints, 3);
+            assert_eq!(counters.checkpoints, 0);
             assert_eq!(counters.queued_commands, 4);
             let mut final_pixels = [0u8; 12 * 8];
             accepted!(call!(
