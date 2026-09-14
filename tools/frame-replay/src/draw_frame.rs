@@ -433,18 +433,7 @@ impl DrawRenderer {
         }
     }
 
-    /// Whether a flush would replay anything; also the condition under which the
-    /// present tail has to be submitted first, so its records precede the replay.
-    pub(super) fn frame_pending(&self) -> bool {
-        self.frame
-            .as_ref()
-            .is_some_and(|frame| !frame.stream.is_empty() || !frame.serials.is_empty())
-    }
-
     pub fn frame_flush(&mut self) -> Result<()> {
-        if self.frame_pending() {
-            self.tail_submit();
-        }
         let Some(mut frame) = self.frame.take() else {
             return Ok(());
         };
