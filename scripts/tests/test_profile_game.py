@@ -155,6 +155,11 @@ class ProfileTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     profile.summarize(output, arguments())
 
+    def test_new_rust_report_requires_presenter_samples(self):
+        for presenter in (None, {"per_frame": []}):
+            with self.assertRaisesRegex(RuntimeError, "cover every presentation"):
+                profile.summarize_presenter(presenter, {}, required=True)
+
     def test_presenter_cpu_is_unavailable_for_legacy_reports(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)

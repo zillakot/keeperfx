@@ -391,7 +391,8 @@ def summarize(output, args):
             "Breakdown zero samples mean the scope was not visited or took less than clock resolution; they do not prove a drawing family was absent.",
             "Compare matched runs with and without --draw-breakdown to measure instrumentation overhead; overhead is not assumed negligible.",
         ]
-    presenter_report = summarize_presenter(metadata.get("presenter"), samples)
+    presenter_report = summarize_presenter(metadata.get("presenter"), samples,
+                                           required=metadata.get("replay_scope") is True and args.backend == "rust")
     wall_ms = {kind: distribution(values) for kind, values in samples.items()}
     window_ms = resource_report.get("wall_ms")
     observed = {"frames_per_second": 1000 / wall_ms["frame_interval"]["mean"],
@@ -404,7 +405,9 @@ def summarize(output, args):
             "limitations": limitations + (["HEADLESS SOFTWARE SMOKE TEST: not a native presentation baseline."] if args.headless else [])}
 
 
-def summarize_presenter(presenter, samples):
+def summarize_presenter(presenter, samples, required=False):
+    if required and (not isinstance(presenter, dict) or not presenter.get("per_frame")):
+        raise RuntimeError("presenter counters must cover every presentation")
     if presenter is None:
         return None
     rows = presenter.get("per_frame")
