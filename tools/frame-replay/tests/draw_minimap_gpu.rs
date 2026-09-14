@@ -313,10 +313,16 @@ fn recurring_segments_queued_replacement_recovery_and_nested_views() {
     draw.frame_flush().unwrap();
     draw.frame_abort().unwrap();
     let recovery = draw.arena_counters().misses_generation;
+    let before_recovery = segments(&draw);
     draw.frame_begin(root).unwrap();
     issue(&mut draw, target, &payload(0, 11, 255));
     draw.frame_end().unwrap();
-    assert!(draw.arena_counters().misses_generation > recovery);
+    assert_eq!(draw.arena_counters().misses_generation, recovery + 3);
+    let after_recovery = segments(&draw);
+    assert_eq!(
+        std::array::from_fn::<_, 4, _>(|i| after_recovery[i] - before_recovery[i]),
+        [416, 1024, 524288, 1697036]
+    );
     assert!(segments(&draw)[1] > before[1]);
 }
 
@@ -355,4 +361,61 @@ fn oversized_cache_falls_back_and_open_encoder_pressure_preserves_readers() {
     for (version, view) in views.iter().enumerate() {
         assert_eq!(draw.readback(*view).unwrap()[16 * 64 + 16], version as u8);
     }
+}
+
+#[test]
+#[ignore = "requires GPU adapter"]
+fn content_hits_still_upload_after_arena_eviction() {
+    let mut draw = drawing_limit(32 << 20);
+    let target = draw.create_target(64, 64).unwrap();
+    issue(&mut draw, target, &payload(4, 0, 255));
+    let terrain = payload(0, 19, 255);
+    issue(&mut draw, target, &terrain);
+    let mut resources = Vec::new();
+    for _ in 0..8 {
+        let source = draw.create_resource(&vec![9; 2 << 20], 1, 1, 1).unwrap();
+        resources.push(source);
+        draw.submit(
+            target,
+            &[Command {
+                kind: IMAGE,
+                source,
+                width: 1,
+                height: 1,
+                source_width: 1,
+                source_height: 1,
+                clip_width: 64,
+                clip_height: 64,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+    }
+    assert!(draw.arena_counters().evictions > 0);
+    for source in resources {
+        draw.release_resource(source).unwrap();
+    }
+    let before = segments(&draw);
+    let counters = draw.counters();
+    let evicted = draw.arena_counters().misses_eviction;
+    issue(&mut draw, target, &terrain);
+    let after = segments(&draw);
+    assert_eq!(
+        std::array::from_fn::<_, 4, _>(|i| after[i] - before[i]),
+        [416, 1024, 524288, 1697036]
+    );
+    assert_eq!(
+        draw.counters().minimap_cells_hits,
+        counters.minimap_cells_hits + 1
+    );
+    assert_eq!(
+        draw.counters().minimap_styles_hits,
+        counters.minimap_styles_hits + 1
+    );
+    assert_eq!(
+        draw.counters().minimap_dictionary_hits,
+        counters.minimap_dictionary_hits + 1
+    );
+    assert_eq!(draw.arena_counters().misses_eviction, evicted + 3);
+    assert_eq!(draw.readback(target).unwrap()[16 * 64 + 16], 19);
 }

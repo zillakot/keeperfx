@@ -1,9 +1,9 @@
-struct MinimapView { target: vec4<u32>, segments: vec4<u32> };
+struct MinimapView { viewport: vec4<u32>, segments: vec4<u32> };
 @group(0) @binding(3) var<uniform> view: MinimapView;
-fn address(i: u32) -> u32 { return view.target.z + (i / view.target.x) * view.target.y + i % view.target.x; }
+fn address(i: u32) -> u32 { return view.viewport.z + (i / view.viewport.x) * view.viewport.y + i % view.viewport.x; }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<storage, read> assets: array<u32>;
-fn data(i:u32)->u32 {return assets[view.target.w+i];}
+fn data(i:u32)->u32 {return assets[view.viewport.w+i];}
 @group(0) @binding(2) var<storage, read> background: array<u32>;
 fn word(o:u32)->u32 {return data(o)|(data(o+1)<<8)|(data(o+2)<<16)|(data(o+3)<<24);}
 fn h(i:u32)->u32 {return word(i*4);}
