@@ -7,7 +7,12 @@ use anyhow::{Result, ensure};
 /// that, both binary searches fall off their table and `bitmap_sample` returns the
 /// transparent index. A glyph writes only inside the scaled destination rectangle, plus
 /// one pixel right and down when the shadow layer is enabled.
-pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) -> Result<[i64; 4]> {
+pub(super) fn validate(
+    c: &Command,
+    source: &Resource,
+    width: u32,
+    height: u32,
+) -> Result<[i64; 4]> {
     ensure!(
         c.blend == 0
             && c.transparent == OPAQUE
@@ -91,7 +96,10 @@ pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) 
             );
         }
     }
-    let origin = [i64::from(c.start_low as i32), i64::from(c.start_high as i32)];
+    let origin = [
+        i64::from(c.start_low as i32),
+        i64::from(c.start_high as i32),
+    ];
     let shadow = i64::from(c.source_y != 0);
     Ok([
         origin[0],

@@ -72,7 +72,13 @@ fn with_eroded_boxes(drawing: &mut DrawRenderer, commands: &[Command]) -> Vec<u8
 
 /// `2*w*h` artwork bytes, then one contiguous `(start, length)` range per source column
 /// and row, then the 256-byte remap the sampler ends in.
-fn sprite_asset(w: usize, h: usize, xs: &[(u32, u32)], ys: &[(u32, u32)], ordered: bool) -> Vec<u8> {
+fn sprite_asset(
+    w: usize,
+    h: usize,
+    xs: &[(u32, u32)],
+    ys: &[(u32, u32)],
+    ordered: bool,
+) -> Vec<u8> {
     assert_eq!((xs.len(), ys.len()), (w, h));
     let mut bytes = Vec::new();
     for y in 0..h {
@@ -120,7 +126,12 @@ fn scaled(origin: u32, count: usize, step: u32) -> Vec<(u32, u32)> {
         .collect()
 }
 
-fn triangle(drawing: &mut DrawRenderer, fades: u64, points: [(i32, i32); 3], colour: u32) -> Command {
+fn triangle(
+    drawing: &mut DrawRenderer,
+    fades: u64,
+    points: [(i32, i32); 3],
+    colour: u32,
+) -> Command {
     let mut bytes = Vec::new();
     for (x, y) in points {
         bytes.extend(words(&[x as u32, y as u32, 0, 0, 0]));
@@ -140,9 +151,12 @@ fn triangle(drawing: &mut DrawRenderer, fades: u64, points: [(i32, i32); 3], col
     }
 }
 
-/// One huge-bitmap row group: `(y, rows, [(x, run, colour)])`, laid out as the software
-/// adapter emits it — a 16-byte row header per row group, then the pixel runs.
-fn huge(drawing: &mut DrawRenderer, rows: &[(u32, u32, Vec<(u32, u32, u32)>)]) -> Command {
+/// One huge-bitmap pixel run: destination x, length and colour index.
+type Run = (u32, u32, u32);
+
+/// One huge-bitmap row group: `(y, rows, runs)`, laid out as the software adapter emits
+/// it — a 16-byte row header per row group, then the pixel runs.
+fn huge(drawing: &mut DrawRenderer, rows: &[(u32, u32, Vec<Run>)]) -> Command {
     let mut header = Vec::new();
     let mut records = Vec::new();
     let mut offset = rows.len() * 16;
@@ -213,19 +227,19 @@ fn sprite_cases(drawing: &mut DrawRenderer) -> Vec<Command> {
         sprite(drawing, &scaled(16, 2, 1), &scaled(16, 2, 1), 0),
         sprite(drawing, &scaled(15, 2, 1), &scaled(15, 2, 1), 0),
         sprite(drawing, &scaled(14, 4, 5), &scaled(30, 3, 7), 0),
-        sprite(drawing, &scaled(WIDTH - 1, 3, 1), &scaled(HEIGHT - 2, 3, 1), 0),
+        sprite(
+            drawing,
+            &scaled(WIDTH - 1, 3, 1),
+            &scaled(HEIGHT - 2, 3, 1),
+            0,
+        ),
         sprite(drawing, &scaled(WIDTH + 40, 2, 3), &scaled(4, 2, 3), 0),
         sprite(drawing, &scaled(4, 2, 3), &scaled(HEIGHT + 40, 2, 3), 0),
         sprite(drawing, &[(9, 0), (9, 0)], &[(9, 0), (9, 0)], 0),
         sprite(drawing, &[(0, 0), (0, 0)], &[(0, 0), (0, 0)], 0),
     ];
     for flip in [1, 2, 3] {
-        cases.push(sprite(
-            drawing,
-            &scaled(12, 3, 4),
-            &scaled(11, 3, 4),
-            flip,
-        ));
+        cases.push(sprite(drawing, &scaled(12, 3, 4), &scaled(11, 3, 4), flip));
     }
     // Ordered sprites keep their own single-workgroup pass, so their box only has to
     // stay a superset; the left widening covers the `[leftmost-1, rightmost]` row copy.
@@ -277,15 +291,19 @@ fn bitmap_cases(drawing: &mut DrawRenderer) -> Vec<Command> {
             ],
         ),
         // The whole target: the box stays the emitter's bounds and must agree with it.
-        huge(
-            drawing,
-            &[(0, HEIGHT, vec![(0, WIDTH, 109)])],
-        ),
+        huge(drawing, &[(0, HEIGHT, vec![(0, WIDTH, 109)])]),
         huge(drawing, &[(20, 0, vec![])]),
         glyph(drawing, 9, 5, (3, 4), (9, 5), false),
         glyph(drawing, 9, 5, (16, 16), (9, 5), true),
         glyph(drawing, 9, 5, (-4, -3), (18, 15), true),
-        glyph(drawing, 9, 5, (WIDTH as i32 - 2, HEIGHT as i32 - 2), (9, 5), true),
+        glyph(
+            drawing,
+            9,
+            5,
+            (WIDTH as i32 - 2, HEIGHT as i32 - 2),
+            (9, 5),
+            true,
+        ),
         glyph(drawing, 8, 4, (2, 30), (60, 40), true),
     ]
 }
@@ -400,4 +418,3 @@ fn the_index_accounts_for_every_entry_by_kind() {
     );
     assert!(kinds >= 4, "only {kinds} kinds reached the index");
 }
-
