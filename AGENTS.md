@@ -9,6 +9,14 @@
 - For substantial work, the parent orchestrates fresh, bounded subagents and reads their final reports and artifact summaries rather than full transcripts. Keep responsibilities separate and avoid concurrent benchmark workloads.
 - Default to no comments and minimal docstrings sufficient for API documentation. Preserve only non-obvious constraints; keep touched documentation concise.
 
+## Agent workflow
+
+- Implementers open the PR and report; the lead merges after a review round. Do not self-merge on green CI.
+- Write evidence files under the ignored `out/` directory with a shell heredoc, never with an editor tool that prompts for paths outside the worktree.
+- Hold `/private/tmp/keeperfx-timing.lock` for the duration of a timing run, and wait on it before starting a build.
+- A silent agent is usually blocked on a prompt. Redirect it with a message before restarting it.
+- Each implementation PR is preceded by a read-only spec and followed by a reviewer subagent, at most three review rounds.
+
 ## Starting points
 
 - [Documentation index](docs/README.md) and [project overview](docs/architecture/project-overview.md): current architecture and canonical guides.
