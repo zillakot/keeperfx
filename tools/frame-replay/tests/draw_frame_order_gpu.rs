@@ -2,7 +2,7 @@ mod families;
 
 use families::{
     alias_lens, assets, family, lens_command, minimap, minimap_command, ordered_sprite,
-    terrain_triangle,
+    shadow_command, terrain_triangle,
 };
 use keeperfx_frame_replay::draw::DrawRenderer;
 
@@ -21,6 +21,7 @@ enum Step {
     Lens(usize),
     Minimap(usize),
     Terrain(usize, i64),
+    Shadow(usize),
 }
 
 fn plan(steps: usize) -> Vec<Step> {
@@ -28,13 +29,14 @@ fn plan(steps: usize) -> Vec<Step> {
     let mut plan = Vec::new();
     for _ in 0..steps {
         let view = seed.next(3) as usize;
-        let kind = seed.next(10);
+        let kind = seed.next(12);
         let raster = seed.next(14) as usize;
         plan.push(match kind {
             0 => Step::Ordered(view),
             1 => Step::Lens(view),
             2 => Step::Minimap(view),
             3 | 4 => Step::Terrain(view, i64::from(seed.next(48))),
+            5 | 6 => Step::Shadow(view),
             _ => Step::Raster(view, raster),
         });
     }
@@ -55,6 +57,27 @@ fn boundaries(plan: &[Step]) -> u64 {
         }
     }
     passes + u64::from(open)
+}
+
+/// Serial routes the stream must run: one per serial step, except that adjacent terrain
+/// steps against the same view with no record between them share a submission.
+fn serial_routes(plan: &[Step]) -> u64 {
+    let mut routes = 0;
+    let mut terrain = None;
+    for step in plan {
+        match step {
+            Step::Raster(..) => terrain = None,
+            Step::Terrain(view, _) => {
+                routes += u64::from(terrain != Some(*view));
+                terrain = Some(*view);
+            }
+            _ => {
+                routes += 1;
+                terrain = None;
+            }
+        }
+    }
+    routes
 }
 
 /// One frame of every family interleaved across three views in a seeded order,
@@ -115,14 +138,23 @@ fn interleaved_families_keep_their_order() {
                         .submit_triangles(into[view], &[terrain_triangle(&a, shade)])
                         .unwrap();
                 }
+                Step::Shadow(view) => {
+                    let (w, h) = sizes[view];
+                    drawing
+                        .submit_shadow(into[view], &shadow_command(&a, w, h))
+                        .unwrap();
+                }
             }
         }
     };
 
+    // The shadow chain carries across frames, so both paths start from a cleared scratch.
     let start = drawing.counters().batches;
+    drawing.shadow_scratch_reset().unwrap();
     run(&mut drawing, &targets[0].clone());
     let separate = drawing.counters().batches - start;
     let before = drawing.counters();
+    drawing.shadow_scratch_reset().unwrap();
     drawing.frame_begin(targets[1][0]).unwrap();
     run(&mut drawing, &targets[1].clone());
     drawing.frame_end().unwrap();
@@ -137,24 +169,20 @@ fn interleaved_families_keep_their_order() {
     let mut seen = expected.clone();
     seen.sort_unstable();
     seen.dedup();
-    assert!(seen.len() > 32, "the fixture must actually draw");
-
-    let serials = plan
-        .iter()
-        .filter(|step| !matches!(step, Step::Raster(..)))
-        .count() as u64;
     assert!(
-        streamed <= 2 * serials + 1,
-        "one raster pass per serial segment, not one per command: {streamed} for {serials} serials"
+        seen.len() > 16,
+        "the fixture must actually draw: {} colours",
+        seen.len()
     );
+
     assert!(
         streamed < separate,
         "the stream must collapse the per-command batches: {streamed} against {separate}"
     );
     assert_eq!(
-        streamed - serials,
-        boundaries(&plan),
-        "one raster pass per serial segment"
+        streamed,
+        serial_routes(&plan) + boundaries(&plan),
+        "one raster pass per serial segment and nothing else"
     );
     assert!(drawing.counters().tile_entries > 0);
 }

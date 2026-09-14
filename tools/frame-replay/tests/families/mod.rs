@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 use keeperfx_frame_replay::draw::{
     ABI_VERSION, BITMAP, CIRCLE_FILLED, CIRCLE_OUTLINE, CLEAR, Command, DrawRenderer, GPOLY_SPAN,
-    IMAGE, LENS_EFFECT, MAP_VIEW, MINIMAP, MOVIE, OPAQUE, RAW_IMAGE, RECT, SPRITE, TILED_IMAGE,
-    TRIG, TriangleCommand,
+    IMAGE, LENS_EFFECT, MAP_VIEW, MINIMAP, MOVIE, OPAQUE, RAW_IMAGE, RECT, SHADOW, SPRITE,
+    TILED_IMAGE, TRIG, TriangleCommand,
 };
 use keeperfx_frame_replay::gpoly::Vertex;
 
@@ -19,6 +19,7 @@ pub struct Assets {
     geometry: u64,
     fades: u64,
     pub ordered: u64,
+    pub shadow: u64,
     pub terrain: u64,
     pub terrain_fade: u64,
 }
@@ -49,6 +50,21 @@ fn huge_bytes() -> Vec<u8> {
     bytes.extend(words(&[2, 1, 44, 1]));
     bytes.extend(words(&[1, 3, 77]));
     bytes.extend(words(&[2, 3, 88]));
+    bytes
+}
+
+/// A 32-byte descriptor, two 60-byte vertex triples and a three-row RLE, laid out the
+/// way the software shadow adapter emits one.
+fn shadow_bytes() -> Vec<u8> {
+    let mut bytes = words(&[16, 16, 4, 3, 2, 2, 0, 12]);
+    for shift in [0u32, 1] {
+        for (x, y) in [(2u32, 2u32), (12, 3), (4, 12)] {
+            bytes.extend(words(&[x + shift, y + shift, 3 << 16, 3 << 16, 0]));
+        }
+    }
+    for row in 0..3u8 {
+        bytes.extend([2, 0x30 + row, 0x40 + row, 0]);
+    }
     bytes
 }
 
@@ -89,6 +105,7 @@ pub fn assets(drawing: &mut DrawRenderer) -> Assets {
         geometry: drawing.create_resource(&geometry, 60, 1, 60).unwrap(),
         fades: drawing.create_resource(&fades, 256, 320, 256).unwrap(),
         ordered: blob(drawing, &ordered),
+        shadow: blob(drawing, &shadow_bytes()),
         terrain: drawing
             .create_resource(&vec![37; 8192], 32, 32, 256)
             .unwrap(),
@@ -101,6 +118,10 @@ pub fn assets(drawing: &mut DrawRenderer) -> Assets {
 /// One command of every kind the raster stream carries, sized to the view it is
 /// issued against, so every sampler runs at the view's origin.
 pub fn family(a: &Assets, width: u32, height: u32, tint: u32) -> Vec<Command> {
+    // A clip narrower than the view at a nonzero offset, so rebased bounds meet a real
+    // view-space clip rather than the default that only exercises the clamp.
+    let (clip_x, clip_y) = (3, 4);
+    let (clip_width, clip_height) = (width - 6, height - 8);
     vec![
         Command {
             kind: CLEAR,
@@ -125,6 +146,10 @@ pub fn family(a: &Assets, width: u32, height: u32, tint: u32) -> Vec<Command> {
             height: 6,
             source_width: 4,
             source_height: 3,
+            clip_x,
+            clip_y,
+            clip_width,
+            clip_height,
             ..Default::default()
         },
         Command {
@@ -177,6 +202,10 @@ pub fn family(a: &Assets, width: u32, height: u32, tint: u32) -> Vec<Command> {
             height: 5,
             source_width: 4,
             source_height: 4,
+            clip_x,
+            clip_y,
+            clip_width,
+            clip_height,
             ..Default::default()
         },
         Command {
@@ -241,6 +270,10 @@ pub fn family(a: &Assets, width: u32, height: u32, tint: u32) -> Vec<Command> {
             height,
             source_width: 64,
             transparent: OPAQUE,
+            clip_x,
+            clip_y,
+            clip_width,
+            clip_height,
             ..Default::default()
         },
     ]
@@ -322,6 +355,22 @@ pub fn minimap_command(source: u64, width: u32, height: u32) -> Command {
     Command {
         kind: MINIMAP,
         source,
+        width,
+        height,
+        clip_width: width,
+        clip_height: height,
+        ..Default::default()
+    }
+}
+
+/// The mask writes a resident slot the command's own triangles then sample, so a shadow
+/// is a serial boundary wherever it lands in the stream.
+pub fn shadow_command(a: &Assets, width: u32, height: u32) -> Command {
+    Command {
+        kind: SHADOW,
+        source: a.shadow,
+        table: a.fades,
+        colour: 17,
         width,
         height,
         clip_width: width,
