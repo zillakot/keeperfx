@@ -19,6 +19,12 @@ const STATUS_FRAME: u32 = 0u;
 const STATUS_TRIG_LOOKUP: u32 = 1u;
 fn raise(cause: u32) { atomicStore(&status[STATUS_FRAME], 1u); atomicStore(&status[cause], 1u); }
 fn pixel_address(i: u32) -> u32 { return parameters.offset + (i / parameters.x) * parameters.pitch + i % parameters.x; }
+// Bounds and clip are stored in the dispatch's space; samplers work in the view the
+// command was issued against, which is that space shifted by the record's origin.
+fn view_bounds(c: Command) -> vec4<i32> {
+    let o = vec2<i32>(c.origin.xy);
+    return c.bounds - vec4(o, o);
+}
 
 fn mul_high(a: u32, b: u32) -> u32 {
     let a0 = a & 65535u;
@@ -106,18 +112,20 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
             let shade = low & 0xff00u;
             source = assets[c.assets.y + shade + assets[c.assets.x + uv]];
         }
+        let local_pixel = pixel - vec2<i32>(c.origin.xy);
+        let viewed = vec2<u32>(local_pixel);
         if c.operation.x == 9u {
-            let sampled = trig_sample(c, pixel, destination);
+            let sampled = trig_sample(c, local_pixel, destination);
             if sampled == 257u { raise(STATUS_TRIG_LOOKUP); continue; }
             destination = sampled;
             continue;
         }
-        if c.operation.x == 16u { source = transition_sample(c, id.xy); }
-        if c.operation.x == 15u { source = bitmap_sample(c, id.xy); }
-        if c.operation.x == 14u { source = map_view_sample(c, id.xy, destination); }
-        if c.operation.x == 13u { source = movie_sample(c, id.xy); }
-        if c.operation.x == 6u { source = sprite_sample(c, id.xy); }
-        if c.operation.x == 7u || c.operation.x == 8u { source = raw_sample(c, id.xy); }
+        if c.operation.x == 16u { source = transition_sample(c, viewed); }
+        if c.operation.x == 15u { source = bitmap_sample(c, viewed); }
+        if c.operation.x == 14u { source = map_view_sample(c, viewed, destination); }
+        if c.operation.x == 13u { source = movie_sample(c, viewed); }
+        if c.operation.x == 6u { source = sprite_sample(c, viewed); }
+        if c.operation.x == 7u || c.operation.x == 8u { source = raw_sample(c, viewed); }
         if source == c.options.x { continue; }
         var hits = 1u;
         if c.operation.x == 4u || c.operation.x == 5u {
