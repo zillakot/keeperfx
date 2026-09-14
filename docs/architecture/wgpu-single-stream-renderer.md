@@ -212,13 +212,19 @@ equal the single-pass count exactly. Each split costs one extra load and store o
 pixel — 16.6 MB at 1080p, ~0.08 ms at 200 GB/s — so ten splits cost ~0.8 ms, against the 1,423 MB of the
 same traffic that today's ~86 full-target passes move.
 
-**Ordered sprites.** `sprite_ordered` is `@workgroup_size(1)` and today gets one submit and one
-`dispatch_workgroups(1,1,1)` per sprite. The record index becomes a parameter so one dispatch of *M*
-workgroups handles *M* sprites, and sprites are assigned to **layers** by greedy rectangle disjointness
-over their clip rectangles, computed on the CPU. A naive "one dispatch of N workgroups" would race, since
-`sprite_ordered` writes arbitrary pixels inside its clip rectangle; a sprite may join a layer only if it
-also overlaps no raster command between it and the layer's other members. Worst case degenerates to
-today's one pass per sprite.
+**Ordered sprites (implemented).** `sprite_ordered` is `@workgroup_size(1)`. The record index is a
+workgroup-indexed parameter, so one dispatch of *M* workgroups handles *M* sprites, and consecutive
+sprites are assigned to **layers** by greedy rectangle disjointness computed on the CPU. A naive "one
+dispatch of N workgroups" would race, since `sprite_ordered` writes arbitrary pixels; a sprite may join a
+layer only if no record between it and the layer's other members overlaps it, which a contiguous run in
+frame order gives for free. Worst case degenerates to one pass per sprite.
+
+The rectangle is **not** the clip rectangle: the emitter sets clip from the drawing window, so every
+ordered sprite in a real frame carries the whole play area. It is the sprite's own scaling ranges, which
+`validate` proves contiguous and ascending and `validate_target` proves every run lies inside, grown one
+column to the left because a row copy spans `[leftmost - 1, rightmost]` exactly as the native
+right-to-left kernel does. Where that column crosses a row start it lands on the tail of the previous
+row, and the rectangle widens to the whole row band one row higher.
 
 **Shadow residency (implemented, without hoisting).** The chain is `mask_i = f(scratch_{i-1}, artwork_i)`,
 then `scratch_i = mask_i`, then two `TRIG` commands sample `mask_i`. Because the mask never depends on the
@@ -424,7 +430,7 @@ Each step is one PR and keeps every existing fixture green.
 | 6 | **Non-blocking validation, no double copy.** Delivered, GPU drawing behind the SDL presenter: the flag lives in the raster kernels, a mapped ring reads it one or two frames later, batches write straight into the root and the transactional scratch and its snapshot rollback are gone. Blocking waits outside the CPU presenter's own readbacks and `frame_gpu_checkpoint_copy_bytes` are structurally 0; the wgpu-presenter pair is outstanding. |
 | 7 | **Single command stream, root space, one tile index.** Delivered, GPU drawing behind the SDL presenter: per-command view origins, counting-sort binning into renderer-owned scratch, one raster pass per serial segment sized to the tiles its records reach, and the bridge's target-change flushes removed. Tile-list allocations → 0, bridge target-change flushes 39.3 → 0, buffer allocations 198.5 → 161.3 and Rust allocator calls 30.0 M → 5.7 M per measured window; **Rust batches stayed ~73**, because ~38 creature shadows per frame each close a raster segment. CPU drawing and presentation improve; GPU blocking wait rises about 2 ms per frame and observed FPS falls 1–3. **That cost is unattributed.** Two candidates were measured and rejected: the record layout (above), and root-space tile misalignment — binning the same busy frame against each record's own view yields 117,693 entries against 121,849 in root space, 3.5%, which cannot account for a 20% wait. What did move with it is one dispatch and one submit per raster pass where the per-batch path merged them. The ~38 figure is shadow *submits*: consecutive shadows share one boundary, so the frame cuts fewer raster passes than that. Fixtures 1 and 2 landed. |
 | 8 | **Terrain triangles in the stream**, with tile binning, a prepared-row arena compressed to covered rows, and the separate validate pass deleted. | terrain iterations 308 M → ≤ 10 M and 2,065 M → ≤ 25 M; full-target dispatches ~86 → ~2 |
-| 9 | **Ordered sprites into layers.** One dispatch of *M* workgroups per disjoint layer. | per-sprite submits → 0; sized by PR 1's `ordered_sprites` |
+| 9 | **Ordered sprites into layers.** Delivered: consecutive ordered sprites whose write rectangles are disjoint share one dispatch of *M* workgroups, an overlapping sprite opens the next layer, and layers run in frame order. A sprite is bounded by its own scaling ranges, not by its clip rectangle, which the emitter always sets to the whole drawing window. **The acceptance counter did not move.** Measured on five matched busy 640x480 pairs: `ordered_sprite_layers` 2.68 against `ordered_sprites` 2.69, so layering merges about one sprite in 250. Consecutive ordered sprites are rare — a 20-turn trace found 4 runs of two against 559 runs of one — because a raster record between two of them ends the run. `submits` 76.9 → 74.9 and `buffers` 165.5 → 155.9, both inside a run-to-run spread wider than the effect. No FPS change is attributable. | per-sprite submits → 0; sized by PR 1's `ordered_sprites` |
 | 10 | **Cursor at the tail of one encoder.** Delivered: target snapshots, target images and the palette render pass record into a present tail that `kfx_wgpu_present` submits, the acquisition-skip path finishes, and every other submit is ordered behind. `LbMouseOnEndSwap` runs before the present call so the restore joins it. **The checkpoint inside `PerfPresentation` does not go here.** It is not the cursor: `lbPointerAdvancedDraw` is never set, so `OnBeginSwap` draws the direct scaled sprite into the frame stream and `OnEndSwap` does nothing, and the measured 1.0 is `ResidentTarget`'s own terminal `frame_flush`. Hoisting `ResidentTarget` above `LbMouseOnBeginSwap` would leave the direct cursor to reopen the queued frame and make `present_into` flush it a second time — 2.0 checkpoints per frame, not 0. Measured on a matched busy 640x480 triple: checkpoints 1.00 → 1.00, submits 77.4 → 77.2, buffers 168.5 → 166.1, all inside run-to-run spread. | the advanced-draw swap: six submissions → one |
 | 11 | **Fold lens and minimap.** Non-alias lens and minimap modes 1–3 become stream kinds. | two fewer pipelines and their per-call buffers |
 | 12 | **One encoder, one submit**, palette render pass included; `prepare_present` becomes acquire → record → finish → submit. Also has to take `Arena::reserve`'s bare growth `queue.submit`, the one submission that does not go through `submit_encoder` and so neither counts nor orders itself against the present tail. | `submits` → 1 |
