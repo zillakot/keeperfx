@@ -167,6 +167,10 @@ pub struct Counters {
     pub buffer_bytes: u64,
     pub tile_allocations: u64,
     pub tile_entries: u64,
+    /// Layers of mutually disjoint ordered sprites, and the compute passes serving them.
+    /// One pass per layer, so a divergence is a bug.
+    pub ordered_sprite_layers: u64,
+    pub ordered_sprite_passes: u64,
 }
 
 pub struct DrawRenderer {

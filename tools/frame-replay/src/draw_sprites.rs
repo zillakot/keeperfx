@@ -103,6 +103,64 @@ fn validate_target(c: &Command, source: &Resource, width: u32, height: u32) -> R
     Ok(())
 }
 
+/// A half-open `[x0, y0, x1, y1)` superset of every target pixel one ordered sprite
+/// reads or writes, in the target's own space.
+///
+/// `validate_target` proves every run lies inside the clip rectangle, but a row copy
+/// spans `[leftmost - 1, rightmost]`, one pixel left of the run it replicates, exactly
+/// as the native right-to-left kernel does. The rectangle therefore grows a column to
+/// the left; where that column would cross the row start it lands on the tail of the
+/// previous row instead, so the rectangle widens to the whole row band one row higher.
+pub(super) fn write_rect(c: &Command, width: u32) -> [i64; 4] {
+    let mut rect = [
+        i64::from(c.x).max(i64::from(c.clip_x)),
+        i64::from(c.y).max(i64::from(c.clip_y)),
+        (i64::from(c.x) + i64::from(c.width)).min(i64::from(c.clip_x) + i64::from(c.clip_width)),
+        (i64::from(c.y) + i64::from(c.height)).min(i64::from(c.clip_y) + i64::from(c.clip_height)),
+    ];
+    if rect[0] >= rect[2] || rect[1] >= rect[3] {
+        return [0; 4];
+    }
+    if rect[0] > 0 {
+        rect[0] -= 1;
+    } else {
+        rect[1] = (rect[1] - 1).max(0);
+        rect[2] = rect[2].max(i64::from(width));
+    }
+    rect
+}
+
+fn disjoint(a: &[i64; 4], b: &[i64; 4]) -> bool {
+    a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1]
+}
+
+/// Groups consecutive ordered sprites whose write rectangles are pairwise disjoint into
+/// one layer. A sprite overlapping any member of the open layer closes it and opens the
+/// next, so layers run in frame order and the members of one layer commute.
+pub(super) fn layers(rects: &[[i64; 4]]) -> Result<Vec<Vec<u32>>> {
+    let mut layers: Vec<Vec<u32>> = Vec::new();
+    for (index, rect) in rects.iter().enumerate() {
+        let open = layers
+            .last()
+            .is_some_and(|layer| layer.iter().all(|i| disjoint(rect, &rects[*i as usize])));
+        if !open {
+            layers.push(Vec::new());
+        }
+        layers.last_mut().unwrap().push(index as u32);
+    }
+    for layer in &layers {
+        for (position, i) in layer.iter().enumerate() {
+            for j in &layer[position + 1..] {
+                ensure!(
+                    disjoint(&rects[*i as usize], &rects[*j as usize]),
+                    "ordered sprite layer holds an overlapping pair"
+                );
+            }
+        }
+    }
+    Ok(layers)
+}
+
 impl DrawRenderer {
     pub(super) fn submit_ordered_sprites(
         &mut self,
@@ -133,81 +191,118 @@ impl DrawRenderer {
         )?;
         packer.finish();
         for c in commands.iter().filter(|c| ordered(c)) {
-            validate_target(c, &self.resources[&c.source], target.width, target.height)?;
+            validate_target(c, &self.resources[&c.source], width, height)?;
         }
+        // A raster command between two ordered sprites orders them both, so a run of
+        // consecutive ordered sprites is the largest set layering may reorder within.
+        let mut run = Vec::new();
         for c in commands {
-            if !ordered(c) {
-                self.submit(target_id, std::slice::from_ref(c))?;
+            if ordered(c) {
+                run.push(*c);
                 continue;
             }
-            let mut packer = asset_packer(
+            self.dispatch_ordered_layers(target_id, &run)?;
+            run.clear();
+            self.submit(target_id, std::slice::from_ref(c))?;
+        }
+        self.dispatch_ordered_layers(target_id, &run)
+    }
+
+    /// One compute pass of *M* workgroups per layer of mutually disjoint sprites, in
+    /// frame order, all recorded into one encoder.
+    fn dispatch_ordered_layers(&mut self, target_id: u64, run: &[Command]) -> Result<()> {
+        if run.is_empty() {
+            return Ok(());
+        }
+        let target = self
+            .targets
+            .get(&target_id)
+            .context("unknown sprite target")?
+            .clone();
+        let limit = self.storage_limit() as usize;
+        let mut packer = asset_packer(
+            &self.device,
+            &self.queue,
+            &mut self.arena,
+            &mut self.counters,
+            &mut self.tail,
+            self.asset_generation,
+            limit,
+        );
+        let words = pack_commands(
+            &mut packer,
+            run,
+            &self.resources,
+            ViewSpace::whole(target.width, target.height),
+            limit,
+        )?;
+        let assets = packer.finish();
+        let rects: Vec<_> = run.iter().map(|c| write_rect(c, target.width)).collect();
+        let layers = layers(&rects)?;
+        ensure!(
+            run.len() as u32 <= self.device.limits().max_compute_workgroups_per_dimension,
+            "ordered sprite layer exceeds device limit"
+        );
+        let command_buffer = buffer(
+            &self.device,
+            &mut self.counters,
+            "ordered sprite commands",
+            &words,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let asset_buffer = match &assets {
+            Some(assets) => buffer(
                 &self.device,
-                &self.queue,
-                &mut self.arena,
                 &mut self.counters,
-                &mut self.tail,
-                self.asset_generation,
-                limit,
-            );
-            let words = pack_commands(
-                &mut packer,
-                std::slice::from_ref(c),
-                &self.resources,
-                ViewSpace::whole(width, height),
-                limit,
-            )?;
-            let assets = packer.finish();
-            let target = &self.targets[&target_id];
-            let command_buffer = buffer(
+                "sprite artwork and run boundaries",
+                assets,
+                wgpu::BufferUsages::STORAGE,
+            ),
+            None => self
+                .arena
+                .binding(&self.device, &self.queue, &mut self.counters),
+        };
+        let parameters = buffer(
+            &self.device,
+            &mut self.counters,
+            "sprite target dimensions",
+            &[
+                target.width,
+                target.height,
+                target.width,
+                0,
+                target.pitch,
+                target.offset,
+                0,
+                0,
+                0,
+                target.height,
+                0,
+                0,
+            ],
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut layer_buffers = Vec::with_capacity(layers.len());
+        for layer in &layers {
+            let indices = buffer(
                 &self.device,
                 &mut self.counters,
-                "ordered sprite command",
-                &words,
+                "ordered sprite layer",
+                layer,
                 wgpu::BufferUsages::STORAGE,
             );
-            let asset_buffer = match &assets {
-                Some(assets) => buffer(
-                    &self.device,
-                    &mut self.counters,
-                    "sprite artwork and run boundaries",
-                    assets,
-                    wgpu::BufferUsages::STORAGE,
-                ),
-                None => self
-                    .arena
-                    .binding(&self.device, &self.queue, &mut self.counters),
-            };
-            let parameters = buffer(
-                &self.device,
-                &mut self.counters,
-                "sprite target dimensions",
-                &[
-                    target.width,
-                    target.height,
-                    target.width,
-                    0,
-                    target.pitch,
-                    target.offset,
-                    0,
-                    0,
-                    0,
-                    target.height,
-                    0,
-                    0,
-                ],
-                wgpu::BufferUsages::UNIFORM,
-            );
             let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("ordered sprite"),
+                label: Some("ordered sprite layer"),
                 layout: &self.compute_sprite_ordered.get_bind_group_layout(0),
                 entries: &[
                     entry(0, &target.indices),
                     entry(1, &command_buffer),
                     entry(2, &asset_buffer),
                     entry(3, &parameters),
+                    entry(5, &indices),
                 ],
             });
-            let mut encoder = self.device.create_command_encoder(&Default::default());
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("native sprite write and row-copy order"),
@@ -215,18 +310,22 @@ impl DrawRenderer {
                 });
                 pass.set_pipeline(&self.compute_sprite_ordered);
                 pass.set_bind_group(0, &binding, &[]);
-                pass.dispatch_workgroups(1, 1, 1);
+                pass.dispatch_workgroups(layer.len() as u32, 1, 1);
             }
             self.counters.dispatches += 1;
-            self.submit_encoder(encoder);
-            self.check_status()?;
-            self.counters.batches += 1;
-            self.counters.commands += 1;
-            if let Some(assets) = &assets {
-                self.counters.asset_upload_bytes += assets.len() as u64 * 4;
-            }
-            self.counters.command_upload_bytes += words.len() as u64 * 4;
+            self.counters.ordered_sprite_passes += 1;
+            self.counters.command_upload_bytes += layer.len() as u64 * 4;
+            layer_buffers.push((indices, binding));
         }
+        self.counters.ordered_sprite_layers += layers.len() as u64;
+        self.submit_encoder(encoder);
+        self.check_status()?;
+        self.counters.batches += layers.len() as u64;
+        self.counters.commands += run.len() as u64;
+        if let Some(assets) = &assets {
+            self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+        }
+        self.counters.command_upload_bytes += words.len() as u64 * 4;
         Ok(())
     }
 }
@@ -324,6 +423,161 @@ mod tests {
         command.source_x = 9;
         command.blend = 1;
         assert!(validate(&command, &resource).is_err());
+    }
+
+    /// One ordered sprite whose single run spans the clip rectangle and replicates it
+    /// down every row of the clip, so the run's row copy reaches the column left of it.
+    fn layered(clip_x: i32, clip_width: u32, target: u32) -> (Command, Resource) {
+        let command = Command {
+            kind: SPRITE,
+            width: target,
+            height: target,
+            clip_x,
+            clip_y: 2,
+            clip_width,
+            clip_height: 6,
+            source_x: 9,
+            source_width: 2,
+            source_height: 1,
+            ..Default::default()
+        };
+        let mut resource = Resource {
+            width: 1,
+            height: 1,
+            pitch: 1,
+            bytes: vec![0; 284],
+        };
+        resource.bytes[1] = 1;
+        resource.bytes[3] = 2;
+        let split = clip_width / 2;
+        for (offset, value) in [
+            (4, clip_x as u32),
+            (8, split),
+            (12, clip_x as u32 + split),
+            (16, clip_width - split),
+            (20, 2),
+            (24, 6),
+        ] {
+            resource.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        validate(&command, &resource).unwrap();
+        validate_target(&command, &resource, target, target).unwrap();
+        (command, resource)
+    }
+
+    /// Every target address `sprite_ordered` can read or write, walked exactly as the
+    /// kernel walks it, so the rectangle is checked against the kernel and not itself.
+    fn touched(c: &Command, source: &Resource, width: i64) -> Vec<i64> {
+        let w = c.source_width as usize;
+        let h = c.source_height as usize;
+        let axis = 2 * w * h;
+        let stride = if c.source_x & 2 != 0 { -width } else { width };
+        let mut hits = Vec::new();
+        for sy in 0..h {
+            let ay = if stride < 0 { h - 1 - sy } else { sy };
+            let (ystart, ycount) = range(source, axis + (w + ay) * 8);
+            if ycount == 0 {
+                continue;
+            }
+            let y = if stride < 0 {
+                ystart + ycount - 1
+            } else {
+                ystart
+            };
+            let (mut run_right, mut in_run) = (0, false);
+            for sx in 0..w {
+                let coverage = source.bytes[2 * (sy * w + sx) + 1];
+                if coverage == 0 {
+                    continue;
+                }
+                let (xstart, xcount) = range(source, axis + (w - 1 - sx) * 8);
+                let right = y * width + xstart + xcount - 1;
+                if !in_run {
+                    run_right = right;
+                    in_run = true;
+                }
+                hits.extend((0..xcount).map(|dx| right - dx));
+                if coverage == 2 {
+                    let left = y * width + xstart - 1;
+                    for dy in 1..ycount {
+                        hits.extend(
+                            (0..=run_right - left)
+                                .flat_map(|at| [left + at, left + dy * stride + at]),
+                        );
+                    }
+                    in_run = false;
+                }
+            }
+        }
+        hits
+    }
+
+    #[test]
+    fn write_rect_covers_every_address_the_kernel_can_touch() {
+        for (flip, clip_x, clip_width) in [(0, 4, 6), (2, 4, 6), (0, 1, 3), (2, 1, 3)] {
+            let (mut command, resource) = layered(clip_x, clip_width, 16);
+            command.source_x |= flip;
+            let rect = write_rect(&command, 16);
+            for address in touched(&command, &resource, 16) {
+                let (x, y) = (address % 16, address / 16);
+                assert!(
+                    rect[0] <= x && x < rect[2] && rect[1] <= y && y < rect[3],
+                    "address {address} at ({x},{y}) escapes {rect:?}"
+                );
+            }
+            assert!(
+                rect[0] < i64::from(clip_x),
+                "the row copy reaches the column left of the clip"
+            );
+        }
+    }
+
+    #[test]
+    fn layers_separate_overlapping_sprites_and_share_disjoint_ones() {
+        let target = 16;
+        let (right, _) = layered(4, 6, target);
+        let (left, _) = layered(1, 3, target);
+        let rects = [
+            write_rect(&right, target),
+            write_rect(&left, target),
+            write_rect(&right, target),
+        ];
+        // The clip rectangles 4..10 and 1..4 do not overlap; the write rectangles do,
+        // because the left sprite's row copy reaches column 0 and the right one's
+        // reaches column 3.
+        assert_eq!(layers(&rects[..2]).unwrap().len(), 2);
+        assert_eq!(layers(&rects).unwrap(), vec![vec![0], vec![1], vec![2]]);
+        let apart = layered(5, 5, target).0;
+        let pair = [write_rect(&left, target), write_rect(&apart, target)];
+        assert!(pair[0][2] == pair[1][0], "the rectangles touch at an edge");
+        assert_eq!(layers(&pair).unwrap(), vec![vec![0, 1]]);
+        let mut band = left;
+        band.clip_y = 9;
+        assert_eq!(
+            layers(&[write_rect(&left, target), write_rect(&band, target)]).unwrap(),
+            vec![vec![0, 1]],
+            "disjoint row bands share a layer"
+        );
+    }
+
+    #[test]
+    fn empty_write_rectangles_never_hold_a_layer_open() {
+        let clipped = Command {
+            kind: SPRITE,
+            width: 16,
+            height: 16,
+            clip_x: 4,
+            clip_width: 0,
+            clip_height: 4,
+            source_x: 9,
+            ..Default::default()
+        };
+        assert_eq!(write_rect(&clipped, 16), [0; 4]);
+        let (visible, _) = layered(4, 6, 16);
+        assert_eq!(
+            layers(&[write_rect(&clipped, 16), write_rect(&visible, 16)]).unwrap(),
+            vec![vec![0, 1]]
+        );
     }
 
     #[test]

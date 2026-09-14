@@ -25,7 +25,7 @@ pub struct FrameCounters {
 /// Work the raster stream cannot absorb: it keeps its own pass and closes the
 /// raster range at the stream position it was recorded at.
 pub(super) enum Serial {
-    Commands(u64, Command),
+    Commands(u64, Vec<Command>),
     Triangles(u64, Vec<TriangleCommand>),
     Shadow(u64, u64, u32, Vec<Command>),
 }
@@ -282,12 +282,26 @@ impl DrawRenderer {
         frame.count += commands.len();
         self.frame_counters.queued_commands += commands.len() as u64;
         for command in commands {
-            if matches!(command.kind, LENS_EFFECT | MINIMAP) || sprites::ordered(command) {
-                let at = frame.stream.len();
-                frame.serials.push((at, Serial::Commands(target, *command)));
-            } else {
+            if !matches!(command.kind, LENS_EFFECT | MINIMAP) && !sprites::ordered(command) {
                 frame.stream.push((index, *command));
+                continue;
             }
+            let at = frame.stream.len();
+            // Ordered sprites with no record between them layer against each other, so
+            // they reach `submit` as one run rather than one route apiece.
+            if sprites::ordered(command)
+                && let Some((position, Serial::Commands(prior_target, prior))) =
+                    frame.serials.last_mut()
+                && *prior_target == target
+                && *position == at
+                && prior.last().is_some_and(sprites::ordered)
+            {
+                prior.push(*command);
+                continue;
+            }
+            frame
+                .serials
+                .push((at, Serial::Commands(target, vec![*command])));
         }
         Ok(true)
     }
@@ -606,7 +620,7 @@ impl DrawRenderer {
                 prior = at;
             }
             match serial {
-                Serial::Commands(target, command) => self.submit(target, &[command])?,
+                Serial::Commands(target, commands) => self.submit(target, &commands)?,
                 Serial::Triangles(target, commands) => self.submit_triangles(target, &commands)?,
                 Serial::Shadow(target, source, slot, commands) => {
                     self.submit_shadow_batch(target, source, slot, &commands)?

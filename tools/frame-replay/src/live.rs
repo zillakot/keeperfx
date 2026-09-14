@@ -1008,6 +1008,8 @@ pub struct DrawCounters {
     arena_bytes_resident: u64,
     tile_allocations: u64,
     tile_entries: u64,
+    ordered_sprite_layers: u64,
+    ordered_sprite_passes: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1045,6 +1047,8 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 arena_bytes_resident: arena.bytes_resident,
                 tile_allocations: counters.tile_allocations,
                 tile_entries: counters.tile_entries,
+                ordered_sprite_layers: counters.ordered_sprite_layers,
+                ordered_sprite_passes: counters.ordered_sprite_passes,
             });
             Ok(Some(1))
         });
