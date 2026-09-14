@@ -173,8 +173,8 @@ it: `bridge_target_flushes` is structurally zero and `bridge_target_runs` counts
 changes that used to flush. Inside a resident frame a batch closes
 only at a kind the GPU packer accepts alone (transition, minimap, lens effect),
 an ordered sprite, a snapshot, readback or
-barrier, a rasterizer change, texture or fade cache eviction, 128 pending
-triangles, 32,768 pending spans, the 4,096 command cap, or verification mode. A
+barrier, a rasterizer change, texture or fade cache eviction, 32,768 pending
+spans, the 4,096 command and triangle cap, or verification mode. A
 world-bucket boundary and an emitter head only stop terrain from continuing;
 outside a resident lease every command still flushes, so a command accepted
 inside a frame reaches the native target at the next barrier, readback or frame

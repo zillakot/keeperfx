@@ -672,7 +672,7 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
         if (vertex.x < -32768 || vertex.x > 32767 || vertex.y < -32768 || vertex.y > 32767)
             return KFX_GPOLY_DECLINED;
     if ((m_verify && (!m_pending.empty() || PendingTargetChanged(target))) ||
-        m_triangles.size() >= 128 || (m_rasterizer && m_rasterizer != rasterizer)) Flush();
+        m_triangles.size() >= kPendingLimit || (m_rasterizer && m_rasterizer != rasterizer)) Flush();
     if (m_failed) return KFX_GPOLY_DECLINED;
     if (m_context == nullptr) {
         if (m_fail_init) return Fail("injected GPU drawing initialization failure");
