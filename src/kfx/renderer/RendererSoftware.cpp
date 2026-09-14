@@ -286,6 +286,7 @@ void RendererSoftware::report_drawing()
         gpu.asset_upload_bytes + gpu.command_upload_bytes, gpu.readback_bytes,
         counts.bridge_readbacks, counts.gpu_readback_bytes,
         gpu.buffers, gpu.buffer_bytes, gpu.batches, gpu.commands, counts.gpu_ordered_sprites,
+        gpu.ordered_sprite_layers, gpu.ordered_sprite_passes,
         gpu.arena_evictions, gpu.arena_overflows, gpu.arena_bytes_uploaded,
         gpu.tile_allocations, gpu.tile_entries,
         counts.bridge_target_flushes, counts.bridge_target_runs,
@@ -303,7 +304,8 @@ void RendererSoftware::report_drawing()
                 "\"target_creations\":%llu,\"failures\":%llu,\"verified_batches\":%llu,\"verification_cpu_spans\":%llu,\"verification_flagged_shades\":%llu,\"gpu_api_batches\":%llu,\"gpu_api_commands\":%llu,\"gpu_asset_upload_bytes\":%llu,\"gpu_command_upload_bytes\":%llu,\"gpu_api_readback_bytes\":%llu,\"native_commands\":%llu,\"verification_cpu_commands\":%llu,\"gpu_triangles\":%llu,\"cpu_triangles\":%llu,\"replayed_triangles\":%llu,\"verified_triangles\":%llu,\"rejected_triangles\":%llu,\"gpu_sprite_commands\":%llu,\"gpu_shadow_commands\":%llu,\"shadow_scratch_upload_bytes\":%llu,\"shadow_scratch_readback_bytes\":%llu,\"shadow_scratch_copy_bytes\":%llu,\"shadow_prior_divergence\":%llu,\"resident_sequences\":%llu,\"resident_batches\":%llu,\"cpu_barriers\":%llu,\"target_alias_barriers\":%llu,\"barrier_readbacks\":%llu,\"verification_readbacks\":%llu,\"invalid_frames\":%llu,\"missing_cpu_barriers\":%llu,\"transition_checkpoint_bytes\":%llu,\"transition_snapshot_copy_bytes\":%llu,\"transition_commands\":%llu,\"frame_queued_commands\":%llu,\"frame_checkpoints\":%llu,\"frame_validation_waits\":%llu,\"frame_validation_bytes\":%llu,\"frame_gpu_checkpoint_copy_bytes\":%llu,\"frame_rejected_checkpoints\":%llu,\"frame_flagged_invalid\":%llu,\"frame_status_reads\":%llu,\"frame_status_stalls\":%llu,"
                 "\"gpu_submits\":%llu,\"gpu_dispatches\":%llu,\"gpu_waits\":%llu,\"gpu_wait_ns\":%llu,"
                 "\"gpu_buffers\":%llu,\"gpu_buffer_bytes\":%llu,"
-                "\"gpu_ordered_sprites\":%llu,\"gpu_host_staged_asset_bytes\":%llu,"
+                "\"gpu_ordered_sprites\":%llu,\"ordered_sprite_layers\":%llu,"
+                "\"ordered_sprite_passes\":%llu,\"gpu_host_staged_asset_bytes\":%llu,"
                 "\"arena_evictions\":%llu,\"arena_overflows\":%llu,"
                 "\"arena_bytes_uploaded\":%llu,\"arena_bytes_resident\":%llu,"
                 "\"bridge_solo_batches\":%llu,\"bridge_target_flushes\":%llu,"
@@ -350,6 +352,8 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.buffers),
                 static_cast<unsigned long long>(gpu.buffer_bytes),
                 static_cast<unsigned long long>(counts.gpu_ordered_sprites),
+                static_cast<unsigned long long>(gpu.ordered_sprite_layers),
+                static_cast<unsigned long long>(gpu.ordered_sprite_passes),
                 static_cast<unsigned long long>(gpu.host_staged_asset_bytes),
                 static_cast<unsigned long long>(gpu.arena_evictions),
                 static_cast<unsigned long long>(gpu.arena_overflows),

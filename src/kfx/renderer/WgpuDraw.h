@@ -74,6 +74,9 @@ struct KfxWgpuDrawCounters {
     uint64_t host_staged_asset_bytes, arena_bytes_resident;
     /* tile_allocations counts growths of the persistent binning scratch; zero after warm-up. */
     uint64_t tile_allocations, tile_entries;
+    /* One compute pass per layer of mutually disjoint ordered sprites, so the two are
+     * equal by construction and a divergence is a bug. */
+    uint64_t ordered_sprite_layers, ordered_sprite_passes;
 };
 #pragma pack(pop)
 

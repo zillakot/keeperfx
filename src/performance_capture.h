@@ -24,6 +24,7 @@ struct PerformanceDrawingCounters {
     unsigned long long flagged_invalid_frames, status_stalls;
     unsigned long long upload_bytes, readback_bytes, full_readbacks, full_readback_bytes;
     unsigned long long buffers, buffer_bytes, batches, commands, ordered_sprites;
+    unsigned long long ordered_sprite_layers, ordered_sprite_passes;
     unsigned long long arena_evictions, arena_overflows, arena_bytes_uploaded;
     unsigned long long tile_allocations, tile_entries, bridge_target_flushes, bridge_target_runs;
     /* Trailing gauges are stored as observed, not differenced. */
