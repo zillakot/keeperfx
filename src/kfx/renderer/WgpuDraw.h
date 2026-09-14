@@ -128,6 +128,18 @@ struct KfxWgpuDrawCounters {
     uint64_t arena_growth_peak_bytes;
     struct KfxArenaKindCounters arena_by_kind[KFX_ARENA_KIND_COUNT];
     uint64_t arena_trig_texture_source_bytes;
+    uint64_t arena_minimap_prefix_bytes;
+    uint64_t arena_minimap_dictionary_bytes;
+    uint64_t arena_minimap_cells_bytes;
+    uint64_t arena_minimap_styles_bytes;
+    uint64_t minimap_dictionary_hits;
+    uint64_t minimap_dictionary_misses;
+    uint64_t minimap_cells_hits;
+    uint64_t minimap_cells_misses;
+    uint64_t minimap_styles_hits;
+    uint64_t minimap_styles_misses;
+    uint64_t minimap_cache_class_bytes;
+    uint64_t minimap_cache_cpu_bytes;
 
 };
 #pragma pack(pop)

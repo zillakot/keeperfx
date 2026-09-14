@@ -188,6 +188,17 @@ struct WgpuCursor::State {
             COLLECT(arena_miss_eviction_bytes);
             COLLECT(arena_explicit_forgets);
             COLLECT(arena_trig_texture_source_bytes);
+            COLLECT(arena_minimap_prefix_bytes);
+            COLLECT(arena_minimap_dictionary_bytes);
+            COLLECT(arena_minimap_cells_bytes);
+            COLLECT(arena_minimap_styles_bytes);
+            COLLECT(minimap_dictionary_hits);
+            COLLECT(minimap_dictionary_misses);
+            COLLECT(minimap_cells_hits);
+            COLLECT(minimap_cells_misses);
+            COLLECT(minimap_styles_hits);
+            COLLECT(minimap_styles_misses);
+
             for (unsigned i = 0; i < KFX_ARENA_KIND_COUNT; ++i) {
                 COLLECT(arena_by_kind[i].bytes);
                 COLLECT(arena_by_kind[i].misses);

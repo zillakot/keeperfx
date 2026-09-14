@@ -71,12 +71,24 @@ struct PerformanceDrawingCounters {
     unsigned long long arena_explicit_forgets;
     struct KfxArenaKindCounters arena_by_kind[KFX_ARENA_KIND_COUNT];
     unsigned long long arena_trig_texture_source_bytes;
+    unsigned long long arena_minimap_prefix_bytes;
+    unsigned long long arena_minimap_dictionary_bytes;
+    unsigned long long arena_minimap_cells_bytes;
+    unsigned long long arena_minimap_styles_bytes;
+    unsigned long long minimap_dictionary_hits;
+    unsigned long long minimap_dictionary_misses;
+    unsigned long long minimap_cells_hits;
+    unsigned long long minimap_cells_misses;
+    unsigned long long minimap_styles_hits;
+    unsigned long long minimap_styles_misses;
     /* Trailing gauges are stored as observed, not differenced. */
     unsigned long long host_staged_asset_bytes, arena_bytes_resident, arena_scratch_bytes_peak;
     unsigned long long arena_capacity_bytes;
     unsigned long long arena_live_bytes;
     unsigned long long arena_retired_bytes;
     unsigned long long arena_growth_peak_bytes;
+    unsigned long long minimap_cache_class_bytes;
+    unsigned long long minimap_cache_cpu_bytes;
 
 };
 void performance_drawing_backend(const char* backend);

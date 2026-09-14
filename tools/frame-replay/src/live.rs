@@ -1423,6 +1423,18 @@ pub struct DrawCounters {
     arena_by_kind:
         [crate::draw::arena_kinds::ArenaKindCounters; crate::draw::arena_kinds::ARENA_KINDS],
     arena_trig_texture_source_bytes: u64,
+    arena_minimap_prefix_bytes: u64,
+    arena_minimap_dictionary_bytes: u64,
+    arena_minimap_cells_bytes: u64,
+    arena_minimap_styles_bytes: u64,
+    minimap_dictionary_hits: u64,
+    minimap_dictionary_misses: u64,
+    minimap_cells_hits: u64,
+    minimap_cells_misses: u64,
+    minimap_styles_hits: u64,
+    minimap_styles_misses: u64,
+    minimap_cache_class_bytes: u64,
+    minimap_cache_cpu_bytes: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1499,6 +1511,18 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 arena_growth_peak_bytes: arena.growth_peak_bytes,
                 arena_by_kind: counters.arena_by_kind,
                 arena_trig_texture_source_bytes: counters.arena_trig_texture_source_bytes,
+                arena_minimap_prefix_bytes: counters.arena_minimap_prefix_bytes,
+                arena_minimap_dictionary_bytes: counters.arena_minimap_dictionary_bytes,
+                arena_minimap_cells_bytes: counters.arena_minimap_cells_bytes,
+                arena_minimap_styles_bytes: counters.arena_minimap_styles_bytes,
+                minimap_dictionary_hits: counters.minimap_dictionary_hits,
+                minimap_dictionary_misses: counters.minimap_dictionary_misses,
+                minimap_cells_hits: counters.minimap_cells_hits,
+                minimap_cells_misses: counters.minimap_cells_misses,
+                minimap_styles_hits: counters.minimap_styles_hits,
+                minimap_styles_misses: counters.minimap_styles_misses,
+                minimap_cache_class_bytes: counters.minimap_cache_class_bytes,
+                minimap_cache_cpu_bytes: counters.minimap_cache_cpu_bytes,
             });
             Ok(Some(1))
         });
@@ -1517,7 +1541,10 @@ mod draw_abi_tests {
             48
         );
         assert_eq!(std::mem::offset_of!(DrawCounters, arena_by_kind), 77 * 8);
-        assert_eq!(std::mem::size_of::<DrawCounters>(), (77 + 19 * 6 + 1) * 8);
+        assert_eq!(
+            std::mem::size_of::<DrawCounters>(),
+            (77 + 19 * 6 + 1 + 12) * 8
+        );
     }
 
     #[test]

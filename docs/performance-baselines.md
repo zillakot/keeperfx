@@ -743,3 +743,26 @@ its report is explicitly labelled headless. It is **not native window performanc
 and must not be compared to a live SDL/Metal or Rust surface baseline.
 CI runs redistributable checks without original game assets. Native performance
 runs remain local, and their results are not CI performance thresholds.
+
+### Minimap segment residency counters
+
+`arena_minimap_{prefix,dictionary,cells,styles}_bytes` partition
+`arena_minimap_bytes` by actual arena upload, including contiguous fallback.
+The profiler checks both this sum and the per-kind arena sum in every frame.
+The disabled-arena path reports zero arena bytes; its uploads remain in
+`asset_upload_bytes`. `minimap_{dictionary,cells,styles}_{hits,misses}` count
+exact-content cache lookups. Every hit still resolves through the arena and can
+upload after GPU eviction or recovery. A camera-only change uploads the prefix;
+mode 4 always captures fresh background pixels.
+
+`minimap_cache_class_bytes` and `minimap_cache_cpu_bytes` are live gauges, not
+cumulative counters. The renderer retains at most 9 MiB of expanded power-of-two
+arena classes: one dictionary, one cell grid and four styles, with LRU style
+replacement. There is one owning CPU byte snapshot per entry, bounded by 2.25 MiB.
+The standard 11-colour, 256×256 grid with four styles occupies 8,913,920 class
+bytes and 1,828,364 CPU bytes. Prefixes, existing C/bridge/Rust contiguous source
+copies, metadata, retired versions, arena capacity and driver/process memory are
+outside these cache gauges. Retirement remains charged to the arena until its
+encoder is submitted. The target-view uniform requests 16 additional bytes per
+call; buffer creation counts are unchanged. These counters establish upload reuse;
+CPU serialization and validation still traverse the contiguous payload.

@@ -68,6 +68,8 @@ def drawing_metadata(output, frames, backend="wgpu", available=True):
     per_frame = [[index + position for position in range(len(profile.DRAWING_COUNTERS))]
                  for index in range(frames)]
     for row in per_frame:
+        row[profile.DRAWING_COUNTERS.index("arena_minimap_bytes")] = sum(
+            row[profile.DRAWING_COUNTERS.index(name)] for name in profile.MINIMAP_COUNTERS[:4])
         row[profile.DRAWING_COUNTERS.index("arena_bytes_uploaded")] = sum(
             row[profile.DRAWING_COUNTERS.index(f"arena_{kind}_bytes")] for kind in profile.ARENA_RESOURCE_KINDS)
     metadata["drawing"] = {"available": available, "backend": backend, "frames": len(per_frame),
@@ -218,6 +220,33 @@ class ProfileTests(unittest.TestCase):
             old = profile.summarize(output, arguments())["drawing"]
             self.assertNotIn("arena_upload_partition", old)
             self.assertIn("arena_misses_new_id", old["per_frame"])
+
+    def test_minimap_segments_gauges_and_previous_schema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            engine_output(output)
+            metadata = drawing_metadata(output, 19)
+            drawing = profile.summarize(output, arguments())["drawing"]
+            self.assertTrue(drawing["minimap_upload_partition"]["conserved"])
+            for name in profile.MINIMAP_GAUGES:
+                self.assertIsNone(drawing["per_frame"][name]["total"])
+            for name in profile.MINIMAP_COUNTERS:
+                self.assertIsNotNone(drawing["per_frame"][name]["total"])
+            index = profile.DRAWING_COUNTERS.index(profile.MINIMAP_COUNTERS[0])
+            metadata["drawing"]["per_frame"][0][index] += 1
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(RuntimeError, "minimap segment bytes"):
+                profile.summarize(output, arguments())
+            for name in (*profile.MINIMAP_COUNTERS, *profile.MINIMAP_GAUGES):
+                index = metadata["drawing"]["counters"].index(name)
+                metadata["drawing"]["counters"].pop(index)
+                for row in metadata["drawing"]["per_frame"]:
+                    row.pop(index)
+            metadata["drawing"]["gauges"] = [name for name in metadata["drawing"]["gauges"] if name not in profile.MINIMAP_GAUGES]
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            old = profile.summarize(output, arguments())["drawing"]
+            self.assertNotIn("minimap_upload_partition", old)
+            self.assertNotIn("minimap_cache_cpu_bytes", old["per_frame"])
 
     def test_asset_route_counters_and_memory_gauges(self):
         with tempfile.TemporaryDirectory() as temporary:

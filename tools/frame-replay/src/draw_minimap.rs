@@ -3,10 +3,108 @@ pub const MINIMAP: u32 = 12;
 const HEADER: usize = 96;
 pub(super) struct MinimapState {
     pipeline: wgpu::ComputePipeline,
+    cache: SegmentCache,
     pub(super) background: Option<(u64, u32)>,
 }
 
-fn validate(c: &Command, b: &[u8], width: u32, height: u32) -> Result<[u32; 24]> {
+const CACHE_BYTES: u64 = 9 << 20;
+
+#[derive(Default)]
+struct SegmentCache {
+    entries: Vec<Segment>,
+    clock: u64,
+}
+
+struct Segment {
+    id: u64,
+    role: usize,
+    layout: [u32; 2],
+    hash: u64,
+    bytes: Vec<u8>,
+    used: u64,
+}
+
+fn class_bytes(length: usize) -> u64 {
+    (length.max(256) as u64).next_power_of_two() * 4
+}
+
+fn content_hash(bytes: &[u8]) -> u64 {
+    use std::hash::Hasher;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    hash.write(bytes);
+    hash.finish()
+}
+
+impl SegmentCache {
+    fn class_bytes(&self) -> u64 {
+        self.entries
+            .iter()
+            .map(|e| class_bytes(e.bytes.len()))
+            .sum()
+    }
+
+    fn cpu_bytes(&self) -> u64 {
+        self.entries.iter().map(|e| e.bytes.len() as u64).sum()
+    }
+
+    fn resolve(
+        &mut self,
+        arena: &mut arena::Arena,
+        role: usize,
+        layout: [u32; 2],
+        bytes: &[u8],
+        hash: u64,
+    ) -> Result<(u64, bool)> {
+        self.clock += 1;
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.role == role && e.layout == layout && e.hash == hash && e.bytes == bytes)
+        {
+            entry.used = self.clock;
+            return Ok((entry.id, true));
+        }
+        let id = next_handle()?;
+        while let Some(index) = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.role == role)
+            .min_by_key(|(_, e)| e.used)
+            .map(|(i, _)| i)
+            .filter(|_| role != 2 || self.entries.iter().filter(|e| e.role == 2).count() >= 4)
+        {
+            arena.release(self.entries.remove(index).id);
+        }
+        while self.class_bytes() + class_bytes(bytes.len()) > CACHE_BYTES {
+            let index = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.role == 2)
+                .min_by_key(|(_, e)| e.used)
+                .map(|(i, _)| i)
+                .context("minimap cache admission exceeds budget")?;
+            arena.release(self.entries.remove(index).id);
+        }
+        self.entries.push(Segment {
+            id,
+            role,
+            layout,
+            hash,
+            bytes: bytes.to_vec(),
+            used: self.clock,
+        });
+        Ok((id, false))
+    }
+}
+
+struct Validated {
+    header: [u32; 24],
+    ranges: [std::ops::Range<usize>; 4],
+}
+
+fn validate(c: &Command, b: &[u8], width: u32, height: u32) -> Result<Validated> {
     ensure!(b.len() >= HEADER, "short minimap header");
     let h: [u32; 24] =
         std::array::from_fn(|i| u32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap()));
@@ -83,7 +181,17 @@ fn validate(c: &Command, b: &[u8], width: u32, height: u32) -> Result<[u32; 24]>
     if h[0] == 3 {
         ensure!(h[21] <= 65536, "invalid minimap heart distance");
     }
-    Ok(h)
+    let ranges = if h[0] == 0 {
+        [
+            0..pattern_end,
+            h[12] as usize..h[13] as usize,
+            h[13] as usize..h[14] as usize,
+            h[14] as usize..b.len(),
+        ]
+    } else {
+        [0..pattern_end, 0..0, 0..0, 0..0]
+    };
+    Ok(Validated { header: h, ranges })
 }
 impl DrawRenderer {
     pub(super) fn submit_minimap(&mut self, target_id: u64, c: &Command) -> Result<()> {
@@ -93,7 +201,8 @@ impl DrawRenderer {
             .resources
             .get(&c.source)
             .context("unknown minimap source")?;
-        let h = validate(c, &source.bytes, width, height)?;
+        let validated = validate(c, &source.bytes, width, height)?;
+        let h = validated.header;
         ensure!(
             source.bytes.len() as u64 * 4 <= self.storage_limit(),
             "minimap source exceeds GPU storage"
@@ -121,6 +230,7 @@ impl DrawRenderer {
                         cache: None,
                     }),
                 background: None,
+                cache: SegmentCache::default(),
             });
         }
         if h[0] == 0 {
@@ -146,8 +256,80 @@ impl DrawRenderer {
             }
         }
         let limit = self.storage_limit() as usize;
-        self.arena_headroom(0)?;
+        let ranges = validated.ranges;
+        let split = self.arena.enabled()
+            && (h[0] != 0
+                || ranges[1..]
+                    .iter()
+                    .map(|r| class_bytes(r.len()))
+                    .sum::<u64>()
+                    <= CACHE_BYTES);
+        let mut ids = [0; 4];
+        if split {
+            ids[0] = next_handle()?;
+            if h[0] == 0 {
+                let cache = &mut self.minimap.as_mut().unwrap().cache;
+                let bytes = &self.resources[&c.source].bytes;
+                for role in 0..2 {
+                    let layout = if role == 1 {
+                        [h[10], h[11]]
+                    } else {
+                        [h[15] / 38569, 0]
+                    };
+                    let segment = &bytes[ranges[role + 1].clone()];
+                    if let Some(index) = cache
+                        .entries
+                        .iter()
+                        .position(|e| e.role == role && (e.layout != layout || e.bytes != segment))
+                    {
+                        self.arena.release(cache.entries.remove(index).id);
+                    }
+                }
+                for role in 0..3 {
+                    let layout = if role == 1 {
+                        [h[10], h[11]]
+                    } else {
+                        [h[15] / 38569, 0]
+                    };
+                    let segment = &bytes[ranges[role + 1].clone()];
+                    let (id, hit) = cache.resolve(
+                        &mut self.arena,
+                        role,
+                        layout,
+                        segment,
+                        content_hash(segment),
+                    )?;
+                    ids[role + 1] = id;
+                    let counter = match (role, hit) {
+                        (0, true) => &mut self.counters.minimap_dictionary_hits,
+                        (0, false) => &mut self.counters.minimap_dictionary_misses,
+                        (1, true) => &mut self.counters.minimap_cells_hits,
+                        (1, false) => &mut self.counters.minimap_cells_misses,
+                        (2, true) => &mut self.counters.minimap_styles_hits,
+                        _ => &mut self.counters.minimap_styles_misses,
+                    };
+                    *counter += 1;
+                }
+                self.counters.minimap_cache_class_bytes = cache.class_bytes();
+                self.counters.minimap_cache_cpu_bytes = cache.cpu_bytes();
+            }
+        }
+        let demand = if split {
+            ids.iter()
+                .zip(&ranges)
+                .filter(|(id, _)| **id != 0)
+                .try_fold(0, |sum, (id, range)| {
+                    self.arena
+                        .allocation_words(*id, range.len())
+                        .map(|n| sum + n)
+                })?
+        } else {
+            self.arena
+                .allocation_words(c.source, self.resources[&c.source].bytes.len())?
+        };
+        self.arena_headroom(demand)?;
         let bytes = &self.resources[&c.source].bytes;
+        let enabled = self.arena.enabled();
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
@@ -156,8 +338,46 @@ impl DrawRenderer {
             self.asset_generation,
             limit,
         );
-        let base = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
+        let mut bases = [0; 4];
+        let mut uploaded = [0; 4];
+        if split {
+            for i in 0..4 {
+                if ids[i] == 0 {
+                    continue;
+                }
+                let segment = if i == 0 {
+                    &bytes[ranges[0].clone()]
+                } else {
+                    &self
+                        .minimap
+                        .as_ref()
+                        .unwrap()
+                        .cache
+                        .entries
+                        .iter()
+                        .find(|e| e.id == ids[i])
+                        .unwrap()
+                        .bytes
+                };
+                let before = packer.uploaded_bytes();
+                bases[i] = packer.offset(ids[i], segment, ResourceKind::Minimap)?;
+                uploaded[i] = packer.uploaded_bytes() - before;
+            }
+        } else {
+            let before = packer.uploaded_bytes();
+            bases[0] = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
+            for i in 1..4 {
+                bases[i] = bases[0] + h[11 + i];
+            }
+            if enabled && packer.uploaded_bytes() != before {
+                uploaded = std::array::from_fn(|i| ranges[i].len() as u64 * 4);
+            }
+        }
         let words = packer.finish();
+        self.counters.arena_minimap_prefix_bytes += uploaded[0];
+        self.counters.arena_minimap_dictionary_bytes += uploaded[1];
+        self.counters.arena_minimap_cells_bytes += uploaded[2];
+        self.counters.arena_minimap_styles_bytes += uploaded[3];
         let assets = match &words {
             Some(words) => buffer(
                 &self.device,
@@ -189,7 +409,16 @@ impl DrawRenderer {
             &self.device,
             &mut self.counters,
             "target view",
-            &[target.width, target.pitch, target.offset, base],
+            &[
+                target.width,
+                target.pitch,
+                target.offset,
+                bases[0],
+                bases[1],
+                bases[2],
+                bases[3],
+                0,
+            ],
             wgpu::BufferUsages::UNIFORM,
         );
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -213,6 +442,9 @@ impl DrawRenderer {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(h[5].div_ceil(8), h[5].div_ceil(8), 1);
         }
+        if split {
+            self.arena.release(ids[0]);
+        }
         self.counters.dispatches += 1;
         self.pass_boundary();
         self.counters.batches += 1;
@@ -227,6 +459,52 @@ impl DrawRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exact_identity_layout_and_style_lru() {
+        let mut arena = arena::Arena::new(32 << 20);
+        let mut cache = SegmentCache::default();
+        let first = cache
+            .resolve(&mut arena, 2, [11, 0], &vec![1; 424259], 7)
+            .unwrap();
+        assert!(!first.1);
+        let second = cache
+            .resolve(&mut arena, 2, [11, 0], &vec![2; 424259], 7)
+            .unwrap();
+        assert_ne!(first.0, second.0);
+        assert_eq!(
+            cache
+                .resolve(&mut arena, 2, [11, 0], &vec![1; 424259], 7)
+                .unwrap(),
+            (first.0, true)
+        );
+        for phase in [3, 4] {
+            cache
+                .resolve(&mut arena, 2, [11, 0], &vec![phase; 424259], 7)
+                .unwrap();
+        }
+        cache
+            .resolve(&mut arena, 1, [255, 255], &vec![0; 131072], 7)
+            .unwrap();
+        cache.resolve(&mut arena, 0, [11, 0], &[0; 256], 7).unwrap();
+        assert_eq!(cache.class_bytes(), 8_913_920);
+        assert_eq!(cache.cpu_bytes(), 4 * 424259 + 131072 + 256);
+        cache
+            .resolve(&mut arena, 2, [11, 0], &vec![5; 424259], 7)
+            .unwrap();
+        assert!(!cache.entries.iter().any(|e| e.id == second.0));
+        assert_eq!(cache.entries.len(), 6);
+        let old = cache
+            .resolve(&mut arena, 1, [255, 255], &vec![0; 131072], 7)
+            .unwrap()
+            .0;
+        let changed = cache
+            .resolve(&mut arena, 1, [511, 127], &vec![0; 131072], 7)
+            .unwrap();
+        assert_ne!(old, changed.0);
+        assert!(!changed.1);
+        assert!(cache.class_bytes() <= CACHE_BYTES);
+    }
+
     #[test]
     fn malformed_semantic_resources() {
         let mut h = [0u32; 24];

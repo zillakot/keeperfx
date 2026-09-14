@@ -140,6 +140,16 @@ comparison harness can expose divergence reliably. Preserve update ordering,
 integer arithmetic, random-number consumption and Lua behavior. Rust borrowing
 and threading changes must not silently change simulation order.
 
+
+**P3 slice 2 — minimap residency.** The Rust packer splits validated minimap data
+into a transient prefix and exact-content dictionary, cell and style versions in
+the shared arena. Retention is bounded at 9 MiB of classes, one dictionary/cell
+version and four LRU styles; background capture and contiguous fallback remain.
+Segment uploads, cache lookups and live CPU/class gauges are recorded separately.
+Native/unsplit parity fixtures cover recurring animation, mutation and lifetime
+cases. Host upload, replay, cadence and memory results are **pending**; the target
+is ≤0.25 MB/frame of minimap uploads, with no inferred timing gain from byte savings.
+
 ## Graphics and performance track
 
 Preserve the original sprites, textures, palette lookup, nearest sampling, draw

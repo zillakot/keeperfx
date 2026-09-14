@@ -29,6 +29,8 @@ DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 ARENA_RESOURCE_KINDS = ('sprite', 'ordered_sprite', 'cursor', 'trig', 'terrain_tile', 'terrain_fade', 'native_table', 'minimap', 'shadow', 'target_trig_geometry', 'target_trig_table', 'image', 'raw_image', 'tiled_image', 'movie', 'map_view', 'bitmap', 'lens', 'other')
 ARENA_KIND_METRICS = ('bytes', 'misses', 'hits', 'source_bytes', 'distinct_lengths', 'length_overflows')
 ARENA_KIND_COUNTERS = tuple(f"arena_{kind}_{metric}" for kind in ARENA_RESOURCE_KINDS for metric in ARENA_KIND_METRICS)
+MINIMAP_COUNTERS = ('arena_minimap_prefix_bytes', 'arena_minimap_dictionary_bytes', 'arena_minimap_cells_bytes', 'arena_minimap_styles_bytes', 'minimap_dictionary_hits', 'minimap_dictionary_misses', 'minimap_cells_hits', 'minimap_cells_misses', 'minimap_styles_hits', 'minimap_styles_misses')
+MINIMAP_GAUGES = ('minimap_cache_class_bytes', 'minimap_cache_cpu_bytes')
 DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "checkpoint_copy_bytes", "validation_waits",
                     "flagged_invalid_frames", "status_stalls", "asset_upload_bytes", "command_upload_bytes", "upload_bytes", "readback_bytes",
@@ -68,17 +70,17 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "arena_miss_generation_bytes",
                     "arena_miss_eviction_bytes",
                     "arena_explicit_forgets",
-                    *ARENA_KIND_COUNTERS, "arena_trig_texture_source_bytes",
+                    *ARENA_KIND_COUNTERS, "arena_trig_texture_source_bytes", *MINIMAP_COUNTERS,
                     "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
                     "arena_capacity_bytes",
                     "arena_live_bytes",
                     "arena_retired_bytes",
-                    "arena_growth_peak_bytes")
+                    "arena_growth_peak_bytes", *MINIMAP_GAUGES)
 DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
                   "arena_capacity_bytes",
                   "arena_live_bytes",
                   "arena_retired_bytes",
-                  "arena_growth_peak_bytes")
+                  "arena_growth_peak_bytes", *MINIMAP_GAUGES)
 SETTINGS = {
     "DELTA_TIME": "ON", "TURNS_PER_SECOND": "20", "FRAMES_PER_SECOND": "60", "VSYNC": "OFF",
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
@@ -493,6 +495,7 @@ def summarize_drawing(drawing, presentations):
     schemas = [tuple(name for name in DRAWING_COUNTERS if name not in omitted)
                for omitted in (set(), additions, {"asset_upload_bytes", "command_upload_bytes"},
                                additions | {"asset_upload_bytes", "command_upload_bytes"})]
+    schemas += [tuple(name for name in schema if name not in (*MINIMAP_COUNTERS, *MINIMAP_GAUGES)) for schema in schemas]
     arena_additions = set(ARENA_KIND_COUNTERS) | {"arena_trig_texture_source_bytes"}
     schemas += [tuple(name for name in schema if name not in arena_additions) for schema in schemas]
     if names not in schemas:
@@ -521,6 +524,12 @@ def summarize_drawing(drawing, presentations):
         if any(sum(row[index] for index in byte_indices) != row[total_index] for row in rows):
             raise RuntimeError("arena resource bytes do not sum to arena_bytes_uploaded")
         result["arena_upload_partition"] = {"conserved": True, "kinds": list(ARENA_RESOURCE_KINDS)}
+    if set(MINIMAP_COUNTERS[:4]).issubset(names) and "arena_minimap_bytes" in names:
+        indices = [names.index(name) for name in MINIMAP_COUNTERS[:4]]
+        total = names.index("arena_minimap_bytes")
+        if any(sum(row[index] for index in indices) != row[total] for row in rows):
+            raise RuntimeError("minimap segment bytes do not sum to arena_minimap_bytes")
+        result["minimap_upload_partition"] = {"conserved": True, "segments": list(MINIMAP_COUNTERS[:4])}
     result["per_frame"] = {name: drawing_distribution([row[index] for row in rows],
                                                       name in DRAWING_GAUGES)
                            for index, name in enumerate(names)}

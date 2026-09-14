@@ -77,7 +77,7 @@ std::string json_quote(const std::string& value)
 }
 
 constexpr int DrawingCounterCount = sizeof(PerformanceDrawingCounters) / sizeof(unsigned long long);
-constexpr int DrawingGaugeCount = 7;
+constexpr int DrawingGaugeCount = 9;
 /* Names must stay in PerformanceDrawingCounters member order; gauges come last. */
 const char* const drawing_counter_names[DrawingCounterCount] = {
     "submits", "dispatches", "waits", "wait_ns", "checkpoints", "checkpoint_copy_bytes",
@@ -121,11 +121,21 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     KFX_ARENA_KINDS(KFX_ARENA_FIELDS)
 #undef KFX_ARENA_FIELDS
     "arena_trig_texture_source_bytes",
+    "arena_minimap_prefix_bytes",
+    "arena_minimap_dictionary_bytes",
+    "arena_minimap_cells_bytes",
+    "arena_minimap_styles_bytes",
+    "minimap_dictionary_hits",
+    "minimap_dictionary_misses",
+    "minimap_cells_hits",
+    "minimap_cells_misses",
+    "minimap_styles_hits",
+    "minimap_styles_misses",
     "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
     "arena_capacity_bytes",
     "arena_live_bytes",
     "arena_retired_bytes",
-    "arena_growth_peak_bytes"};
+    "arena_growth_peak_bytes", "minimap_cache_class_bytes", "minimap_cache_cpu_bytes"};
 static_assert(sizeof(PerformanceDrawingCounters) == DrawingCounterCount * sizeof(unsigned long long),
     "drawing counters must be a packed array of unsigned long long");
 

@@ -324,11 +324,21 @@ void RendererSoftware::report_drawing()
         gpu.arena_explicit_forgets,
         {gpu.arena_by_kind[0], gpu.arena_by_kind[1], gpu.arena_by_kind[2], gpu.arena_by_kind[3], gpu.arena_by_kind[4], gpu.arena_by_kind[5], gpu.arena_by_kind[6], gpu.arena_by_kind[7], gpu.arena_by_kind[8], gpu.arena_by_kind[9], gpu.arena_by_kind[10], gpu.arena_by_kind[11], gpu.arena_by_kind[12], gpu.arena_by_kind[13], gpu.arena_by_kind[14], gpu.arena_by_kind[15], gpu.arena_by_kind[16], gpu.arena_by_kind[17], gpu.arena_by_kind[18]},
         gpu.arena_trig_texture_source_bytes,
+        gpu.arena_minimap_prefix_bytes,
+        gpu.arena_minimap_dictionary_bytes,
+        gpu.arena_minimap_cells_bytes,
+        gpu.arena_minimap_styles_bytes,
+        gpu.minimap_dictionary_hits,
+        gpu.minimap_dictionary_misses,
+        gpu.minimap_cells_hits,
+        gpu.minimap_cells_misses,
+        gpu.minimap_styles_hits,
+        gpu.minimap_styles_misses,
         gpu.host_staged_asset_bytes, gpu.arena_bytes_resident, gpu.arena_scratch_bytes_peak,
         gpu.arena_capacity_bytes,
         gpu.arena_live_bytes,
         gpu.arena_retired_bytes,
-        gpu.arena_growth_peak_bytes};
+        gpu.arena_growth_peak_bytes, gpu.minimap_cache_class_bytes, gpu.minimap_cache_cpu_bytes};
     performance_drawing_frame(&sample);
     const char* path = SDL_getenv("KFX_WGPU_DRAW_STATS");
     if (path != nullptr) {
@@ -345,6 +355,18 @@ void RendererSoftware::report_drawing()
                 fprintf(output, "\"arena_%s_length_overflows\":%llu,", KfxArenaKindNames[i], static_cast<unsigned long long>(c.length_overflows));
             }
             fprintf(output, "\"arena_trig_texture_source_bytes\":%llu,", static_cast<unsigned long long>(gpu.arena_trig_texture_source_bytes));
+            fprintf(output, "\"arena_minimap_prefix_bytes\":%llu,", static_cast<unsigned long long>(gpu.arena_minimap_prefix_bytes));
+            fprintf(output, "\"arena_minimap_dictionary_bytes\":%llu,", static_cast<unsigned long long>(gpu.arena_minimap_dictionary_bytes));
+            fprintf(output, "\"arena_minimap_cells_bytes\":%llu,", static_cast<unsigned long long>(gpu.arena_minimap_cells_bytes));
+            fprintf(output, "\"arena_minimap_styles_bytes\":%llu,", static_cast<unsigned long long>(gpu.arena_minimap_styles_bytes));
+            fprintf(output, "\"minimap_dictionary_hits\":%llu,", static_cast<unsigned long long>(gpu.minimap_dictionary_hits));
+            fprintf(output, "\"minimap_dictionary_misses\":%llu,", static_cast<unsigned long long>(gpu.minimap_dictionary_misses));
+            fprintf(output, "\"minimap_cells_hits\":%llu,", static_cast<unsigned long long>(gpu.minimap_cells_hits));
+            fprintf(output, "\"minimap_cells_misses\":%llu,", static_cast<unsigned long long>(gpu.minimap_cells_misses));
+            fprintf(output, "\"minimap_styles_hits\":%llu,", static_cast<unsigned long long>(gpu.minimap_styles_hits));
+            fprintf(output, "\"minimap_styles_misses\":%llu,", static_cast<unsigned long long>(gpu.minimap_styles_misses));
+            fprintf(output, "\"minimap_cache_class_bytes\":%llu,", static_cast<unsigned long long>(gpu.minimap_cache_class_bytes));
+            fprintf(output, "\"minimap_cache_cpu_bytes\":%llu,", static_cast<unsigned long long>(gpu.minimap_cache_cpu_bytes));
             fprintf(output, "\"backend\":\"wgpu-native-frame\",\"frames\":%lu,"
                 "\"gpu_batches\":%llu,\"gpu_spans\":%llu,\"gpu_pixels\":%llu,"
                 "\"cpu_gpoly_spans\":%llu,\"cpu_replayed_spans\":%llu,"

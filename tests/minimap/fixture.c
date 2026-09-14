@@ -104,6 +104,28 @@ int main(int argc,char **argv)
             h[6]=(r-9)*101;h[7]=(9-r)*103;h[18]=r==17?36:1+r*2;h[20]=15;h[21]=127;map_command(h);
         }
     }
+    gui_blink_rate=1;neutral_flash_rate=1;
+    gui_room_type_highlighted=-1;gui_door_type_highlighted=-1;
+    for(int i=0;i<161*147;i++)pixels[i+1]=(i%11)*17;
+    setup_background(12);setup_panel_colors();
+    for(int r=0;r<32;r++)
+    {
+        turn=r%4;update_panel_colors();
+        if(r>=16&&r<22)PanelMap[40*15+19]=r==16?PnC_Unexplored:r==17?PnC_Tagged_Gold:
+            r==18?PnC_RoomsStart+2:r==19?PnC_DoorsStart+2:r==20?PnC_DoorsStartLocked+2:PnC_PathStart+2;
+        if(r==22)update_panel_color_player_color(2,7);
+        if(r==24||r==25) {
+            for(int i=0;i<161*147;i++)pixels[i+1]=((i+r)%11)*17;
+            setup_background(12);setup_panel_colors();
+        }
+        if(r==26) {
+            for(int i=0;i<161*147;i++)pixels[i+1]=(i%11)*19;
+            setup_background(12);setup_panel_colors();
+        }
+        uint32_t h[24]={0};h[7]=32768;
+        h[8]=(r<8?0:r%3)*65536;h[9]=0;
+        map_command(h);
+    }
     if(pixels[0]!=39||pixels[sizeof(pixels)-1]!=39)abort();
     rewind(output);word(count);fclose(output);
     free(MapBackground);free(MapShapeStart);free(MapShapeEnd);
