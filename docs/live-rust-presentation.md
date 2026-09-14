@@ -233,6 +233,7 @@ native evidence and its source/binary limits are in the coverage ledger.
 
 - `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations.
 - `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_host_staged_asset_bytes`: host-side staged asset bytes the drawing context holds, a gauge rather than a total, and not GPU memory.
+- `arena_evictions`, `arena_overflows`, `arena_bytes_uploaded`: persistent asset arena LRU reclaims, exhausted allocations that reject a batch, and bytes actually written into the arena. `arena_bytes_resident` is a gauge: the arena extent suballocated so far, free-listed slots and power-of-two class padding included, so it bounds the live working set rather than tracking it exactly. Assets the arena does not own yet — the per-shadow `submit_target_triangles` tables — stay in `gpu_asset_upload_bytes` without appearing in `arena_bytes_uploaded`.
 - No GPU execution time is collected. It was not attempted because the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable and the copy-only submissions carry no pass for `timestamp_writes`.
 
 Zero declined spans is not a whole-renderer CPU-drawing count. These counters

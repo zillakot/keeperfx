@@ -48,7 +48,7 @@ DRAWING_LIMITATIONS = [
     "GPU execution time is not implemented: no counter here is a GPU timing, and none may be read as one.",
     "Counters cover the drawing context the bridge owns. Presenter surface acquisition and any drawing done outside that context are not counted.",
     "host_staged_asset_bytes is a host-side gauge sampled at frame end: the CPU copies the drawing context stages, not GPU memory, and not a per-frame delta, so its window total is meaningless.",
-    "arena_bytes_resident is a gauge sampled at frame end: GPU bytes the persistent asset arena holds resident, including power-of-two class padding, and not a per-frame delta.",
+    "arena_bytes_resident is a gauge sampled at frame end: GPU bytes suballocated in the persistent asset arena, free-listed slots and power-of-two class padding included, and not a per-frame delta.",
 ]
 
 

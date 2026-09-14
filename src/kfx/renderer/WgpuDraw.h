@@ -68,7 +68,7 @@ struct KfxWgpuDrawCounters {
     uint64_t submits, dispatches, waits, wait_ns, buffers, buffer_bytes;
     uint64_t arena_evictions, arena_overflows, arena_bytes_uploaded;
     /* Host-side staged asset bytes the context holds, not GPU memory; a gauge.
-     * arena_bytes_resident is the GPU arena occupancy, also a gauge. */
+     * arena_bytes_resident is the suballocated GPU arena extent, also a gauge. */
     uint64_t host_staged_asset_bytes, arena_bytes_resident;
 };
 #pragma pack(pop)

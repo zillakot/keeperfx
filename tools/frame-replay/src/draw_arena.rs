@@ -37,7 +37,6 @@ pub(crate) struct Arena {
     scratch: Vec<(usize, u32)>,
     staging: Vec<u8>,
     clock: u64,
-    resident_words: u64,
     enabled: bool,
     counters: ArenaCounters,
 }
@@ -70,7 +69,6 @@ impl Arena {
             scratch: Vec::new(),
             staging: Vec::new(),
             clock: 0,
-            resident_words: 0,
             enabled: limit_bytes >= MIN_LIMIT_BYTES,
             counters: ArenaCounters::default(),
         }
@@ -80,9 +78,11 @@ impl Arena {
         self.enabled
     }
 
+    /// bytes_resident is the suballocated extent, free-listed slots included,
+    /// because the bump allocator never returns them.
     pub(super) fn counters(&self) -> ArenaCounters {
         ArenaCounters {
-            bytes_resident: self.resident_words * 4,
+            bytes_resident: u64::from(self.high_water) * 4,
             ..self.counters
         }
     }
@@ -101,7 +101,6 @@ impl Arena {
         if let Some(entry) = self.residency.remove(&id) {
             self.lru.remove(&(entry.last_used, id));
             self.pinned.remove(&id);
-            self.resident_words -= u64::from(class_words(entry.class));
             self.free[entry.class].push(entry.offset);
         }
     }
@@ -155,7 +154,6 @@ impl Arena {
         );
         self.lru.insert((self.clock, id));
         self.pinned.insert(id);
-        self.resident_words += u64::from(class_words(class));
         Ok(offset)
     }
 
