@@ -227,8 +227,9 @@ same-frame recovery for every new command and persistent effect target.
 
 `KFX_WGPU_DRAW_VERIFY=1` compares bridge output with a separate CPU oracle before
 committing it. For creature shadows it seeds the CPU scratch from the resident GPU
-chain, then compares the oracle's mask against a blocking read of that chain. This verifies indexed drawing; `KFX_WGPU_VERIFY=1` separately checks
-acquired wgpu presentation surfaces. A screenshot of the synchronized native
+chain, then compares the oracle's mask against a blocking read of that chain. This
+verifies indexed drawing; `KFX_WGPU_VERIFY=1` separately checks acquired wgpu
+presentation surfaces. A screenshot of the synchronized native
 image does not prove a window surface was acquired or displayed. Visible surface
 validation for this drawing candidate is pending an unlocked display; the current
 native evidence and its source/binary limits are in the coverage ledger.

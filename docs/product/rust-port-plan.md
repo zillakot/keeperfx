@@ -390,8 +390,8 @@ all 64 constant shades, four scratch alignments, partial clears, offsets, flip s
 crossings and padded cumulative targets. Separate selection checks cover 72 native
 frame/orientation/base/custom choices. The ASan native bridge verifies 192 accepted
 calls and exact fallback after initialization failure or one successful batch.
-Independent review also requires the same complete target/scratch hash from 192
-production calls with verification disabled and zero CPU oracle commands.
+Independent review also requires the same complete target hash from 192 production
+calls with verification disabled and zero CPU oracle commands.
 Accepted production calls perform no CPU mask rasterization and no readback: the mask
 chain lives in a persistent GPU scratch buffer, each mask is stamped into one of two
 resident slots, and the mode10 triangles sample that slot in the same encoder. The asset
