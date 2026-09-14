@@ -285,7 +285,8 @@ void RendererSoftware::report_drawing()
         gpu.asset_upload_bytes + gpu.command_upload_bytes, gpu.readback_bytes,
         counts.bridge_readbacks, counts.gpu_readback_bytes,
         gpu.buffers, gpu.buffer_bytes, gpu.batches, gpu.commands, counts.gpu_ordered_sprites,
-        gpu.host_staged_asset_bytes};
+        gpu.arena_evictions, gpu.arena_overflows, gpu.arena_bytes_uploaded,
+        gpu.host_staged_asset_bytes, gpu.arena_bytes_resident};
     performance_drawing_frame(&sample);
     const char* path = SDL_getenv("KFX_WGPU_DRAW_STATS");
     if (path != nullptr) {
@@ -300,6 +301,8 @@ void RendererSoftware::report_drawing()
                 "\"gpu_submits\":%llu,\"gpu_dispatches\":%llu,\"gpu_waits\":%llu,\"gpu_wait_ns\":%llu,"
                 "\"gpu_buffers\":%llu,\"gpu_buffer_bytes\":%llu,"
                 "\"gpu_ordered_sprites\":%llu,\"gpu_host_staged_asset_bytes\":%llu,"
+                "\"arena_evictions\":%llu,\"arena_overflows\":%llu,"
+                "\"arena_bytes_uploaded\":%llu,\"arena_bytes_resident\":%llu,"
                 "\"bridge_solo_batches\":%llu,\"rejected_commands\":%llu,\"rejected_spans\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
@@ -337,6 +340,10 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.buffer_bytes),
                 static_cast<unsigned long long>(counts.gpu_ordered_sprites),
                 static_cast<unsigned long long>(gpu.host_staged_asset_bytes),
+                static_cast<unsigned long long>(gpu.arena_evictions),
+                static_cast<unsigned long long>(gpu.arena_overflows),
+                static_cast<unsigned long long>(gpu.arena_bytes_uploaded),
+                static_cast<unsigned long long>(gpu.arena_bytes_resident),
                 static_cast<unsigned long long>(counts.bridge_solo_batches),
                 static_cast<unsigned long long>(counts.rejected_commands),
                 static_cast<unsigned long long>(counts.rejected_spans));

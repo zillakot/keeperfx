@@ -192,7 +192,7 @@ bool Gpu(Effect& e)
         command.width = command.clip_width = e.width;
         command.height = command.clip_height = e.height;
         command.transparent = KFX_WGPU_DRAW_OPAQUE;
-        KfxWgpuNativeResource resource = {packed.data(), packed.size(), 1, 1, 1};
+        KfxWgpuNativeResource resource = {packed.data(), packed.size(), 1, 1, 1, nullptr, 0};
         return kfx_wgpu_native_draw(&target, &command, &resource, nullptr, Oracle, &e) == 1;
     } catch (...) { return false; }
 }

@@ -69,14 +69,15 @@ impl DrawRenderer {
                     <= self.device.limits().max_compute_workgroups_per_dimension,
             "triangle pixel dispatch exceeds device limits"
         );
-        let limit = self
-            .device
-            .limits()
-            .max_storage_buffer_binding_size
-            .min(self.device.limits().max_buffer_size) as usize
-            / 4;
-        let mut assets = Vec::new();
-        let mut offsets = HashMap::new();
+        let limit = self.storage_limit() as usize;
+        let mut packer = asset_packer(
+            &self.device,
+            &self.queue,
+            &mut self.arena,
+            &mut self.counters,
+            self.asset_generation,
+            limit,
+        );
         let mut metadata = Vec::new();
         let mut triangles = Vec::new();
         for command in commands {
@@ -97,27 +98,17 @@ impl DrawRenderer {
                 );
                 let length = if texture { 7968 } else { 16384 };
                 ensure!(resource.bytes.len() >= length, "short triangle resource");
-                let offset = if let Some(offset) = offsets.get(&handle) {
-                    *offset
-                } else {
-                    ensure!(
-                        assets
-                            .len()
-                            .checked_add(length)
-                            .is_some_and(|size| size <= limit),
-                        "triangle assets exceed buffer limit"
-                    );
-                    let offset = assets.len() as u32;
-                    assets.extend(resource.bytes[..length].iter().map(|&byte| u32::from(byte)));
-                    offsets.insert(handle, offset);
-                    offset
-                };
-                metadata.push(offset);
+                metadata.push(
+                    packer
+                        .prefix(handle, &resource.bytes, length)
+                        .context("triangle assets exceed buffer limit")?,
+                );
             }
             triangles.push(Triangle {
                 vertices: command.vertices,
             });
         }
+        let assets = packer.finish();
         self.triangles
             .get_or_insert_with(|| TrianglePipelines::new(&self.device));
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -203,13 +194,18 @@ impl DrawRenderer {
             self.check_status()?;
             ensure!(!invalid, "invalid triangle shade");
         }
-        let asset_buffer = buffer(
-            &self.device,
-            &mut self.counters,
-            "triangle immutable assets",
-            &assets,
-            wgpu::BufferUsages::STORAGE,
-        );
+        let asset_buffer = match &assets {
+            Some(assets) => buffer(
+                &self.device,
+                &mut self.counters,
+                "triangle immutable assets",
+                assets,
+                wgpu::BufferUsages::STORAGE,
+            ),
+            None => self
+                .arena
+                .binding(&self.device, &self.queue, &mut self.counters),
+        };
         let metadata_buffer = buffer(
             &self.device,
             &mut self.counters,
@@ -241,7 +237,9 @@ impl DrawRenderer {
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
-        self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+        if let Some(assets) = &assets {
+            self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+        }
         self.counters.command_upload_bytes += commands.len() as u64 * 8;
         Ok(())
     }

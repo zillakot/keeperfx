@@ -113,13 +113,18 @@ impl DrawRenderer {
             .targets
             .get(&target_id)
             .context("unknown sprite target")?;
-        pack_commands(
-            commands,
-            &self.resources,
-            target.width,
-            target.height,
-            self.storage_limit() as usize,
-        )?;
+        let (width, height) = (target.width, target.height);
+        let limit = self.storage_limit() as usize;
+        let mut packer = asset_packer(
+            &self.device,
+            &self.queue,
+            &mut self.arena,
+            &mut self.counters,
+            self.asset_generation,
+            limit,
+        );
+        pack_commands(&mut packer, commands, &self.resources, width, height, limit)?;
+        packer.finish();
         for c in commands.iter().filter(|c| ordered(c)) {
             validate_target(c, &self.resources[&c.source], target.width, target.height)?;
         }
@@ -128,14 +133,24 @@ impl DrawRenderer {
                 self.submit(target_id, std::slice::from_ref(c))?;
                 continue;
             }
-            let target = &self.targets[&target_id];
-            let (words, assets) = pack_commands(
+            let mut packer = asset_packer(
+                &self.device,
+                &self.queue,
+                &mut self.arena,
+                &mut self.counters,
+                self.asset_generation,
+                limit,
+            );
+            let words = pack_commands(
+                &mut packer,
                 std::slice::from_ref(c),
                 &self.resources,
-                target.width,
-                target.height,
-                self.storage_limit() as usize,
+                width,
+                height,
+                limit,
             )?;
+            let assets = packer.finish();
+            let target = &self.targets[&target_id];
             let command_buffer = buffer(
                 &self.device,
                 &mut self.counters,
@@ -143,13 +158,18 @@ impl DrawRenderer {
                 &words,
                 wgpu::BufferUsages::STORAGE,
             );
-            let asset_buffer = buffer(
-                &self.device,
-                &mut self.counters,
-                "sprite artwork and run boundaries",
-                &assets,
-                wgpu::BufferUsages::STORAGE,
-            );
+            let asset_buffer = match &assets {
+                Some(assets) => buffer(
+                    &self.device,
+                    &mut self.counters,
+                    "sprite artwork and run boundaries",
+                    assets,
+                    wgpu::BufferUsages::STORAGE,
+                ),
+                None => self
+                    .arena
+                    .binding(&self.device, &self.queue, &mut self.counters),
+            };
             let parameters = buffer(
                 &self.device,
                 &mut self.counters,
@@ -191,7 +211,9 @@ impl DrawRenderer {
             self.check_status()?;
             self.counters.batches += 1;
             self.counters.commands += 1;
-            self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+            if let Some(assets) = &assets {
+                self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+            }
             self.counters.command_upload_bytes += words.len() as u64 * 4;
         }
         Ok(())

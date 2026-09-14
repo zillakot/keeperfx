@@ -23,8 +23,9 @@ struct PerformanceDrawingCounters {
     unsigned long long checkpoints, checkpoint_copy_bytes, validation_waits;
     unsigned long long upload_bytes, readback_bytes, full_readbacks, full_readback_bytes;
     unsigned long long buffers, buffer_bytes, batches, commands, ordered_sprites;
+    unsigned long long arena_evictions, arena_overflows, arena_bytes_uploaded;
     /* Trailing gauges are stored as observed, not differenced. */
-    unsigned long long host_staged_asset_bytes;
+    unsigned long long host_staged_asset_bytes, arena_bytes_resident;
 };
 void performance_drawing_backend(const char* backend);
 void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulative);

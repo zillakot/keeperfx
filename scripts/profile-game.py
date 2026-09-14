@@ -24,8 +24,10 @@ DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "checkpoint_copy_bytes", "validation_waits", "upload_bytes", "readback_bytes",
                     "full_readbacks", "full_readback_bytes", "buffers", "buffer_bytes",
-                    "batches", "commands", "ordered_sprites", "host_staged_asset_bytes")
-DRAWING_GAUGES = ("host_staged_asset_bytes",)
+                    "batches", "commands", "ordered_sprites",
+                    "arena_evictions", "arena_overflows", "arena_bytes_uploaded",
+                    "host_staged_asset_bytes", "arena_bytes_resident")
+DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident")
 SETTINGS = {
     "DELTA_TIME": "ON", "TURNS_PER_SECOND": "20", "FRAMES_PER_SECOND": "60", "VSYNC": "OFF",
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
@@ -46,6 +48,7 @@ DRAWING_LIMITATIONS = [
     "GPU execution time is not implemented: no counter here is a GPU timing, and none may be read as one.",
     "Counters cover the drawing context the bridge owns. Presenter surface acquisition and any drawing done outside that context are not counted.",
     "host_staged_asset_bytes is a host-side gauge sampled at frame end: the CPU copies the drawing context stages, not GPU memory, and not a per-frame delta, so its window total is meaningless.",
+    "arena_bytes_resident is a gauge sampled at frame end: GPU bytes suballocated in the persistent asset arena, free-listed slots and power-of-two class padding included, and not a per-frame delta.",
 ]
 
 

@@ -345,9 +345,24 @@ void WgpuTerrainBridge::InvalidateFrame()
     m_frame_invalid = true;
 }
 
+/* Cached handles outlive a failed frame; the arena residency behind them is only
+ * proven for frames that completed. */
+void WgpuTerrainBridge::PurgeResources()
+{
+    if (m_context != nullptr)
+        for (const auto* cache : {&m_terrain_textures, &m_terrain_fades, &m_native_tables})
+            for (const auto& resource : *cache)
+                kfx_wgpu_draw_resource_release(m_context, resource.handle, m_error.data(),
+                    m_error.size());
+    m_terrain_textures.clear();
+    m_terrain_fades.clear();
+    m_native_tables.clear();
+}
+
 void WgpuTerrainBridge::FullRedraw()
 {
     if (m_queue_active) kfx_wgpu_draw_frame_abort(m_context, m_error.data(), m_error.size());
+    PurgeResources();
     m_queue_active = false;
     m_frame_active = false;
     ClearPending();
@@ -372,13 +387,8 @@ void WgpuTerrainBridge::DetachPresenter()
     EndFrame(true);
     if (m_context && context_cleanup) context_cleanup(m_context);
     ReleaseViews();
-    for (const auto& resource : m_textures)
-        kfx_wgpu_draw_resource_release(m_context, resource.handle, m_error.data(), m_error.size());
-    for (const auto& resource : m_fades)
-        kfx_wgpu_draw_resource_release(m_context, resource.handle, m_error.data(), m_error.size());
+    PurgeResources();
     if (m_target) kfx_wgpu_draw_target_release(m_context, m_target, m_error.data(), m_error.size());
-    m_textures.clear();
-    m_fades.clear();
     m_context = nullptr;
     m_target = 0;
     m_width = m_height = 0;
@@ -505,6 +515,50 @@ uint64_t WgpuTerrainBridge::ResourceFor(std::vector<Resource>& cache, const void
     return cache.back().handle;
 }
 
+/* Interns a lookup table by the caller's buffer identity, concatenating an
+ * optional second segment once instead of on every command. */
+uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, size_t limit)
+{
+    const size_t length = table.length + table.tail_length;
+    const void* key = StableKey(table.bytes, table.length);
+    const void* tail_key = table.tail == nullptr ? nullptr
+                                                 : StableKey(table.tail, table.tail_length);
+    const bool interned = key != nullptr && (table.tail == nullptr || tail_key != nullptr);
+    for (const auto& resource : m_native_tables) {
+        if (resource.width != table.width || resource.height != table.height ||
+            resource.pitch != table.pitch || resource.bytes.size() != length) continue;
+        if (interned) {
+            if (resource.key == key && resource.tail_key == tail_key &&
+                resource.generation == kfx_render_asset_generation) return resource.handle;
+            continue;
+        }
+        if (resource.key != nullptr) continue;
+        if (std::memcmp(resource.bytes.data(), table.bytes, table.length) != 0) continue;
+        if (table.tail_length != 0 && std::memcmp(resource.bytes.data() + table.length,
+                table.tail, table.tail_length) != 0) continue;
+        return resource.handle;
+    }
+    if (m_native_tables.size() >= limit) {
+        Flush();
+        if (m_failed) return 0;
+        if (kfx_wgpu_draw_resource_release(m_context, m_native_tables.front().handle,
+                m_error.data(), m_error.size()) != 1) return 0;
+        m_native_tables.erase(m_native_tables.begin());
+    }
+    Resource resource = {0, {}, table.width, table.height, table.pitch,
+        interned ? key : nullptr, kfx_render_asset_generation, interned ? tail_key : nullptr};
+    resource.bytes.reserve(length);
+    resource.bytes.insert(resource.bytes.end(), table.bytes, table.bytes + table.length);
+    if (table.tail_length != 0)
+        resource.bytes.insert(resource.bytes.end(), table.tail, table.tail + table.tail_length);
+    resource.handle = kfx_wgpu_draw_resource_create(m_context, resource.bytes.data(), length,
+        table.width, table.height, table.pitch, m_error.data(), m_error.size());
+    if (resource.handle == 0) return 0;
+    m_counts.resource_snapshot_bytes += length;
+    m_native_tables.push_back(std::move(resource));
+    return m_native_tables.back().handle;
+}
+
 int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& span,
     const uint8_t* texture, const uint8_t* fade)
 {
@@ -544,11 +598,11 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
     std::array<uint8_t, KFX_GPOLY_TEXTURE_BYTES> texture_bytes = {};
     for (size_t row = 0; row < 32; ++row)
         std::memcpy(texture_bytes.data() + row * 256, texture + row * 256, 32);
-    const uint64_t texture_handle = ResourceFor(m_textures, StableKey(texture, TEXTURE_READ_BYTES),
+    const uint64_t texture_handle = ResourceFor(m_terrain_textures, StableKey(texture, TEXTURE_READ_BYTES),
         kfx_render_asset_generation, texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
     if (texture_handle == 0) return Fail(nullptr);
-    const uint64_t fade_handle = ResourceFor(m_fades, StableKey(fade, KFX_GPOLY_FADE_BYTES),
-        kfx_render_asset_generation, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
+    const uint64_t fade_handle = ResourceFor(m_terrain_fades, StableKey(fade, KFX_GPOLY_FADE_BYTES),
+        kfx_render_asset_generation, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 8);
     if (fade_handle == 0) return Fail(nullptr);
     KfxWgpuDrawCommand command = {};
     command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
@@ -622,11 +676,11 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
     for (size_t row = 0; row < 32; ++row)
         std::memcpy(texture_bytes.data() + row * 256, texture + row * 256, 32);
     KfxWgpuTriangle owned = triangle;
-    owned.source = ResourceFor(m_textures, StableKey(texture, TEXTURE_READ_BYTES),
+    owned.source = ResourceFor(m_terrain_textures, StableKey(texture, TEXTURE_READ_BYTES),
         kfx_render_asset_generation, texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
     if (!owned.source) return Fail(nullptr);
-    owned.table = ResourceFor(m_fades, StableKey(fade, KFX_GPOLY_FADE_BYTES),
-        kfx_render_asset_generation, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
+    owned.table = ResourceFor(m_terrain_fades, StableKey(fade, KFX_GPOLY_FADE_BYTES),
+        kfx_render_asset_generation, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 8);
     if (!owned.table) return Fail(nullptr);
     AppendTriangle(owned);
     return KFX_GPOLY_CONSUMED;
@@ -650,18 +704,18 @@ bool WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
             const uint8_t* fade = nullptr;
             if (run.triangles) {
                 const auto& triangle = m_triangles[triangles++];
-                for (const auto& resource : m_textures)
+                for (const auto& resource : m_terrain_textures)
                     if (resource.handle == triangle.source) texture = resource.bytes.data();
-                for (const auto& resource : m_fades)
+                for (const auto& resource : m_terrain_fades)
                     if (resource.handle == triangle.table) fade = resource.bytes.data();
                 KfxGpolyTarget target = {pixels, m_native_target.width, m_native_target.height, pitch};
                 if (!m_rasterizer(&target, &triangle, texture, fade)) return false;
                 continue;
             }
             const auto& command = m_pending[commands++];
-            for (const auto& resource : m_textures)
+            for (const auto& resource : m_terrain_textures)
                 if (resource.handle == command.source) texture = resource.bytes.data();
-            for (const auto& resource : m_fades)
+            for (const auto& resource : m_terrain_fades)
                 if (resource.handle == command.table) fade = resource.bytes.data();
             uint64_t position = (static_cast<uint64_t>(command.start_high) << 32) | command.start_low;
             const uint64_t step = (static_cast<uint64_t>(command.step_high) << 32) | command.step_low;
@@ -982,17 +1036,23 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
         uint32_t view_x, view_y;
         if (m_frame_active && !FrameView(target, view_x, view_y) && !EndFrame(true)) return Fail(nullptr);
         m_native_target = target;
-        auto aliases_target = [&](const KfxWgpuNativeResource* resource) {
-            if (!resource || !resource->bytes || !resource->length || !m_gpu_dirty) return false;
-            const uintptr_t first = reinterpret_cast<uintptr_t>(resource->bytes);
+        auto aliases_range = [&](const uint8_t* bytes, size_t bytes_length) {
+            if (!bytes || !bytes_length || !m_gpu_dirty) return false;
+            const uintptr_t first = reinterpret_cast<uintptr_t>(bytes);
             const uintptr_t screen = reinterpret_cast<uintptr_t>(m_gpu_native_target.pixels);
             const size_t length = static_cast<size_t>(m_gpu_native_target.pitch) * (m_gpu_native_target.height - 1) + m_gpu_native_target.width;
-            return first <= screen ? screen - first < resource->length : first - screen < length;
+            return first <= screen ? screen - first < bytes_length : first - screen < length;
+        };
+        auto aliases_target = [&](const KfxWgpuNativeResource* resource) {
+            return resource && (aliases_range(resource->bytes, resource->length) ||
+                aliases_range(resource->tail, resource->tail_length));
         };
         if (aliases_target(source) || aliases_target(table)) {
             ++m_counts.target_alias_barriers;
             if ((source && !ReadBarrier(source->bytes, source->length)) ||
-                (table && !ReadBarrier(table->bytes, table->length))) return Fail(nullptr);
+                (table && !ReadBarrier(table->bytes, table->length)) ||
+                (table && table->tail && !ReadBarrier(table->tail, table->tail_length)))
+                return Fail(nullptr);
         }
         KfxWgpuDrawCommand owned = command;
         OwnedResource guard = {m_context, 0};
@@ -1004,8 +1064,7 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
         }
         source_handle = guard.handle;
         if (table != nullptr) {
-            table_handle = ResourceFor(m_fades, nullptr, 0, table->bytes,
-                table->length, table->width, table->height, table->pitch, 8);
+            table_handle = TableResource(*table, 16);
         }
         const bool resources_ready = table == nullptr || table_handle != 0;
         owned.source = command.kind == KFX_WGPU_DRAW_TRANSITION ? command.source : source_handle;

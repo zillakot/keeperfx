@@ -102,7 +102,6 @@ impl DrawRenderer {
             h[5].div_ceil(8) <= self.device.limits().max_compute_workgroups_per_dimension,
             "minimap dispatch exceeds GPU limit"
         );
-        let words: Vec<u32> = source.bytes.iter().map(|&b| u32::from(b)).collect();
         if self.minimap.is_none() {
             let module = self
                 .device
@@ -146,13 +145,30 @@ impl DrawRenderer {
                 self.release_target_snapshot(old)?;
             }
         }
-        let assets = buffer(
+        let limit = self.storage_limit() as usize;
+        let bytes = &self.resources[&c.source].bytes;
+        let mut packer = asset_packer(
             &self.device,
+            &self.queue,
+            &mut self.arena,
             &mut self.counters,
-            "minimap semantic cells and styles",
-            &words,
-            wgpu::BufferUsages::STORAGE,
+            self.asset_generation,
+            limit,
         );
+        let base = packer.offset(c.source, bytes)?;
+        let words = packer.finish();
+        let assets = match &words {
+            Some(words) => buffer(
+                &self.device,
+                &mut self.counters,
+                "minimap semantic cells and styles",
+                words,
+                wgpu::BufferUsages::STORAGE,
+            ),
+            None => self
+                .arena
+                .binding(&self.device, &self.queue, &mut self.counters),
+        };
         let dummy = buffer(
             &self.device,
             &mut self.counters,
@@ -171,7 +187,7 @@ impl DrawRenderer {
             &self.device,
             &mut self.counters,
             "target view",
-            &[target.width, target.pitch, target.offset, 0],
+            &[target.width, target.pitch, target.offset, base],
             wgpu::BufferUsages::UNIFORM,
         );
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -195,7 +211,9 @@ impl DrawRenderer {
         self.submit_encoder(encoder);
         self.counters.batches += 1;
         self.counters.commands += 1;
-        self.counters.asset_upload_bytes += words.len() as u64 * 4;
+        if let Some(words) = &words {
+            self.counters.asset_upload_bytes += words.len() as u64 * 4;
+        }
         self.check_status()
     }
 }

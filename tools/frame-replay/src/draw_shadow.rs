@@ -85,7 +85,6 @@ impl DrawRenderer {
             self.device.limits().max_compute_workgroups_per_dimension >= 32,
             "shadow dispatch exceeds GPU limit"
         );
-        let values: Vec<_> = asset.bytes.iter().map(|&b| u32::from(b)).collect();
         if self.shadow.is_none() {
             let module = self
                 .device
@@ -104,19 +103,47 @@ impl DrawRenderer {
                 },
             ));
         }
+        let limit = self.storage_limit() as usize;
+        let bytes = &self.resources[&source].bytes;
+        let mut packer = asset_packer(
+            &self.device,
+            &self.queue,
+            &mut self.arena,
+            &mut self.counters,
+            self.asset_generation,
+            limit,
+        );
+        let base = packer.offset(source, bytes)?;
+        let values = packer.finish();
         let target = self.create_target(256, 256)?;
-        let input = buffer(
+        let input = match &values {
+            Some(values) => buffer(
+                &self.device,
+                &mut self.counters,
+                "immutable shadow artwork and prior scratch",
+                values,
+                wgpu::BufferUsages::STORAGE,
+            ),
+            None => self
+                .arena
+                .binding(&self.device, &self.queue, &mut self.counters),
+        };
+        let region = buffer(
             &self.device,
             &mut self.counters,
-            "immutable shadow artwork and prior scratch",
-            &values,
-            wgpu::BufferUsages::STORAGE,
+            "shadow arena region",
+            &[base, 0, 0, 0],
+            wgpu::BufferUsages::UNIFORM,
         );
         let pipeline = self.shadow.as_ref().unwrap();
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &pipeline.get_bind_group_layout(0),
-            entries: &[entry(0, &self.targets[&target].indices), entry(1, &input)],
+            entries: &[
+                entry(0, &self.targets[&target].indices),
+                entry(1, &input),
+                entry(2, &region),
+            ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
@@ -127,7 +154,9 @@ impl DrawRenderer {
         }
         self.counters.dispatches += 1;
         self.submit_encoder(encoder);
-        self.counters.asset_upload_bytes += values.len() as u64 * 4;
+        if let Some(values) = &values {
+            self.counters.asset_upload_bytes += values.len() as u64 * 4;
+        }
         self.counters.commands += 1;
         self.counters.batches += 1;
         if let Err(error) = self.check_status() {

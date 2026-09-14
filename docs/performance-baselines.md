@@ -157,6 +157,16 @@ issues, including the single-workgroup ordered-sprite passes.
 `host_staged_asset_bytes` is a gauge sampled at frame end holding the CPU copies
 the drawing context stages, not GPU memory, so its window total is meaningless.
 
+`arena_evictions`, `arena_overflows` and `arena_bytes_uploaded` cover the
+persistent asset arena: LRU reclaims, allocations that could not be satisfied and
+so rejected their batch, and bytes written into the arena.
+`arena_bytes_resident` is a second gauge holding the arena extent suballocated so
+far, including free-listed slots and power-of-two class padding, so it bounds the
+live working set rather than tracking it exactly and its window total is
+meaningless. It counts expanded arena bytes — one `u32` per source byte, the GPU
+footprint — so dividing by four gives the real asset bytes that the arena's
+source-byte capacity is stated in. `upload_bytes` still counts every asset write, arena or not.
+
 The first presentation only establishes the counter baseline, so there is exactly
 one fewer counter frame than presentation sample. `wait_ns` is host time blocked
 inside device polls and is already contained in the enclosing `draw` and

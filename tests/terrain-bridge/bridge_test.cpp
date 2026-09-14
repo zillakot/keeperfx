@@ -240,6 +240,25 @@ int main()
         assert(bridge.GetCounters().gpu_batches == 2 && bridge.GetCounters().failures == 0);
     }
     {
+        // Recovery purges the interned caches: m_frame_invalid clears only in FullRedraw, which
+        // releases every cached handle first, so arena residency never outlives a discarded frame.
+        WgpuTerrainBridge bridge(0, false, true);
+        kfx_wgpu_terrain_boundary(1);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &a, texture.data(), fade.data()) == 1);
+        const uint64_t first = bridge.GetCounters().resource_snapshot_bytes;
+        assert(first > fade.size());
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &b, texture.data(), fade.data()) == 1);
+        assert(bridge.GetCounters().resource_snapshot_bytes == first);
+        kfx_wgpu_terrain_boundary(0);
+        bridge.FullRedraw();
+        assert(bridge.FrameValid());
+        kfx_wgpu_terrain_boundary(1);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &a, texture.data(), fade.data()) == 1);
+        assert(bridge.GetCounters().resource_snapshot_bytes == 2 * first);
+        kfx_wgpu_terrain_boundary(0);
+        assert(bridge.GetCounters().failures == 0);
+    }
+    {
         WgpuTerrainBridge bridge(0, false, true);
         kfx_wgpu_terrain_boundary(1);
         for (unsigned i = 0; i < 70; ++i) {
@@ -262,7 +281,7 @@ int main()
         kfx_wgpu_terrain_boundary(1);
         assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &a, texture.data(), fade.data()) == 1);
         std::vector<uint8_t> image(200, 19);
-        KfxWgpuNativeResource source = {image.data(), image.size(), 20, 10, 20};
+        KfxWgpuNativeResource source = {image.data(), image.size(), 20, 10, 20, nullptr, 0};
         KfxWgpuDrawCommand command = {};
         command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         command.kind = KFX_WGPU_DRAW_IMAGE;
@@ -278,7 +297,7 @@ int main()
     for (bool resident : {false, true}) {
         WgpuTerrainBridge bridge(0, false, true, resident);
         std::vector<uint8_t> image(200, 37);
-        KfxWgpuNativeResource source = {image.data(), image.size(), 20, 10, 20};
+        KfxWgpuNativeResource source = {image.data(), image.size(), 20, 10, 20, nullptr, 0};
         KfxWgpuDrawCommand command = {};
         command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         command.kind = KFX_WGPU_DRAW_IMAGE;
@@ -315,7 +334,7 @@ int main()
         assert(before.bridge_readbacks == (verify ? 5 : 0));
         assert(before.verification_readbacks == (verify ? 5 : 0));
         std::vector<uint8_t> source_pixels(200, 17);
-        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 20, 10, 20};
+        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 20, 10, 20, nullptr, 0};
         KfxWgpuDrawCommand image = {};
         image.abi_version = 1;
         image.kind = KFX_WGPU_DRAW_IMAGE;
@@ -352,7 +371,7 @@ int main()
         WgpuTerrainBridge bridge(0, false, verify, true);
         assert(bridge.BeginFrame(frame));
         std::vector<uint8_t> source_pixels(12 * 6, 17);
-        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 12, 6, 12};
+        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 12, 6, 12, nullptr, 0};
         KfxWgpuDrawCommand image = {};
         image.abi_version = 1;
         image.kind = KFX_WGPU_DRAW_IMAGE;
@@ -381,7 +400,7 @@ int main()
         assert(bridge.GetCounters().native_copy_bytes == 200);
         assert(bridge.BeginFrame(frame, true));
         std::vector<uint8_t> clear_pixels(200, 144);
-        KfxWgpuNativeResource clear_reference = {clear_pixels.data(), clear_pixels.size(), 20, 10, 20};
+        KfxWgpuNativeResource clear_reference = {clear_pixels.data(), clear_pixels.size(), 20, 10, 20, nullptr, 0};
         KfxWgpuDrawCommand clear = {};
         clear.abi_version = 1;
         clear.kind = KFX_WGPU_DRAW_CLEAR;
@@ -452,7 +471,7 @@ int main()
         assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
         oracle(independent, resident.pitch, a, texture, fade);
         bridge.Flush();
-        KfxWgpuNativeResource alias_source = {resident_pixels.data(), 236, 20, 10, 24};
+        KfxWgpuNativeResource alias_source = {resident_pixels.data(), 236, 20, 10, 24, nullptr, 0};
         KfxWgpuDrawCommand image = {};
         image.abi_version = 1;
         image.kind = KFX_WGPU_DRAW_IMAGE;
@@ -570,7 +589,7 @@ int main()
         }
         assert(bridge.GetCounters().gpu_batches == 0);
         std::vector<uint8_t> blend(256, 3);
-        KfxWgpuNativeResource blend_table = {blend.data(), blend.size(), 256, 1, 256};
+        KfxWgpuNativeResource blend_table = {blend.data(), blend.size(), 256, 1, 256, nullptr, 0};
         KfxWgpuDrawCommand rect = {};
         rect.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         rect.kind = KFX_WGPU_DRAW_RECT;
@@ -649,8 +668,8 @@ int main()
         std::vector<uint8_t> frame_pixels(24 * 10, 0x6a);
         KfxGpolyTarget frame = {frame_pixels.data(), 20, 10, 24};
         std::vector<uint8_t> sprite_bytes(64, 0), image_bytes(200, 0);
-        KfxWgpuNativeResource sprite_source = {sprite_bytes.data(), sprite_bytes.size(), 8, 8, 8};
-        KfxWgpuNativeResource image_source = {image_bytes.data(), image_bytes.size(), 20, 10, 20};
+        KfxWgpuNativeResource sprite_source = {sprite_bytes.data(), sprite_bytes.size(), 8, 8, 8, nullptr, 0};
+        KfxWgpuNativeResource image_source = {image_bytes.data(), image_bytes.size(), 20, 10, 20, nullptr, 0};
         submit_log.clear();
         mock_triangles = true;
         mismatch_triangles = false;

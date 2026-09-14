@@ -67,8 +67,8 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
     memcpy(asset + 65688, sprite->data, rle_length);
     memcpy(tables, pixmap.fade_tables, 16384);
     memcpy(tables + 16384, pixmap.ghost, 65536);
-    const struct KfxWgpuNativeResource source = {asset, length, 1, 1, 1};
-    const struct KfxWgpuNativeResource table = {tables, 81920, 256, 320, 256};
+    const struct KfxWgpuNativeResource source = {asset, length, 1, 1, 1, NULL, 0};
+    const struct KfxWgpuNativeResource table = {tables, 81920, 256, 320, 256, NULL, 0};
     const struct KfxGpolyTarget target = {poly_screen + vec_screen_width,
         vec_window_width, vec_window_height, vec_screen_width};
     struct KfxWgpuDrawCommand command = {0};

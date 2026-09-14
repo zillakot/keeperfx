@@ -1,9 +1,10 @@
 @group(0) @binding(3) var<uniform> target_view: vec4<u32>;
 fn address(i: u32) -> u32 { return target_view.z + (i / target_view.x) * target_view.y + i % target_view.x; }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
-@group(0) @binding(1) var<storage, read> data: array<u32>;
+@group(0) @binding(1) var<storage, read> assets: array<u32>;
+fn data(i:u32)->u32 {return assets[target_view.w+i];}
 @group(0) @binding(2) var<storage, read> background: array<u32>;
-fn word(o:u32)->u32 {return data[o]|(data[o+1]<<8)|(data[o+2]<<16)|(data[o+3]<<24);}
+fn word(o:u32)->u32 {return data(o)|(data(o+1)<<8)|(data(o+2)<<16)|(data(o+3)<<24);}
 fn h(i:u32)->u32 {return word(i*4);}
 fn si(i:u32)->i32 {return bitcast<i32>(h(i));}
 fn root(n:i32)->i32 {var l=0;var r=2049;loop {if r-l<=1 {break;}let m=(l+r)/2;if m*m<=n {l=m;}else {r=m;}}return l;}
@@ -19,9 +20,9 @@ fn minimap(@builtin(global_invocation_id) id:vec3<u32>) {
  if mode==0u {
   let wx=si(8)+p.y*si(6)+p.x*si(7);let wy=si(9)+p.y*si(7)-p.x*si(6);
   if wx<0||wy<0||wx>=i32(h(10)<<16)||wy>=i32(h(11)<<16){return;}
-  let o=h(13)+2*(u32(wx>>16)+u32(wy>>16)*(h(10)+1));let cell=data[o]|(data[o+1]<<8);let bk=background[id.y*d+id.x];var colour=0u;
-  for(var i=0u;i<h(15)/38569u;i++){if data[h(12)+i]==bk{colour=i;break;}}
-  col=data[h(14)+colour*38569u+cell];write=true;
+  let o=h(13)+2*(u32(wx>>16)+u32(wy>>16)*(h(10)+1));let cell=data(o)|(data(o+1)<<8);let bk=background[id.y*d+id.x];var colour=0u;
+  for(var i=0u;i<h(15)/38569u;i++){if data(h(12)+i)==bk{colour=i;break;}}
+  col=data(h(14)+colour*38569u+cell);write=true;
  } else if mode==1u {write=pattern(p,vec2<i32>(si(16),si(17)),si(19));}
  else if mode==2u {
   let q=p-vec2<i32>(si(16),si(17));var y=si(18);var x=0;var decision=3-2*y;

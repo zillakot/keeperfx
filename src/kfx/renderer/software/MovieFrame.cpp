@@ -48,7 +48,7 @@ bool movie_submit(const KfxMovieFrame &frame, const KfxMovieTarget &target, int 
         if (copied_width > target.pitch || begin < 0 || end > int64_t(capacity)) return false;
     }
     KfxGpolyTarget surface = {target.pixels, uint32_t(target.pitch), uint32_t(target.height), uint32_t(target.pitch)};
-    KfxWgpuNativeResource source = {frame.pixels, length, uint32_t(frame.width), uint32_t(frame.height), uint32_t(frame.pitch)};
+    KfxWgpuNativeResource source = {frame.pixels, length, uint32_t(frame.width), uint32_t(frame.height), uint32_t(frame.pitch), nullptr, 0};
     KfxWgpuDrawCommand command = {};
     command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
     command.kind = scaled ? KFX_WGPU_DRAW_RAW_IMAGE : KFX_WGPU_DRAW_MOVIE;

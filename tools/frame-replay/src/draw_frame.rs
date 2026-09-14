@@ -248,6 +248,7 @@ impl DrawRenderer {
                 debug_assert!(self.resource_bytes >= released.bytes.len());
                 self.resource_bytes = self.resource_bytes.saturating_sub(released.bytes.len());
             }
+            self.arena.forget(id);
         }
         for id in frame.released_targets.drain(..) {
             self.targets.remove(&id);
@@ -385,6 +386,7 @@ impl DrawRenderer {
         if let Some(mut frame) = self.frame.take() {
             self.drain_releases(&mut frame);
         }
+        self.invalidate_assets();
         Ok(())
     }
 }
@@ -521,7 +523,7 @@ mod tests {
         draw.frame_end().unwrap();
         assert_eq!(draw.counters().batches, 4);
         assert_eq!(draw.counters().readback_bytes, 0);
-        assert_eq!(draw.counters().asset_upload_bytes, 36);
+        assert_eq!(draw.counters().asset_upload_bytes, 24);
         assert_eq!(draw.frame_counters().validation_waits, 0);
         let mut expected = vec![7; 13 * 9];
         for y in 0..4 {

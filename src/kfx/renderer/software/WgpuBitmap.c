@@ -102,7 +102,7 @@ int kfx_wgpu_bitmap_huge(uint8_t *dst, int pitch, int height, const int32_t *xs,
     command.height = command.clip_height = height;
     command.source_height = s->SHeight;
     command.transparent = KFX_WGPU_DRAW_OPAQUE;
-    struct KfxWgpuNativeResource source = {asset, used, 1, 1, 1};
+    struct KfxWgpuNativeResource source = {asset, used, 1, 1, 1, NULL, 0};
     int accepted = kfx_wgpu_native_draw(&target, &command, &source, NULL, oracle, context);
     free(asset);
     return accepted;
@@ -143,7 +143,7 @@ int kfx_wgpu_bitmap_font(const struct KfxGpolyTarget *target, int wx, int wy,
     c.start_low = wx + x; c.start_high = wy + y;
     c.step_low = dw; c.step_high = dh;
     c.transparent = KFX_WGPU_DRAW_OPAQUE;
-    struct KfxWgpuNativeResource source = {asset, bytes + 12, 1, 1, 1};
+    struct KfxWgpuNativeResource source = {asset, bytes + 12, 1, 1, 1, NULL, 0};
     int accepted = kfx_wgpu_native_draw(target, &c, &source, NULL, oracle, context);
     free(asset);
     return accepted;

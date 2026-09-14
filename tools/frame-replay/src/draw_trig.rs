@@ -73,13 +73,17 @@ impl DrawRenderer {
             width.div_ceil(8) <= dispatch_limit && height.div_ceil(8) <= dispatch_limit,
             "drawing dispatch exceeds device limit"
         );
-        let (words, assets) = pack_commands(
-            commands,
-            &self.resources,
-            width,
-            height,
-            self.storage_limit() as usize,
-        )?;
+        let limit = self.storage_limit() as usize;
+        let mut packer = asset_packer(
+            &self.device,
+            &self.queue,
+            &mut self.arena,
+            &mut self.counters,
+            self.asset_generation,
+            limit,
+        );
+        let words = pack_commands(&mut packer, commands, &self.resources, width, height, limit)?;
+        let assets = packer.finish();
         bin_commands(&words, width, height, self.storage_limit() as usize)?;
         if commands.iter().any(|c| c.kind == TRIG) {
             self.prepare_trig();
@@ -90,13 +94,18 @@ impl DrawRenderer {
                 &words,
                 wgpu::BufferUsages::STORAGE,
             );
-            let asset_buffer = buffer(
-                &self.device,
-                &mut self.counters,
-                "mixed batch preflight assets",
-                &assets,
-                wgpu::BufferUsages::STORAGE,
-            );
+            let asset_buffer = match &assets {
+                Some(assets) => buffer(
+                    &self.device,
+                    &mut self.counters,
+                    "mixed batch preflight assets",
+                    assets,
+                    wgpu::BufferUsages::STORAGE,
+                ),
+                None => self
+                    .arena
+                    .binding(&self.device, &self.queue, &mut self.counters),
+            };
             let parameters = buffer(
                 &self.device,
                 &mut self.counters,
@@ -114,7 +123,9 @@ impl DrawRenderer {
                 wgpu::BufferUsages::UNIFORM,
             );
             self.counters.command_upload_bytes += (words.len() as u64 * 4) + 20;
-            self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+            if let Some(assets) = &assets {
+                self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+            }
             let valid = self.validate_trig_batch(
                 &command_buffer,
                 &asset_buffer,
