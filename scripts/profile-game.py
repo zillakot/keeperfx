@@ -49,7 +49,7 @@ SETTINGS = {
 }
 LIMITATIONS = [
     "Per-scope timings are monotonic wall-clock durations, including scheduling and blocking; they are not CPU-time counters.",
-    "GPU execution time is collected only when KFX_WGPU_GPU_TIMING=1 and the adapter supports timestamp queries: the gpu_*_ns drawing counters are per-pass GPU durations. Presentation and present_wait remain host-side wall clock.",
+    "GPU execution time is collected only when KFX_WGPU_GPU_TIMING is 1 or 2 and the adapter supports timestamp queries: the gpu_*_ns drawing counters are per-pass GPU durations. Presentation and present_wait remain host-side wall clock.",
     "Presentation includes present_wait; these overlapping scopes must not be added together.",
     "Frame intervals measure observed presentation pacing; simulation samples count actual game updates.",
     "Seeds and population snapshots are observations, not a guarantee of deterministic replay.",
@@ -59,7 +59,8 @@ LIMITATIONS = [
 DRAWING_LIMITATIONS = [
     "Drawing counters are deltas between consecutive presented frames inside the measured window; the first presentation only establishes the baseline, so there is one fewer counter frame than presentation sample.",
     "wait_ns is host time blocked inside device polls, not GPU execution time; it is already included in the enclosing draw and presentation wall-clock scopes.",
-    "Only the gpu_*_ns counters are GPU execution time, and only when KFX_WGPU_GPU_TIMING=1; they are per-pass durations resolved from timestamp queries and are not comparable with the host wall-clock scopes. gpu_untimed_passes counts passes that went unstamped, so a window with a nonzero value under-reports.",
+    "Only the gpu_*_ns counters are GPU execution time, and only when KFX_WGPU_GPU_TIMING is 1 or 2; they are per-pass durations resolved from timestamp queries and are not comparable with the host wall-clock scopes. gpu_untimed_passes counts passes that went unstamped, so a window with a nonzero value under-reports.",
+    "A gpu_*_ns pass window runs from that pass's begin stamp to its end stamp, so it includes time the pass spent stalled on its dependencies; windows may overlap and their sum is not an exclusive decomposition of the frame. gpu_frame_ns is the frame's first-begin to last-end window and is the only one that bounds the whole GPU cost. --serial-gpu-timing drains the queue between timed submissions, which makes the per-pass windows exclusive but changes the workload being measured.",
     "Counters cover the drawing context the bridge owns. Presenter surface acquisition and any drawing done outside that context are not counted.",
     "host_staged_asset_bytes is a host-side gauge sampled at frame end: the CPU copies the drawing context stages, not GPU memory, and not a per-frame delta, so its window total is meaningless.",
     "arena_bytes_resident is a gauge sampled at frame end: GPU bytes suballocated in the persistent asset arena, free-listed slots and power-of-two class padding included, and not a per-frame delta.",
@@ -99,6 +100,12 @@ def configure(work):
     path.write_text(settings)
 
 
+def gpu_timing_level(args):
+    if getattr(args, "serial_gpu_timing", False):
+        return "2"
+    return "1" if getattr(args, "gpu_timing", False) else "0"
+
+
 def environment_for(args, output):
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(("KFX_PERF_", "KFX_FRAME_CAPTURE"))
@@ -111,7 +118,7 @@ def environment_for(args, output):
     environment.update(KFX_PRESENT_BACKEND="wgpu" if args.backend == "rust" else "sdl",
                        SDL_RENDER_VSYNC="0", KFX_PERF_OUTPUT=str(output / "raw.csv"),
                        KFX_PERF_DRAW_BREAKDOWN="1" if getattr(args, "draw_breakdown", False) else "0",
-                       KFX_WGPU_GPU_TIMING="1" if getattr(args, "gpu_timing", False) else "0",
+                       KFX_WGPU_GPU_TIMING=gpu_timing_level(args),
                        KFX_PERF_TURN=str(args.warmup_turns), KFX_PERF_TURNS=str(args.turns),
                        KFX_PERF_SCENE="possession" if args.scene == "possession" else "dungeon")
     return environment
@@ -382,6 +389,7 @@ def main():
     parser.add_argument("--turns", type=int, default=200, help="actual simulation updates to measure (20..1200)")
     parser.add_argument("--draw-breakdown", action="store_true", help="coarse nested CPU drawing timings; compare against a matched run without this flag")
     parser.add_argument("--gpu-timing", action="store_true", help="resolve per-pass GPU execution time into the gpu_*_ns drawing counters")
+    parser.add_argument("--serial-gpu-timing", action="store_true", help="as --gpu-timing, but drain the queue after every timed submission so the per-pass windows are exclusive; costs throughput and is not a performance baseline")
     parser.add_argument("--headless", action="store_true", help="dummy/software smoke test, not a native performance baseline")
     args = parser.parse_args()
     if args.backend == "rust" and (args.headless or sys.platform != "darwin"):

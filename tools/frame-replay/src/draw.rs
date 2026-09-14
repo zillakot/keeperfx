@@ -217,8 +217,9 @@ pub struct Counters {
     pub pass_ns: [u64; PASS_KINDS],
     pub timed_passes: u64,
     pub untimed_passes: u64,
-    /// First pass begin to last pass end over the frame's submissions; zero unless
-    /// timing is on. `KFX_WGPU_GPU_TIMING=2` drains the queue after every timed
+    /// The union of the frame's timed pass intervals, so a pass that ran while another
+    /// was in flight is counted once; zero unless timing is on. It never exceeds the sum
+    /// of `pass_ns`. `KFX_WGPU_GPU_TIMING=2` drains the queue after every timed
     /// submission, which makes the per-pass windows exclusive at a throughput cost.
     pub gpu_frame_ns: u64,
 }
@@ -493,12 +494,11 @@ impl DrawRenderer {
 
     /// Opens an encoder and, when GPU timing is on, the ring slot its passes stamp into.
     pub(super) fn begin_encoder(&mut self) -> wgpu::CommandEncoder {
-        let frame = self.frame_index;
         if let Some(timings) = &mut self.timings {
             if let Some(slot) = self.timing_slot.take() {
                 timings.release(slot);
             }
-            self.timing_slot = timings.open(&self.device, frame);
+            self.timing_slot = timings.open(&self.device);
         }
         self.device.create_command_encoder(&Default::default())
     }
@@ -554,11 +554,10 @@ impl DrawRenderer {
     /// ring slot rather than the one the current encoder holds.
     pub(super) fn tail_stamp(&mut self, kind: usize) -> Stamp {
         self.tail_encoder();
-        let frame = self.frame_index;
         if self.tail_timing.is_none()
             && let Some(timings) = &mut self.timings
         {
-            self.tail_timing = timings.open(&self.device, frame);
+            self.tail_timing = timings.open(&self.device);
         }
         let slot = self.tail_timing;
         Stamp(

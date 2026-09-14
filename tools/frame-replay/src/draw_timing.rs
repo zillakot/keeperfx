@@ -59,7 +59,6 @@ struct Slot {
     resolve: wgpu::Buffer,
     staging: wgpu::Buffer,
     base: u32,
-    frame: u64,
     kinds: Vec<u8>,
     reserved: bool,
     pending: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
@@ -76,14 +75,10 @@ pub(super) struct PassTimings {
     pub(super) ns: [u64; PASS_KINDS],
     pub(super) passes: u64,
     pub(super) dropped: u64,
-    /// First-begin to last-end per frame, unioned across the frame's submissions.
-    windows: std::collections::BTreeMap<u64, (u64, u64)>,
+    /// Scratch for the union below, kept to avoid a per-drain allocation.
+    spans: Vec<(u64, u64)>,
     pub(super) frame_ns: u64,
 }
-
-/// Frames a window stays open for after its last stamp drained, so a submission that
-/// resolves late still joins its own frame's window.
-const WINDOW_LAG: u64 = 4;
 
 impl PassTimings {
     pub(super) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
@@ -106,7 +101,6 @@ impl PassTimings {
                     mapped_at_creation: false,
                 }),
                 base: 0,
-                frame: 0,
                 kinds: Vec::new(),
                 reserved: false,
                 pending: None,
@@ -125,21 +119,20 @@ impl PassTimings {
             ns: [0; PASS_KINDS],
             passes: 0,
             dropped: 0,
-            windows: std::collections::BTreeMap::new(),
+            spans: Vec::new(),
             frame_ns: 0,
         })
     }
 
     /// Reserves a ring slot for one encoder. An encoder holds its slot from the first
     /// pass it stamps until its submission's readback completes.
-    pub(super) fn open(&mut self, device: &wgpu::Device, frame: u64) -> Option<usize> {
-        self.drain(device, frame);
+    pub(super) fn open(&mut self, device: &wgpu::Device) -> Option<usize> {
+        self.drain(device);
         for step in 0..self.slots.len() {
             let index = (self.cursor + step) % self.slots.len();
             if !self.slots[index].reserved && self.slots[index].pending.is_none() {
                 self.slots[index].kinds.clear();
                 self.slots[index].reserved = true;
-                self.slots[index].frame = frame;
                 self.slots[index].base = self.pairs;
                 self.pairs = (self.pairs + SLOT_PAIRS) % PAIRS;
                 self.cursor = (index + 1) % self.slots.len();
@@ -199,21 +192,33 @@ impl PassTimings {
         self.slots[index].pending = Some(receiver);
     }
 
-    /// Closes every frame window no further submission can join and adds its span to
-    /// `frame_ns`, which is a real GPU window and so never exceeds the wall clock.
-    fn settle(&mut self, frame: u64) {
-        while let Some((&at, &(begin, end))) = self.windows.iter().next() {
-            if at + WINDOW_LAG > frame {
-                break;
-            }
-            self.windows.remove(&at);
-            self.frame_ns += ((end - begin) as f64 * self.period) as u64;
+    /// Adds the length of the union of this batch's pass intervals to `frame_ns`, so a
+    /// pass that ran while another was still in flight is counted once. Passes that
+    /// overlap but resolve in different batches are still counted twice, which makes
+    /// `frame_ns` an upper bound on the exclusive GPU pass time and never more than the
+    /// sum of the per-pass windows.
+    fn settle(&mut self) {
+        if self.spans.is_empty() {
+            return;
         }
+        self.spans.sort_unstable();
+        let mut union = 0;
+        let mut open = self.spans[0];
+        for &(begin, end) in &self.spans[1..] {
+            if begin <= open.1 {
+                open.1 = open.1.max(end);
+                continue;
+            }
+            union += open.1 - open.0;
+            open = (begin, end);
+        }
+        union += open.1 - open.0;
+        self.spans.clear();
+        self.frame_ns += (union as f64 * self.period) as u64;
     }
 
-    pub(super) fn drain(&mut self, device: &wgpu::Device, frame: u64) {
+    pub(super) fn drain(&mut self, device: &wgpu::Device) {
         if self.slots.iter().all(|slot| slot.pending.is_none()) {
-            self.settle(frame);
             return;
         }
         let _ = device.poll(wgpu::PollType::Poll);
@@ -227,7 +232,6 @@ impl PassTimings {
                 Ok(Ok(())) => {
                     if let Ok(mapped) = self.slots[index].staging.slice(..).get_mapped_range() {
                         let stamps = mapped.as_chunks::<8>().0;
-                        let mut span: Option<(u64, u64)> = None;
                         for (pair, kind) in self.slots[index].kinds.iter().enumerate() {
                             let begin = u64::from_le_bytes(stamps[pair * 2]);
                             let end = u64::from_le_bytes(stamps[pair * 2 + 1]);
@@ -235,19 +239,8 @@ impl PassTimings {
                                 self.ns[usize::from(*kind)] +=
                                     ((end - begin) as f64 * self.period) as u64;
                                 self.passes += 1;
-                                span = Some(match span {
-                                    Some((lo, hi)) => (lo.min(begin), hi.max(end)),
-                                    None => (begin, end),
-                                });
+                                self.spans.push((begin, end));
                             }
-                        }
-                        if let Some((begin, end)) = span {
-                            let window = self
-                                .windows
-                                .entry(self.slots[index].frame)
-                                .or_insert((begin, end));
-                            window.0 = window.0.min(begin);
-                            window.1 = window.1.max(end);
                         }
                     }
                     self.slots[index].staging.unmap();
@@ -257,6 +250,6 @@ impl PassTimings {
             self.slots[index].reserved = false;
             self.slots[index].pending = None;
         }
-        self.settle(frame);
+        self.settle();
     }
 }
