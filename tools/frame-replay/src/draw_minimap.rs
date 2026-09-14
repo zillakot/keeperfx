@@ -257,7 +257,7 @@ impl DrawRenderer {
         }
         let limit = self.storage_limit() as usize;
         let ranges = validated.ranges;
-        let split = self.arena.enabled()
+        let mut split = self.arena.enabled()
             && (h[0] != 0
                 || ranges[1..]
                     .iter()
@@ -314,72 +314,90 @@ impl DrawRenderer {
                 self.counters.minimap_cache_cpu_bytes = cache.cpu_bytes();
             }
         }
-        let demand = if split {
-            ids.iter()
-                .zip(&ranges)
-                .filter(|(id, _)| **id != 0)
-                .try_fold(0, |sum, (id, range)| {
-                    self.arena
-                        .allocation_words(*id, range.len())
-                        .map(|n| sum + n)
-                })?
-        } else {
-            self.arena
-                .allocation_words(c.source, self.resources[&c.source].bytes.len())?
-        };
-        self.arena_headroom(demand)?;
-        let bytes = &self.resources[&c.source].bytes;
-        let enabled = self.arena.enabled();
-        let mut packer = asset_packer(
-            &self.device,
-            &self.queue,
-            &mut self.arena,
-            &mut self.counters,
-            self.asset_generation,
-            limit,
-        );
-        let mut bases = [0; 4];
-        let mut uploaded = [0; 4];
-        if split {
-            for i in 0..4 {
-                if ids[i] == 0 {
-                    continue;
-                }
-                let segment = if i == 0 {
-                    &bytes[ranges[0].clone()]
+        let (bases, words) = loop {
+            let demand = if split {
+                ids.iter()
+                    .zip(&ranges)
+                    .filter(|(id, _)| **id != 0)
+                    .try_fold(0, |sum, (id, range)| {
+                        self.arena
+                            .allocation_words(*id, range.len())
+                            .map(|n| sum + n)
+                    })?
+            } else {
+                self.arena
+                    .allocation_words(c.source, self.resources[&c.source].bytes.len())?
+            };
+            self.arena_headroom(demand.saturating_sub(self.resource_bytes as u64))?;
+            let bytes = &self.resources[&c.source].bytes;
+            let enabled = self.arena.enabled();
+            let mut packer = asset_packer(
+                &self.device,
+                &self.queue,
+                &mut self.arena,
+                &mut self.counters,
+                self.asset_generation,
+                limit,
+            );
+            let mut bases = [0; 4];
+            let mut uploaded = [0; 4];
+            let mut resolved = 0;
+            let packed = (|| -> Result<()> {
+                if split {
+                    for i in 0..4 {
+                        if ids[i] == 0 {
+                            continue;
+                        }
+                        let segment = if i == 0 {
+                            &bytes[ranges[0].clone()]
+                        } else {
+                            &self
+                                .minimap
+                                .as_ref()
+                                .unwrap()
+                                .cache
+                                .entries
+                                .iter()
+                                .find(|e| e.id == ids[i])
+                                .unwrap()
+                                .bytes
+                        };
+                        let before = packer.uploaded_bytes();
+                        bases[i] = packer.offset(ids[i], segment, ResourceKind::Minimap)?;
+                        uploaded[i] = packer.uploaded_bytes() - before;
+                        resolved = i + 1;
+                    }
                 } else {
-                    &self
-                        .minimap
-                        .as_ref()
-                        .unwrap()
-                        .cache
-                        .entries
-                        .iter()
-                        .find(|e| e.id == ids[i])
-                        .unwrap()
-                        .bytes
-                };
-                let before = packer.uploaded_bytes();
-                bases[i] = packer.offset(ids[i], segment, ResourceKind::Minimap)?;
-                uploaded[i] = packer.uploaded_bytes() - before;
-            }
-        } else {
-            let before = packer.uploaded_bytes();
-            bases[0] = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
-            if h[0] == 0 {
-                for i in 1..4 {
-                    bases[i] = bases[0] + h[11 + i];
+                    let before = packer.uploaded_bytes();
+                    bases[0] = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
+                    if h[0] == 0 {
+                        for i in 1..4 {
+                            bases[i] = bases[0] + h[11 + i];
+                        }
+                    }
+                    if enabled && packer.uploaded_bytes() != before {
+                        uploaded = std::array::from_fn(|i| ranges[i].len() as u64 * 4);
+                    }
                 }
+                Ok(())
+            })();
+            let words = packer.finish();
+            self.counters.arena_minimap_prefix_bytes += uploaded[0];
+            self.counters.arena_minimap_dictionary_bytes += uploaded[1];
+            self.counters.arena_minimap_cells_bytes += uploaded[2];
+            self.counters.arena_minimap_styles_bytes += uploaded[3];
+            match packed {
+                Ok(()) => break (bases, words),
+                Err(_) if split => {
+                    // Earlier encoder readers still own these regions until retirement.
+                    for id in &ids[..resolved] {
+                        self.arena.release(*id);
+                    }
+                    split = false;
+                }
+                Err(error) => return Err(error),
             }
-            if enabled && packer.uploaded_bytes() != before {
-                uploaded = std::array::from_fn(|i| ranges[i].len() as u64 * 4);
-            }
-        }
-        let words = packer.finish();
-        self.counters.arena_minimap_prefix_bytes += uploaded[0];
-        self.counters.arena_minimap_dictionary_bytes += uploaded[1];
-        self.counters.arena_minimap_cells_bytes += uploaded[2];
-        self.counters.arena_minimap_styles_bytes += uploaded[3];
+        };
         let assets = match &words {
             Some(words) => buffer(
                 &self.device,

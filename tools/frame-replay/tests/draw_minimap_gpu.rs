@@ -419,3 +419,154 @@ fn content_hits_still_upload_after_arena_eviction() {
     assert_eq!(draw.arena_counters().misses_eviction, evicted + 3);
     assert_eq!(draw.readback(target).unwrap()[16 * 64 + 16], 19);
 }
+
+fn standard_payload(mode: u32, colour: u8) -> Vec<u8> {
+    let mut bytes = payload(mode, colour, 255);
+    bytes.splice(104..104, [0; 280]);
+    for (index, value) in [(12, 384u32), (13, 640), (14, 131712), (23, 36)] {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+fn fragment_minimap_arena(draw: &mut DrawRenderer, target: u64) {
+    issue(draw, target, &standard_payload(4, 0));
+    let mut resources = Vec::new();
+    for length in [2 << 20, 2 << 20, 2 << 20, 1 << 20, 256 << 10, 256 << 10] {
+        let source = draw.create_resource(&vec![0; length], 1, 1, 1).unwrap();
+        resources.push(source);
+        draw.submit(
+            target,
+            &[Command {
+                kind: IMAGE,
+                source,
+                width: 1,
+                height: 1,
+                source_width: 1,
+                source_height: 1,
+                clip_width: 64,
+                clip_height: 64,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+    }
+    for source in resources {
+        draw.release_resource(source).unwrap();
+    }
+    assert_eq!(draw.arena_counters().capacity_bytes, 32 << 20);
+    assert_eq!(draw.arena_counters().live_bytes, 0);
+}
+
+fn assert_minimap_partition(draw: &DrawRenderer) {
+    let c = draw.counters();
+    assert_eq!(segments(draw).iter().sum::<u64>(), c.arena_by_kind[7].bytes);
+    assert_eq!(
+        c.arena_by_kind.iter().map(|kind| kind.bytes).sum::<u64>(),
+        draw.arena_counters().bytes_uploaded
+    );
+}
+
+#[test]
+#[ignore = "requires GPU adapter"]
+fn fragmented_arena_retries_contiguous_after_late_split_failure() {
+    let mut draw = drawing_limit(32 << 20);
+    let target = draw.create_target(64, 64).unwrap();
+    fragment_minimap_arena(&mut draw, target);
+    let mut unsplit = drawing_limit(16 << 20);
+    let reference = unsplit.create_target(64, 64).unwrap();
+    issue(&mut unsplit, reference, &standard_payload(4, 0));
+    let terrain = standard_payload(0, 23);
+    let before = segments(&draw);
+    let counters = draw.counters();
+    let arena = draw.arena_counters();
+    issue(&mut draw, target, &terrain);
+    issue(&mut unsplit, reference, &terrain);
+    let after = segments(&draw);
+    assert_eq!(draw.arena_counters().overflows, arena.overflows + 1);
+    assert_eq!(
+        std::array::from_fn::<_, 4, _>(|i| after[i] - before[i]),
+        [2 * 1536, 2 * 1024, 2 * 524288, 1697036]
+    );
+    assert_minimap_partition(&draw);
+    assert_eq!(draw.counters().dispatches, counters.dispatches + 1);
+    assert_eq!(draw.counters().commands, counters.commands + 1);
+    assert_eq!(draw.arena_counters().live_bytes, 0);
+    assert_eq!(
+        draw.readback(target).unwrap(),
+        unsplit.readback(reference).unwrap()
+    );
+}
+
+#[test]
+#[ignore = "requires GPU adapter"]
+fn late_split_uploads_conserve_through_fallback_and_abort() {
+    let mut draw = drawing_limit(32 << 20);
+    let target = draw.create_target(64, 64).unwrap();
+    fragment_minimap_arena(&mut draw, target);
+    draw.frame_begin(target).unwrap();
+    draw.submit(
+        target,
+        &[Command {
+            kind: keeperfx_frame_replay::draw::CLEAR,
+            colour: 41,
+            ..Default::default()
+        }],
+    )
+    .unwrap();
+    draw.frame_flush().unwrap();
+    let before = segments(&draw);
+    let overflows = draw.arena_counters().overflows;
+    issue(&mut draw, target, &standard_payload(0, 29));
+    draw.frame_flush().unwrap();
+    assert_eq!(draw.arena_counters().overflows, overflows + 1);
+    let after = segments(&draw);
+    assert_eq!(
+        std::array::from_fn::<_, 4, _>(|i| after[i] - before[i]),
+        [2 * 1536, 2 * 1024, 2 * 524288, 1697036]
+    );
+    assert_minimap_partition(&draw);
+    draw.frame_abort().unwrap();
+    assert_eq!(segments(&draw), after);
+    assert_minimap_partition(&draw);
+    assert_eq!(draw.arena_counters().live_bytes, 0);
+    issue(&mut draw, target, &standard_payload(0, 31));
+    assert_minimap_partition(&draw);
+    assert_eq!(draw.readback(target).unwrap()[16 * 64 + 16], 31);
+}
+
+#[test]
+#[ignore = "requires GPU adapter"]
+fn cold_minimap_class_demand_keeps_four_mib_and_the_open_encoder() {
+    let mut draw = drawing_limit(32 << 20);
+    let target = draw.create_target(64, 64).unwrap();
+    issue(&mut draw, target, &standard_payload(4, 0));
+    assert_eq!(draw.arena_counters().capacity_bytes, 4 << 20);
+    draw.frame_begin(target).unwrap();
+    draw.submit(
+        target,
+        &[Command {
+            kind: keeperfx_frame_replay::draw::CLEAR,
+            colour: 17,
+            ..Default::default()
+        }],
+    )
+    .unwrap();
+    draw.frame_flush().unwrap();
+    let before = draw.counters();
+    let uploaded = segments(&draw);
+    issue(&mut draw, target, &standard_payload(0, 37));
+    draw.frame_flush().unwrap();
+    assert_eq!(draw.arena_counters().capacity_bytes, 4 << 20);
+    assert_eq!(draw.counters().submits, before.submits);
+    assert_eq!(draw.arena_counters().overflows, 0);
+    let after = segments(&draw);
+    assert_eq!(
+        std::array::from_fn::<_, 4, _>(|i| after[i] - uploaded[i]),
+        [1536, 1024, 524288, 1697036]
+    );
+    draw.frame_end().unwrap();
+    assert_eq!(draw.counters().submits, before.submits + 1);
+    assert_minimap_partition(&draw);
+    assert_eq!(draw.readback(target).unwrap()[16 * 64 + 16], 37);
+}
