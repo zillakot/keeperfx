@@ -84,10 +84,11 @@ impl DrawRenderer {
             );
             words.extend([TRIG, 0, 0, c.colour]);
             let policy = self.box_policy;
+            let declared = bounds(c.x, c.y, c.width, c.height)?;
             words.extend(if policy.tight {
-                policy.resolve(box_of, width, height)
+                policy.resolve(box_of, width, height, declared)
             } else {
-                bounds(c.x, c.y, c.width, c.height)?
+                declared
             });
             words.extend(bounds(c.clip_x, c.clip_y, c.clip_width, c.clip_height)?);
             words.extend([source_offset as u32, table_offset as u32, 1, slot + 1]);

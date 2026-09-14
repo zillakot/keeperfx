@@ -59,6 +59,12 @@ fn drew_something(pixels: &[u8]) {
     );
 }
 
+/// An ordered sprite writes through its own kernel, which never reads the record's
+/// bounds, so eroding its box cannot move a pixel and the mutation check skips it.
+fn eroding_is_inert(command: &Command) -> bool {
+    command.kind == SPRITE && command.source_x & 8 != 0
+}
+
 /// Renders the same records with every derived box shrunk by one pixel on each side.
 /// The parity fixture is only worth its run time if this differs.
 fn with_eroded_boxes(drawing: &mut DrawRenderer, commands: &[Command]) -> Vec<u8> {
@@ -237,12 +243,21 @@ fn sprite_cases(drawing: &mut DrawRenderer) -> Vec<Command> {
         sprite(drawing, &scaled(4, 2, 3), &scaled(HEIGHT + 40, 2, 3), 0),
         sprite(drawing, &[(9, 0), (9, 0)], &[(9, 0), (9, 0)], 0),
         sprite(drawing, &[(0, 0), (0, 0)], &[(0, 0), (0, 0)], 0),
+        // Minified: source columns and rows that collapse onto no destination pixel at
+        // all sit between ones that do, which `scaled` cannot produce.
+        sprite(
+            drawing,
+            &[(20, 1), (21, 0), (21, 1)],
+            &[(24, 1), (25, 0), (25, 2)],
+            0,
+        ),
     ];
     for flip in [1, 2, 3] {
         cases.push(sprite(drawing, &scaled(12, 3, 4), &scaled(11, 3, 4), flip));
     }
-    // Ordered sprites keep their own single-workgroup pass, so their box only has to
-    // stay a superset; the left widening covers the `[leftmost-1, rightmost]` row copy.
+    // Ordered sprites keep their own single-workgroup pass, which never reads the
+    // record's bounds, so their box is inert for binning and only has to stay a
+    // superset for anyone who later bins them. `write_rect` supplies it.
     cases.push(sprite(drawing, &[(20, 3)], &[(20, 3)], 9));
     cases.push(sprite(drawing, &[(6, 0)], &[(6, 0)], 9));
     cases
@@ -250,7 +265,7 @@ fn sprite_cases(drawing: &mut DrawRenderer) -> Vec<Command> {
 
 fn triangle_cases(drawing: &mut DrawRenderer) -> Vec<Command> {
     let fades = fade_table(drawing);
-    [
+    let mut cases: Vec<Command> = [
         ([(0, 0), (16, 0), (0, 16)], 61),
         ([(16, 16), (32, 16), (16, 32)], 62),
         ([(15, 15), (17, 15), (15, 17)], 63),
@@ -277,7 +292,17 @@ fn triangle_cases(drawing: &mut DrawRenderer) -> Vec<Command> {
     ]
     .into_iter()
     .map(|(points, colour)| triangle(drawing, fades, points, colour))
-    .collect()
+    .collect();
+    // The span test sits above every mode-dependent branch, so the box does not depend on
+    // the mode; two untextured modes either side of it show that.
+    for (mode, at) in [(1u32, 40i32), (4, 41)] {
+        let points = [(at, 6), (at + 14, 9), (at + 3, 26)];
+        cases.push(Command {
+            source_x: mode,
+            ..triangle(drawing, fades, points, u32::try_from(at).unwrap())
+        });
+    }
+    cases
 }
 
 fn bitmap_cases(drawing: &mut DrawRenderer) -> Vec<Command> {
@@ -378,14 +403,23 @@ fn an_undersized_box_is_caught() {
         triangle_cases,
         bitmap_cases,
     ] {
-        let cases = build(&mut drawing);
-        let expected = agrees_with_full_boxes(&mut drawing, &cases);
-        drew_something(&expected);
-        assert!(
-            with_eroded_boxes(&mut drawing, &cases) != expected,
-            "shrinking every derived box by one pixel changed nothing, so the parity \
-             fixture cannot see a box that is too small"
-        );
+        for command in &build(&mut drawing) {
+            if eroding_is_inert(command) {
+                continue;
+            }
+            let one = std::slice::from_ref(command);
+            let expected = agrees_with_full_boxes(&mut drawing, one);
+            // A record that draws nothing has an empty box already; eroding it is a
+            // no-op, and there is no pixel for a too-small box to lose.
+            if !expected.iter().any(|pixel| *pixel != CLEARED as u8) {
+                continue;
+            }
+            assert!(
+                with_eroded_boxes(&mut drawing, one) != expected,
+                "shrinking this record's box by one pixel changed nothing, so the parity \
+                 fixture cannot see a box that is too small: {command:?}"
+            );
+        }
     }
 }
 

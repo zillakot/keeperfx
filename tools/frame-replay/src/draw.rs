@@ -817,7 +817,12 @@ impl DrawRenderer {
         self.counters.command_upload_bytes +=
             (words.len() + self.tile_index.data().len()) as u64 * 4;
         let pass = self.tile_index.passes()[0];
+        // Tight boxes let a whole batch bin to nothing. It still counts as a batch and
+        // still reads the status word, so the reports do not silently lose frames.
         let Some((parameters, span_x, span_y)) = self.pass_parameters(&target, &pass) else {
+            self.check_status()?;
+            self.counters.batches += 1;
+            self.counters.commands += commands.len() as u64;
             return Ok(());
         };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1143,15 +1148,18 @@ impl Default for BoxPolicy {
 }
 
 impl BoxPolicy {
-    /// Clamps a proven destination box to the view and applies the fixture erosion.
-    /// Clamping is safe because `tile_span` and the kernel both intersect with the clip.
-    fn resolve(&self, box_of: [i64; 4], width: u32, height: u32) -> [u32; 4] {
+    /// Intersects a proven destination box with the record's declared rectangle and the
+    /// view, then applies the fixture erosion. Clamping to the view is safe because
+    /// `tile_span` and the kernel both intersect with the clip as well.
+    fn resolve(&self, box_of: [i64; 4], width: u32, height: u32, declared: [u32; 4]) -> [u32; 4] {
         let axis = |value: i64, extent: u32| value.clamp(0, i64::from(extent));
+        let near = |value: i64, edge: u32, extent: u32| axis(value.max(i64::from(edge)), extent);
+        let far = |value: i64, edge: u32, extent: u32| axis(value.min(i64::from(edge)), extent);
         let clamped = [
-            axis(box_of[0], width),
-            axis(box_of[1], height),
-            axis(box_of[2], width),
-            axis(box_of[3], height),
+            near(box_of[0], declared[0], width),
+            near(box_of[1], declared[1], height),
+            far(box_of[2], declared[2], width),
+            far(box_of[3], declared[3], height),
         ];
         [
             axis(clamped[0] + self.erode, width) as u32,
@@ -1623,8 +1631,11 @@ fn pack_records<'a>(
             }
             table_offset = packer.offset(c.table, &table.bytes)?;
         }
+        // The derived box narrows the record's declared rectangle, never widens it: a
+        // caller may declare less than the whole target, and the kernel's own bounds test
+        // is what the unbinned reference compares against.
         if let Some(box_of) = tight.filter(|_| policy.tight) {
-            rectangle = policy.resolve(box_of, width, height);
+            rectangle = policy.resolve(box_of, width, height, rectangle);
         }
         words.extend([c.kind, c.blend, index, c.colour]);
         words.extend(view.rebase(rectangle));
