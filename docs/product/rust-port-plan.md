@@ -370,7 +370,7 @@ ownership, synchronization, counters and failure behavior.
 | Custom Lua lenses: [LuaLensEffect.cpp](../../src/kfx/lense/LuaLensEffect.cpp), [lua_api_lens.c](../../src/lua_api_lens.c) | CPU reference | Ordered GPU writes/copies and exact read-after-write compatibility for arbitrary pixel-dependent Lua control flow; CPU-script readback is explicit, never hidden CPU-rendered lens upload |
 | Smoothing and map fades/transitions: [engine_redraw.c](../../src/engine_redraw.c) | GPU snapshots and exact indexed effects; 271 native/Metal cases plus failed-preparation/normal-exit state tests | Retained CPU recovery checkpoints, valid alias cases and broader lifecycle coverage |
 | Movies: [bflib_fmvids.cpp](../../src/bflib_fmvids.cpp) | CPU decoding feeds GPU frame scaling/copy, packed doubling/interlace and palette-index writes; 105 exact native fixtures | Visible playback/audio timing, uncommon source domains and recording/readback ownership |
-| Cursor, clears, screenshots and recording: [bflib_mspointer.cpp](../../src/bflib_mspointer.cpp), [RendererSoftware.cpp](../../src/kfx/renderer/RendererSoftware.cpp), [scrcapt.c](../../src/scrcapt.c) | GPU indexed clear for full SDL surface clips, preserving row padding; direct cursor scaling and GPU snapshot backup/keyed draw/opaque restore; native captures still consume the synchronized image | Nonfull SDL clip clears; retire cursor wrapper transfers and integrate authoritative GPU capture with matching frame/palette/cursor semantics |
+| Cursor, clears, screenshots and recording: [bflib_mspointer.cpp](../../src/bflib_mspointer.cpp), [RendererSoftware.cpp](../../src/kfx/renderer/RendererSoftware.cpp), [scrcapt.c](../../src/scrcapt.c) | GPU indexed clear for full SDL surface clips, preserving row padding; direct cursor scaling and GPU snapshot backup/keyed draw/opaque restore, now recorded with the palette pass into one present-tail encoder submitted by `kfx_wgpu_present`; native captures still consume the synchronized image | Nonfull SDL clip clears; retire cursor wrapper transfers and integrate authoritative GPU capture with matching frame/palette/cursor semantics |
 | Cross-family palette, transparency, clipping and scaling | Bounded command and offscreen palette-output fixtures pass | Full-family index/RGBA comparisons; table versions, target aliases and strict CPU-writer/readback audit |
 
 The reviewed original-vertex [GPU preparation test](../../tools/frame-replay/tests/gpoly_gpu.rs)
@@ -459,7 +459,10 @@ release order and invalid-target checkpoint recovery are covered. Native wrapper
 still upload/read back the screen and maintain sprite/backup checkpoints; the borrowed
 context must outlive its cursor and does not provide automatic CPU reconstruction.
 Captures retain their position between begin-swap composition and end-swap restoration
-by source inspection, not a new visible gameplay capture. The frame-replay workflow
+by source inspection, not a new visible gameplay capture. Twenty-four swap traces additionally
+run a presented frame's repaint and its single flush before the swap, across an
+interrupted pointer, a hidden pointer and a surface resize, and assert that the
+backup, composition and restore add no queued-frame checkpoint. The frame-replay workflow
 builds real SDL3 surface code and the portable drawing C ABI for a required Vulkan
 cursor fixture. Exact-head CI, physical input, visible presentation and device-loss
 reconstruction remain separate validation gates. These offscreen proofs do not establish

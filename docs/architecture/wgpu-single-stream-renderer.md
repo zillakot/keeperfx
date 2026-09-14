@@ -233,7 +233,8 @@ Revisit hoisting in PR 12 if the counters justify it.
 
 **Cursor.** Backup, compose, palette pass and restore are recorded into the same encoder in the order
 `bflib_mspointer.cpp` already imposes through `LbMouseOnBeginSwap`/`LbMouseOnEndSwap`, so the semantics
-survive and the checkpoint that today lands inside `PerfPresentation` goes.
+survive. The checkpoint inside `PerfPresentation` stays until PR 12: it is the frame's own
+`ResidentTarget` flush, which the cursor neither causes nor can avoid.
 
 ## Submission and validation
 
@@ -400,6 +401,8 @@ New fixtures required for parity:
    `buffers_created <= 8` on a synthetic full frame; this is what stops the structure regressing.
    Partly landed with PR 6: `draw_status_gpu.rs` asserts zero blocking waits, zero validation waits and
    zero checkpoint copy bytes over a steady frame sequence. `submits` and `checkpoints` land with PR 12.
+   PR 10 added the present-tail half: `draw_target_resources_gpu.rs` asserts one submit and no
+   checkpoint for a whole backup/compose/palette/restore tail, including the acquisition-skip cycle.
 
 Existing fixtures must stay green at every step: all thirteen `tools/frame-replay/tests/draw_*_gpu.rs`
 and `gpoly_gpu.rs`, the CMake oracle generators under `tests/`, the `tests/cursor` native lifecycle test
@@ -422,7 +425,7 @@ Each step is one PR and keeps every existing fixture green.
 | 7 | **Single command stream, root space, one tile index.** Delivered, GPU drawing behind the SDL presenter: per-command view origins, counting-sort binning into renderer-owned scratch, one raster pass per serial segment sized to the tiles its records reach, and the bridge's target-change flushes removed. Tile-list allocations → 0, bridge target-change flushes 39.3 → 0, buffer allocations 198.5 → 161.3 and Rust allocator calls 30.0 M → 5.7 M per measured window; **Rust batches stayed ~73**, because ~38 creature shadows per frame each close a raster segment. CPU drawing and presentation improve; GPU blocking wait rises about 2 ms per frame and observed FPS falls 1–3. **That cost is unattributed.** Two candidates were measured and rejected: the record layout (above), and root-space tile misalignment — binning the same busy frame against each record's own view yields 117,693 entries against 121,849 in root space, 3.5%, which cannot account for a 20% wait. What did move with it is one dispatch and one submit per raster pass where the per-batch path merged them. The ~38 figure is shadow *submits*: consecutive shadows share one boundary, so the frame cuts fewer raster passes than that. Fixtures 1 and 2 landed. |
 | 8 | **Terrain triangles in the stream**, with tile binning, a prepared-row arena compressed to covered rows, and the separate validate pass deleted. | terrain iterations 308 M → ≤ 10 M and 2,065 M → ≤ 25 M; full-target dispatches ~86 → ~2 |
 | 9 | **Ordered sprites into layers.** One dispatch of *M* workgroups per disjoint layer. | per-sprite submits → 0; sized by PR 1's `ordered_sprites` |
-| 10 | **Cursor without a checkpoint.** Backup copy, compose and restore at the tail of the same encoder. | the last checkpoint inside `PerfPresentation` |
+| 10 | **Cursor at the tail of one encoder.** Delivered: target snapshots, target images and the palette render pass record into a present tail that `kfx_wgpu_present` submits, the acquisition-skip path finishes, and every other submit is ordered behind. `LbMouseOnEndSwap` runs before the present call so the restore joins it. **The checkpoint inside `PerfPresentation` does not go here.** It is not the cursor: `lbPointerAdvancedDraw` is never set, so `OnBeginSwap` draws the direct scaled sprite into the frame stream and `OnEndSwap` does nothing, and the measured 1.0 is `ResidentTarget`'s own terminal `frame_flush`. Hoisting `ResidentTarget` above `LbMouseOnBeginSwap` would leave the direct cursor to reopen the queued frame and make `present_into` flush it a second time — 2.0 checkpoints per frame, not 0. Measured on a matched busy 640x480 triple: checkpoints 1.00 → 1.00, submits 77.4 → 77.2, buffers 168.5 → 166.1, all inside run-to-run spread. | the advanced-draw swap: six submissions → one |
 | 11 | **Fold lens and minimap.** Non-alias lens and minimap modes 1–3 become stream kinds. | two fewer pipelines and their per-call buffers |
 | 12 | **One encoder, one submit**, palette render pass included; `prepare_present` becomes acquire → record → finish → submit. | `submits` → 1 |
 | 13 | **Byte-packed arena**, family by family behind the fixtures. | arena capacity ×4; upload bytes ÷4 |
