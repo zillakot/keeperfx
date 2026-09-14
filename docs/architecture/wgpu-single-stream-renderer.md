@@ -467,6 +467,14 @@ Each step is one PR and keeps every existing fixture green.
 - **Verification.** `KFX_WGPU_DRAW_VERIFY` keeps the shadow-scratch comparison through the blocking
   `kfx_wgpu_draw_shadow_scratch_read`, used only in verify runs; `KFX_WGPU_VERIFY` is the separate
   presentation-surface check.
+- **Parity policy.** Exact indexed-byte parity with the software reference remains the acceptance for
+  the port, with three carve-outs. Undefined legacy behavior is not a compatibility requirement:
+  uninitialized triangle steps and shadow scratch contents written by unrelated `big_scratch` users may
+  differ. Deliberately new features — smoothing, higher-resolution art, remastered looks — live behind
+  profile flags and are judged against their own contract, not against the software path. Once the
+  C/C++ drawing is retired, the Rust path becomes the reference and parity becomes a regression test
+  against recorded frames. Anything else that differs is a defect. The tooling that enforces this is in
+  the [development tooling plan](../product/development-tooling-plan.md).
 
 ## Open measurement
 

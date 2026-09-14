@@ -154,6 +154,9 @@ ownership now has a queued-frame implementation; complete native coverage and
 performance acceptance remain open. The target architecture for that path — one
 command stream, one asset arena, one encoder and one submit per frame — is the
 [single-stream wgpu renderer design](../architecture/wgpu-single-stream-renderer.md).
+The tooling and process improvements that the measurement and review work
+identified are tracked separately in the
+[development tooling plan](development-tooling-plan.md).
 
 ### Active delivery: full wgpu drawing
 
