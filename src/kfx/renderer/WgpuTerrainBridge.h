@@ -48,7 +48,7 @@ public:
         uint64_t bridge_readbacks = 0, gpu_readback_bytes = 0, native_copy_bytes = 0;
         uint64_t resource_snapshot_bytes = 0, target_creations = 0, failures = 0;
         uint64_t gpu_batches = 0, bridge_initial_index_bytes = 0, cpu_replayed_spans = 0;
-        uint64_t verified_batches = 0, verification_cpu_spans = 0;
+        uint64_t verified_batches = 0, verification_cpu_spans = 0, verification_flagged_shades = 0;
         uint64_t resident_sequences = 0, resident_batches = 0, cpu_barriers = 0, target_alias_barriers = 0;
         uint64_t barrier_readbacks = 0, verification_readbacks = 0, invalid_frames = 0, missing_cpu_barriers = 0;
         uint64_t transition_checkpoint_bytes = 0, transition_snapshot_copy_bytes = 0, transition_commands = 0;

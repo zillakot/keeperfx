@@ -142,6 +142,10 @@ invocation owns one destination pixel and evaluates its ordered commands. Exact
 integer operations preserve texture/shade lookup and destination-index palette
 composition. The [drawing C ABI](../src/kfx/renderer/WgpuDraw.h) owns copied,
 immutable resource versions and validates complete batches before submission.
+`KFX_WGPU_DRAW_ABI_VERSION` tags `struct KfxWgpuDrawCommand`, not the library as a whole, so
+it stays at 1 while that record is unchanged: the widened `KfxWgpuFrameCounters` and the added
+`kfx_wgpu_draw_frame_status` are appended, and the crate is a `staticlib` linked into the same
+binary, so no mismatched build can observe either.
 Its direct GPU-target palette presentation API is tested offscreen, but the game
 still presents the synchronized native framebuffer. Host validation rejects a batch
 before any target write; a lookup only the kernel can find out of range skips its own
@@ -219,8 +223,21 @@ The native destination changes only after successful execution/readback and any
 enabled comparison. A queued frame writes the canonical target as it is recorded;
 there is no per-flush scratch copy and no rollback. An out-of-range GPU lookup skips
 its own write, the frame presents as drawn, and the flag reaches the bridge through
-`kfx_wgpu_draw_frame_status` at the head of a later frame, within two frames; the
-bridge then counts the frame and takes the existing full redraw. Failure reconstructs
+`kfx_wgpu_draw_frame_status` at the head of a later frame — typically within two, not
+guaranteed, because `checkpoint_target` publishes the status word several times per frame
+(readback, presentation, target snapshots and snapshot-sourced images each flush) and a ring
+slot whose map has not completed defers the publish to the next one. A deferral counts
+`frame_status_stalls`; it never drops a flag, because the status word is only cleared in the
+encoder that copies it out. The bridge then counts the frame and takes the existing full
+redraw. **Retained GPU snapshots are the exception to that recovery.** Neither
+`kfx_wgpu_draw_frame_abort` nor `WgpuTerrainBridge::FullRedraw` invalidates
+`target_snapshots` — precisely what the deleted transactional rollback used to restore — so a
+snapshot taken from a flagged frame keeps those pixels until its owner releases it.
+`capture_map_fade_buffer` in [engine_redraw.c](../src/engine_redraw.c) is the one reachable
+case: it snapshots the live screen and holds it across a whole map fade, so a flagged frame
+can outlive the two-frame window there. Transitions release their snapshots in the same call,
+and the minimap background dictionary has no C emitter for the mode that retains one.
+Occurrences are measured at zero. Failure reconstructs
 accepted original triangles with the native gpoly rasterizer using immutable vertices
 and resources; the retained span path uses its CPU interpreter. Reconstruction writes
 scratch storage and commits only after the complete batch succeeds. Invalid replay
@@ -236,7 +253,12 @@ same-frame recovery for every new command and persistent effect target.
 Production frames never block: the aggregate validation wait and the per-batch
 validation readbacks are gone, and the status flag reaches the CPU through a mapped
 ring one or two frames later. `KFX_WGPU_DRAW_VERIFY=1` compares bridge output with a
-separate CPU oracle before committing it, and keeps its blocking reads. For creature shadows the oracle runs on the game's own scratch and its
+separate CPU oracle before committing it, and keeps its blocking reads. Its CPU oracle still
+rejects an out-of-range shade outright where the kernels flag and skip it, so the two
+disagree by construction; that batch is counted as `verification_flagged_shades` and left
+uncompared, with the GPU result authoritative, instead of failing the bridge. Only
+`verification_flagged_shades` and the frame flag report such a batch — it is deliberately not
+a verification failure. For creature shadows the oracle runs on the game's own scratch and its
 mask is compared against a blocking read of the resident chain; when the two priors
 already differ the shadow is counted as `shadow_prior_divergence` instead of compared, and
 the CPU scratch is re-seeded from the resident chain so the next shadows are verified again.
@@ -253,7 +275,7 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `gpu_triangles`: committed original-vertex terrain; `cpu_triangles`: declined triangle calls; `replayed_triangles` / `rejected_triangles`: recovery outcomes.
 - `gpu_spans` / `gpu_pixels`: retained span-path work only; `native_commands`: committed generic drawing commands, including primitives, sprites, raw images and clears; `gpu_sprite_commands`: committed sprite subset.
 - `cpu_gpoly_spans`: declined span sink calls only; `cpu_replayed_spans`: span recovery.
-- `verified_triangles` / `verified_batches`: successfully compared triangles/batches; `verification_cpu_spans` and `verification_cpu_commands`: explicitly enabled CPU oracle work.
+- `verified_triangles` / `verified_batches`: successfully compared triangles/batches; `verification_cpu_spans` and `verification_cpu_commands`: explicitly enabled CPU oracle work; `verification_flagged_shades`: batches the CPU oracle could not reproduce because a kernel flagged and skipped an out-of-range shade, counted rather than compared.
 - `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers.
 
 - `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations.
