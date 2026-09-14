@@ -603,13 +603,13 @@ void LbMouseCheckPosition(TbBool grab_state_changed)
             if (firstTimeMouseInit) // if start no-grab, move cursor appropriately
             {
                 firstTimeMouseInit = false;
-                if (IsMouseInsideWindow() && GetSDLWindowSystem()->IsAppActive())
+                if (IsMouseInsideWindow() && GetSDLWindowSystem()->IsAppActive() && !game_control_enabled())
                 {
                     LbMoveGameCursorToHostCursor();
                 }
                 else
                 {
-                    // Host pointer is elsewhere: centre the game cursor without moving it.
+                    // Centre the game cursor without moving the host pointer.
                     LbMouseSetPositionInitial(lbDisplay.PhysicalScreenWidth/2, lbDisplay.PhysicalScreenHeight/2);
                 }
             }

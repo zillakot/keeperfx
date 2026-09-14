@@ -3,6 +3,7 @@
 #include "kfx/platform/FileFind.h"
 #include "platform.h"
 #include "bflib_fileio.h"
+#include "game_control.h"
 #include <SDL3/SDL.h>
 #include <cstdlib>
 #include <cstdint>
@@ -101,6 +102,11 @@ bool PlatformWindows::VideoInit()
     // SDL disables the screensaver by default, which can disrupt the HDR
     // compositor; re-allow it before initialising video.
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");
+    if (game_control_enabled())
+    {
+        SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+        SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");
+    }
     if (!SDL_Init(SDL_INIT_VIDEO))
         return false;
     atexit(SDL_Quit);
