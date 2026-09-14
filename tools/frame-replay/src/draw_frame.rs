@@ -2,6 +2,12 @@ use super::*;
 
 pub(super) const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 
+/// Word 0 is the frame flag; the remaining words name which kernel raised it.
+pub(super) const STATUS_WORDS: usize = 8;
+pub(super) const STATUS_BYTES: u64 = STATUS_WORDS as u64 * 4;
+pub(super) const STATUS_RING: usize = 8;
+pub(super) type StatusReceiver = std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>;
+
 #[repr(C)]
 #[derive(Default, Clone, Copy, Debug)]
 pub struct FrameCounters {
@@ -11,6 +17,9 @@ pub struct FrameCounters {
     pub validation_bytes: u64,
     pub checkpoint_copy_bytes: u64,
     pub rejected_checkpoints: u64,
+    pub invalid_frames: u64,
+    pub status_reads: u64,
+    pub status_stalls: u64,
 }
 
 pub(super) enum Batch {
@@ -31,6 +40,82 @@ pub(super) struct QueuedFrame {
 impl DrawRenderer {
     pub fn frame_counters(&self) -> FrameCounters {
         self.frame_counters
+    }
+
+    /// Records the status copy and reset into an encoder the caller submits; the
+    /// returned slot must then be mapped with `status_map`.
+    pub(super) fn status_record(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<usize> {
+        let slot = (self.status_cursor % STATUS_RING as u64) as usize;
+        if self.status_pending[slot].is_some() {
+            self.frame_counters.status_stalls += 1;
+            return None;
+        }
+        encoder.copy_buffer_to_buffer(&self.status, 0, &self.status_ring[slot], 0, STATUS_BYTES);
+        encoder.clear_buffer(&self.status, 0, None);
+        self.status_cursor += 1;
+        Some(slot)
+    }
+
+    /// One submit until the frame owns a single encoder; skipped when the ring is full.
+    pub(super) fn status_publish(&mut self) {
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let Some(slot) = self.status_record(&mut encoder) else {
+            return;
+        };
+        self.submit_encoder(encoder);
+        self.status_map(slot);
+    }
+
+    pub(super) fn status_map(&mut self, slot: usize) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.status_ring[slot]
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        self.status_frame[slot] = self.frame_index;
+        self.status_pending[slot] = Some(receiver);
+    }
+
+    /// Collects completed maps without polling; `acquire` already polls each frame.
+    pub(super) fn status_drain(&mut self) {
+        for slot in 0..STATUS_RING {
+            let received = match &self.status_pending[slot] {
+                Some(receiver) => receiver.try_recv(),
+                None => continue,
+            };
+            match received {
+                Err(std::sync::mpsc::TryRecvError::Empty) => continue,
+                Ok(Ok(())) => {
+                    let mut flags = 0u32;
+                    if let Ok(mapped) = self.status_ring[slot].slice(..).get_mapped_range() {
+                        for (word, bytes) in mapped.as_chunks::<4>().0.iter().enumerate() {
+                            if u32::from_le_bytes(*bytes) != 0 {
+                                flags |= 1 << word;
+                            }
+                        }
+                    }
+                    self.status_ring[slot].unmap();
+                    self.frame_counters.status_reads += 1;
+                    if flags != 0 {
+                        self.frame_counters.invalid_frames += 1;
+                        self.frame_flags |= flags;
+                        self.frame_flags_index = self.status_frame[slot];
+                    }
+                }
+                _ => {}
+            }
+            self.status_pending[slot] = None;
+        }
+    }
+
+    /// Flags raised by the most recent frame whose staging read has completed,
+    /// with the frame index they belong to. Never blocks; clears what it reports.
+    pub fn frame_status(&mut self) -> (u64, u32) {
+        self.status_drain();
+        let flags = self.frame_flags;
+        self.frame_flags = 0;
+        (self.frame_flags_index, flags)
     }
 
     pub fn create_target_view(
@@ -66,6 +151,8 @@ impl DrawRenderer {
 
     pub fn frame_begin(&mut self, root: u64) -> Result<()> {
         self.check_status()?;
+        self.status_drain();
+        self.frame_index += 1;
         ensure!(self.frame.is_none(), "frame already active");
         let target = self.targets.get(&root).context("unknown frame target")?;
         ensure!(target.root == root, "frame target must be canonical");
@@ -388,6 +475,7 @@ impl DrawRenderer {
         }
         self.frame_counters.checkpoints += 1;
         self.frame_counters.checkpoint_copy_bytes += size * if result.is_ok() { 2 } else { 1 };
+        self.status_publish();
         if result.is_err() {
             self.frame_counters.rejected_checkpoints += 1;
             if let Some(minimap) = &mut self.minimap {
@@ -422,6 +510,7 @@ impl DrawRenderer {
         if let Some(mut frame) = self.frame.take() {
             self.drain_releases(&mut frame);
         }
+        self.frame_flags = 0;
         self.invalidate_assets();
         Ok(())
     }

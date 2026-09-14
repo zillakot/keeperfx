@@ -18,6 +18,7 @@ int32_t kfx_wgpu_draw_frame_end(void *drawing, char *error, size_t capacity);
 struct KfxWgpuFrameCounters {
     uint64_t queued_commands, checkpoints, validation_waits, validation_bytes;
     uint64_t checkpoint_copy_bytes, rejected_checkpoints;
+    uint64_t invalid_frames, status_reads, status_stalls;
 };
 int32_t kfx_wgpu_draw_frame_counters(void *drawing, struct KfxWgpuFrameCounters *output,
     char *error, size_t capacity);

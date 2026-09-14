@@ -179,6 +179,14 @@ pub struct DrawRenderer {
     shadow_next_slot: u32,
     minimap: Option<minimap::MinimapState>,
     triangles: Option<triangles::TrianglePipelines>,
+    status: wgpu::Buffer,
+    status_ring: [wgpu::Buffer; frame_queue::STATUS_RING],
+    status_pending: [Option<frame_queue::StatusReceiver>; frame_queue::STATUS_RING],
+    status_frame: [u64; frame_queue::STATUS_RING],
+    status_cursor: u64,
+    frame_index: u64,
+    frame_flags: u32,
+    frame_flags_index: u64,
     present: wgpu::RenderPipeline,
     targets: HashMap<u64, Target>,
     resources: HashMap<u64, Resource>,
@@ -261,6 +269,22 @@ impl DrawRenderer {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+        let status = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame validation status"),
+            size: frame_queue::STATUS_BYTES,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let status_ring = std::array::from_fn(|_| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("frame validation status readback"),
+                size: frame_queue::STATUS_BYTES,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
+        });
         let limits = device.limits();
         Ok(Self {
             device,
@@ -276,6 +300,14 @@ impl DrawRenderer {
             shadow_next_slot: 0,
             minimap: None,
             triangles: None,
+            status,
+            status_ring,
+            status_pending: [const { None }; frame_queue::STATUS_RING],
+            status_frame: [0; frame_queue::STATUS_RING],
+            status_cursor: 0,
+            frame_index: 0,
+            frame_flags: 0,
+            frame_flags_index: 0,
             present,
             targets: HashMap::new(),
             resources: HashMap::new(),
