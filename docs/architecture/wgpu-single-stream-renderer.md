@@ -220,12 +220,14 @@ over their clip rectangles, computed on the CPU. A naive "one dispatch of N work
 also overlaps no raster command between it and the layer's other members. Worst case degenerates to
 today's one pass per sprite.
 
-**Shadow hoisting.** The chain is `mask_i = f(scratch_{i-1}, artwork_i)`, then `scratch_i = mask_i`, then
-two `TRIG` commands sample a snapshot of `mask_i`. Because the mask never depends on the frame target and
-the `TRIG` commands read only their own mask slot, **all mask passes hoist to the head of the encoder**
-while the `TRIG` commands stay at their stream positions, replacing N checkpoints, N validation waits, N
-readbacks and 2N 256 KB copies with N small serial passes. It is the subtlest claim here and is gated on
-its fixture.
+**Shadow residency (implemented, without hoisting).** The chain is `mask_i = f(scratch_{i-1}, artwork_i)`,
+then `scratch_i = mask_i`, then two `TRIG` commands sample `mask_i`. Because the mask never depends on the
+frame target, the chain lives in a persistent 256x256 scratch buffer and each mask is stamped into one of
+**two** resident slots. Mask *i* is recorded immediately before `TRIG` *i* in the same encoder rather than
+hoisted to its head: wgpu already orders passes inside one encoder, so hoisting bought only pass-setup
+overhead while costing a >= 14-deep slot ring, a slot-exhaustion fallback and the subtlest correctness
+argument in this design. That removes N checkpoints, N validation waits, N readbacks and 2N 256 KB copies.
+Revisit hoisting in PR 12 if the counters justify it.
 
 **Cursor.** Backup, compose, palette pass and restore are recorded into the same encoder in the order
 `bflib_mspointer.cpp` already imposes through `LbMouseOnBeginSwap`/`LbMouseOnEndSwap`, so the semantics
@@ -348,7 +350,7 @@ fixed-point triangle setup); `trig_sample` and its 27 modes; all sampler arithme
 | every sampler signature | `id.xy` → `pixel − origin` | mechanical, but touches all of them at once |
 | `draw_triangles.wgsl` `render` | folded into `draw.wgsl` as `terrain_sample(c, pixel)` reading the prepared-row arena at `aux_offset` | medium-high |
 | `draw_triangles.wgsl` `validate`, `draw_trig.wgsl` validate pipeline | deleted; the flag moves into the raster kernel | contract change |
-| `draw_shadow.wgsl` | prior scratch from a binding instead of `source[152u+address]`; result written to both the persistent scratch and the frame's mask slot | medium |
+| `draw_shadow.wgsl` | landed: prior scratch from a binding instead of `source[152u+address]`, RLE cursor at `152u`, result written to both the persistent scratch and the frame's mask slot | medium |
 | `draw_sprites.wgsl` `sprite_ordered` | reads its record index from a parameter so *M* workgroups serve *M* sprites | medium |
 | `draw_effects.wgsl`, `draw_minimap.wgsl` | non-alias lens and minimap modes 1–3 folded into `draw.wgsl`; the alias path and minimap modes 0 and 4 keep their own pipeline and snapshot dependency | medium |
 | all asset reads (phase 2) | `assets[i]` → `asset_byte(i)` from a byte-packed arena | **high**; family by family behind the fixtures |
@@ -392,7 +394,7 @@ Each step is one PR and keeps every existing fixture green.
 | 2 | **Free CPU wins.** `ResourceFor` → pointer+generation intern; `check_queued_target` → running byte total; `released_resources` → `HashSet`; **and `create_resource`, which runs the identical O(resources) byte sum on every resource creation**; `DrawTriangle`'s 8 KiB array → reused member scratch. | `resource_snapshot_bytes` 1.95 MB → ~0 |
 | 3 | **Bridge batching.** `SubmitNative` accumulates into `m_pending`; flush only at target change, shadow, transition, ordered sprite, snapshot or readback. | `gpu_batches` 139 → 10–20 |
 | 4 | **Persistent asset arena**, `u32` expansion kept, kernels unchanged. | `gpu_asset_upload_bytes` ~29 MB → ≤ 0.3 MB; Rust requested bytes ~98 MB → ≤ 2 MB |
-| 5 | **Shadow residency.** Persistent GPU scratch and mask slots; drop the CPU mirror, the readback and the snapshot; mask pass and `TRIG` in one encoder. | checkpoints 11.8 → ≤ 1; waits 25.7 → ~1; `shadow_scratch_readback_bytes` → 0 |
+| 5 | **Shadow residency** (landed). Persistent GPU scratch and two mask slots; CPU mirror, readback and snapshot dropped; mask pass and `TRIG` in one encoder, not hoisted. | checkpoints 9.4 → 1.0; waits 29.8 → 2.9; `shadow_scratch_readback_bytes` → 0 |
 | 6 | **Non-blocking validation, no double copy.** Fold the flag into the raster kernels, ring-read the status, write straight into the root, delete the transactional scratch, settle the snapshot rollback explicitly. | waits → 0; `frame_gpu_checkpoint_copy_bytes` → 0; `PerfPresentation` falls toward `PerfPresentWait` |
 | 7 | **Single command stream, root space, one tile index.** Counting-sort binning with persistent scratch; one raster dispatch per serial segment. Terrain still separate. | Rust batches → ~4; tile-list allocations → 0; fixtures 1 and 2 land here |
 | 8 | **Terrain triangles in the stream**, with tile binning, a prepared-row arena compressed to covered rows, and the separate validate pass deleted. | terrain iterations 308 M → ≤ 10 M and 2,065 M → ≤ 25 M; full-target dispatches ~86 → ~2 |
@@ -417,8 +419,9 @@ Each step is one PR and keeps every existing fixture green.
 - **Resource identity.** `ResourceFor` is keyed by pointer plus generation, bumped on every path that
   mutates a texture or fade table in place. In-place mutation without a bump is a bug to be caught by the
   verify oracle, not a supported case.
-- **Verification.** `KFX_WGPU_VERIFY` keeps the shadow-scratch comparison through the blocking
-  `kfx_wgpu_draw_shadow_scratch_read`, used only in verify runs.
+- **Verification.** `KFX_WGPU_DRAW_VERIFY` keeps the shadow-scratch comparison through the blocking
+  `kfx_wgpu_draw_shadow_scratch_read`, used only in verify runs; `KFX_WGPU_VERIFY` is the separate
+  presentation-surface check.
 
 ## Open measurement
 
@@ -432,7 +435,7 @@ earlier or the device must request a higher `max_storage_buffer_binding_size`. P
 | Risk | Mitigation |
 | --- | --- |
 | Origin rebasing touches every sampler at once | The view-rebasing fixture lands in the same PR as the change; every family fixture already covers the samplers |
-| Shadow mask hoisting is the subtlest correctness claim here | The shadow-hoisting fixture extends the existing 192-case chain to interleaved frames; ship PR 5 only when it passes |
+| Shadow mask hoisting is the subtlest correctness claim here | Dropped: masks record in stream position, and the 192-case chain now runs interleaved across queued frames and a scratch reset |
 | Ordered-sprite layering degenerates to one pass per sprite, and the population is unknown | Bounded worst case equals today's behaviour minus the submits. `gpu_sprite_commands` counts all sprites, ordered or not, so PR 1's `ordered_sprites` must size this before PR 9. They need `mode < 4 && scale_up && !blend && (flip & 1)` and a y range with `count > 1`, so upscaled sprites at 1080p could make them the dominant serial boundary |
 | Compressed prepared-row extents disagree with `gpoly_prepare.wgsl` clipping | The extents must be a proven superset; `gpoly_gpu.rs` compares 597,800 setup words against native and is the guard |
 | `TIMESTAMP_QUERY` unavailable on a target device | The feature request is optional; timings fall back to host wall time |

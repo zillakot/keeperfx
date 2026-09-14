@@ -223,7 +223,8 @@ same-frame recovery for every new command and persistent effect target.
 ### Drawing validation and counters
 
 `KFX_WGPU_DRAW_VERIFY=1` compares bridge output with a separate CPU oracle before
-committing it. This verifies indexed drawing; `KFX_WGPU_VERIFY=1` separately checks
+committing it. For creature shadows it seeds the CPU scratch from the resident GPU
+chain, then compares the oracle's mask against a blocking read of that chain. This verifies indexed drawing; `KFX_WGPU_VERIFY=1` separately checks
 acquired wgpu presentation surfaces. A screenshot of the synchronized native
 image does not prove a window surface was acquired or displayed. Visible surface
 validation for this drawing candidate is pending an unlocked display; the current
@@ -241,7 +242,8 @@ native evidence and its source/binary limits are in the coverage ledger.
 
 - `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations.
 - `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_host_staged_asset_bytes`: host-side staged asset bytes the drawing context holds, a gauge rather than a total, and not GPU memory.
-- `bridge_solo_batches`: the `gpu_batches` subset a single command occupied alone because its kind cannot share a submission; the floor the shadow path sets.
+- `bridge_solo_batches`: the `gpu_batches` subset a single command occupied alone because its kind cannot share a submission. Shadows left this set: the shadow route still takes one command, but it keeps its place in the ordered record list instead of flushing around itself.
+- `gpu_shadow_commands`: committed creature shadows. `shadow_scratch_upload_bytes` and `shadow_scratch_copy_bytes` are zero in production because the mask chain is GPU resident; `shadow_scratch_readback_bytes` is zero unless `KFX_WGPU_DRAW_VERIFY` is set, which adds one blocking 256 KiB scratch read per shadow.
 - No GPU execution time is collected. It was not attempted because the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable and the copy-only submissions carry no pass for `timestamp_writes`.
 
 Zero declined spans is not a whole-renderer CPU-drawing count. These counters
