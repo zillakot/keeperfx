@@ -25,7 +25,7 @@ struct Residency {
 
 /// One persistent storage buffer holding every packed asset, suballocated in
 /// power-of-two word classes and reclaimed by LRU over whole frames.
-pub(super) struct Arena {
+pub(crate) struct Arena {
     buffer: Option<wgpu::Buffer>,
     capacity: u32,
     limit: u32,
@@ -160,6 +160,7 @@ impl Arena {
     }
 
     /// Reserves a region for GPU-to-GPU copies, released at the next batch.
+    #[allow(dead_code)]
     pub(super) fn reserve_scratch(
         &mut self,
         device: &wgpu::Device,
