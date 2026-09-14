@@ -160,6 +160,89 @@ static std::vector<std::vector<uint8_t>> lifecycle(bool gpu, bool advanced, int 
     SDL_DestroySurface(screen);
     return frames;
 }
+static void refill(SDL_Surface* surface, unsigned seed)
+{
+    paint(surface, seed);
+    if (!shared_target) return;
+    uint64_t asset = kfx_wgpu_draw_resource_create(drawing, static_cast<uint8_t*>(surface->pixels),
+        size_t(surface->pitch) * surface->h, surface->w, surface->h, surface->pitch, error, sizeof(error));
+    check(asset, "tail repaint resource");
+    KfxWgpuDrawCommand c = {};
+    c.abi_version = 1; c.kind = KFX_WGPU_DRAW_IMAGE;
+    c.width = c.clip_width = c.source_width = surface->w;
+    c.height = c.clip_height = c.source_height = surface->h;
+    c.source = asset; c.transparent = 256;
+    check(kfx_wgpu_draw_submit(drawing, shared_target, &c, 1, error, sizeof(error)) == 1, "tail repaint");
+    kfx_wgpu_draw_resource_release(drawing, asset, error, sizeof(error));
+}
+static SDL_Surface* adopt(SDL_Surface* surface, SDL_Palette* palette)
+{
+    SDL_SetSurfacePalette(surface, palette);
+    lbDrawSurface = surface;
+    lbDisplay.WScreen = static_cast<uint8_t*>(surface->pixels);
+    lbDisplay.GraphicsScreenWidth = surface->pitch;
+    lbDisplay.MouseWindowWidth = lbDisplay.PhysicalScreenWidth = surface->w;
+    lbDisplay.MouseWindowHeight = lbDisplay.PhysicalScreenHeight = surface->h;
+    if (!enabled) return surface;
+    const KfxGpolyTarget t = {static_cast<uint8_t*>(surface->pixels),
+        uint32_t(surface->w), uint32_t(surface->h), uint32_t(surface->pitch)};
+    shared_target = upload(t);
+    check(kfx_wgpu_draw_frame_begin(drawing, shared_target, error, sizeof(error)) == 1, "tail frame begin");
+    return surface;
+}
+static void retire()
+{
+    if (!shared_target) return;
+    check(kfx_wgpu_draw_frame_end(drawing, error, sizeof(error)) == 1, "tail frame end");
+    kfx_wgpu_draw_target_release(drawing, shared_target, error, sizeof(error));
+    shared_target = 0;
+}
+// A presented frame flushes once and the swap records behind it, so the backup,
+// composition and restore add no queued-frame checkpoint of their own.
+static std::vector<std::vector<uint8_t>> tail_trace(bool gpu, int scale, bool interrupted,
+    bool hidden, bool resize, const TbSprite* sprite, SDL_Palette* palette)
+{
+    enabled = gpu;
+    context_ready = true;
+    mouse_scale = scale;
+    lbPointerAdvancedDraw = true;
+    lbInteruptMouse = interrupted;
+    auto* screen = adopt(SDL_CreateSurface(37, 31, SDL_PIXELFORMAT_INDEX8), palette);
+    paint(screen, 0);
+    TbPoint position = {5, 6}, offset = {1, 2};
+    LbI_PointerHandler pointer;
+    pointer.Initialise(sprite, &position, &offset);
+    std::vector<std::vector<uint8_t>> frames;
+    const int moves[][2] = {{5,6},{18,12},{2,25},{34,3},{-3,9},{5,6}};
+    unsigned seed = 11;
+    for (unsigned i = 0; i < 6; ++i) {
+        if (resize && i == 3) {
+            retire();
+            SDL_DestroySurface(screen);
+            screen = adopt(SDL_CreateSurface(43, 35, SDL_PIXELFORMAT_INDEX8), palette);
+            paint(screen, 7);
+        }
+        position = {moves[i][0], moves[i][1]};
+        if (interrupted) pointer.OnMove();
+        refill(screen, seed++);
+        KfxWgpuFrameCounters before = {}, after = {};
+        if (shared_target) {
+            check(kfx_wgpu_draw_frame_flush(drawing, error, sizeof(error)) == 1, "tail frame flush");
+            check(kfx_wgpu_draw_frame_counters(drawing, &before, error, sizeof(error)) == 1, "tail counters");
+        }
+        if (!hidden) { pointer.OnBeginSwap(); pointer.OnEndSwap(); }
+        if (shared_target) {
+            check(kfx_wgpu_draw_frame_counters(drawing, &after, error, sizeof(error)) == 1, "tail counters");
+            check(after.checkpoints == before.checkpoints, "swap tail forced a queued frame checkpoint");
+        }
+        frames.push_back(bytes(screen));
+    }
+    pointer.Release();
+    frames.push_back(bytes(screen));
+    retire();
+    SDL_DestroySurface(screen);
+    return frames;
+}
 int main()
 {
     drawing = kfx_wgpu_draw_create(error, sizeof(error));
@@ -214,6 +297,12 @@ int main()
             before_shared.cpu_backups == after_shared.cpu_backups &&
             before_shared.cpu_compositions == after_shared.cpu_compositions, "shared frame cursor used CPU frame transfer or fallback");
     }
+    for (int scale = 1; scale <= 3; ++scale)
+        for (bool interrupted : {false,true}) for (bool hidden : {false,true}) for (bool resize : {false,true}) {
+            auto reference = tail_trace(false, scale, interrupted, hidden, resize, &sprite, palette);
+            auto tail = tail_trace(true, scale, interrupted, hidden, resize, &sprite, palette);
+            check(reference == tail, "swap tail pixels differ from the software cursor");
+        }
     delayed_context = true;
     for (int scale = 1; scale <= 3; ++scale) for (bool offscreen : {false,true}) {
         auto native = lifecycle(false, true, scale, &sprite, palette, offscreen);
@@ -315,5 +404,5 @@ int main()
         after.gpu.readback_bytes && after.failures == 3, "missing counters");
     SDL_DestroyPalette(palette);
     kfx_wgpu_draw_destroy(drawing);
-    std::printf("%u actual native direct cursor cases; 81 advanced compositions/restores; 30 pointer lifecycle traces including 18 shared frames; failure checkpoints and borrowed targets exact\n", direct_cases);
+    std::printf("%u actual native direct cursor cases; 81 advanced compositions/restores; 30 pointer lifecycle traces including 18 shared frames; 24 checkpoint-free swap tails; failure checkpoints and borrowed targets exact\n", direct_cases);
 }
