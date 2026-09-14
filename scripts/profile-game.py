@@ -40,8 +40,8 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
                     "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
                     "gpu_timed_passes", "gpu_untimed_passes", "gpu_pass_union_ns",
-                    "host_staged_asset_bytes", "arena_bytes_resident")
-DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident")
+                    "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak")
+DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak")
 SETTINGS = {
     "DELTA_TIME": "ON", "TURNS_PER_SECOND": "20", "FRAMES_PER_SECOND": "60", "VSYNC": "OFF",
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
@@ -73,6 +73,7 @@ DRAWING_LIMITATIONS = [
     "Counters cover the drawing context the bridge owns. Presenter surface acquisition and any drawing done outside that context are not counted.",
     "host_staged_asset_bytes is a host-side gauge sampled at frame end: the CPU copies the drawing context stages, not GPU memory, and not a per-frame delta, so its window total is meaningless.",
     "arena_bytes_resident is a gauge sampled at frame end: GPU bytes suballocated in the persistent asset arena, free-listed slots and power-of-two class padding included, and not a per-frame delta.",
+    "arena_scratch_bytes_peak is a high-water gauge over the process: the widest extent the arena's transient regions reached inside one pinning scope, which one submit per frame makes a whole frame rather than a batch.",
 ]
 
 

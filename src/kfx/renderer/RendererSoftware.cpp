@@ -300,7 +300,7 @@ void RendererSoftware::report_drawing()
         gpu.pass_ns[0], gpu.pass_ns[1], gpu.pass_ns[2], gpu.pass_ns[3],
         gpu.pass_ns[4], gpu.pass_ns[5], gpu.pass_ns[6], gpu.pass_ns[7],
         gpu.timed_passes, gpu.untimed_passes, gpu.gpu_pass_union_ns,
-        gpu.host_staged_asset_bytes, gpu.arena_bytes_resident};
+        gpu.host_staged_asset_bytes, gpu.arena_bytes_resident, gpu.arena_scratch_bytes_peak};
     performance_drawing_frame(&sample);
     const char* path = SDL_getenv("KFX_WGPU_DRAW_STATS");
     if (path != nullptr) {
@@ -328,7 +328,7 @@ void RendererSoftware::report_drawing()
                 "\"gpu_ordered_sprite_ns\":%llu,\"gpu_minimap_ns\":%llu,"
                 "\"gpu_lens_ns\":%llu,\"gpu_present_ns\":%llu,"
                 "\"gpu_timed_passes\":%llu,\"gpu_untimed_passes\":%llu,"
-                "\"gpu_pass_union_ns\":%llu,"
+                "\"gpu_pass_union_ns\":%llu,\"arena_scratch_bytes_peak\":%llu,"
                 "\"rejected_commands\":%llu,\"rejected_spans\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
@@ -397,6 +397,7 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.timed_passes),
                 static_cast<unsigned long long>(gpu.untimed_passes),
                 static_cast<unsigned long long>(gpu.gpu_pass_union_ns),
+                static_cast<unsigned long long>(gpu.arena_scratch_bytes_peak),
                 static_cast<unsigned long long>(counts.rejected_commands),
                 static_cast<unsigned long long>(counts.rejected_spans));
             fclose(output);
@@ -498,20 +499,25 @@ bool RendererSoftware::present_rust_frame()
             SDL_DestroySurface(rgba);
         }
     }
-    // Records the cursor restore into the present tail before it is finished, so the
-    // backup, composition, palette pass and restore share one submission. When
-    // acquisition was skipped the tail stays open and the next queued-frame flush
-    // submits it ahead of that frame's replay; a terminal failure drops it with the
-    // presenter, which the SDL fallback redraws from scratch anyway.
+    // Records the cursor restore into the frame's encoder before it is finished, so
+    // the backup, composition, palette pass and restore share the frame's one
+    // submission. The present call is reached on the acquisition-skip path too,
+    // because the encoder it submits holds the same work minus the palette pass; a
+    // terminal failure drops the recording, which the SDL fallback redraws anyway.
     LbMouseOnEndSwap();
     performance_begin(PerfPresentWait);
-    if (result == 1) {
-        result = kfx_wgpu_present(m_rust, error, sizeof(error));
-        ++m_rust_frames;
-        const char* fail_after = SDL_getenv("KFX_WGPU_FAIL_AFTER");
-        if (fail_after != nullptr && m_rust_frames >= strtoul(fail_after, nullptr, 10)) {
+    if (result >= 0) {
+        const int presented = kfx_wgpu_present(m_rust, error, sizeof(error));
+        if (result == 1) {
+            result = presented;
+            ++m_rust_frames;
+            const char* fail_after = SDL_getenv("KFX_WGPU_FAIL_AFTER");
+            if (fail_after != nullptr && m_rust_frames >= strtoul(fail_after, nullptr, 10)) {
+                result = -1;
+                snprintf(error, sizeof(error), "injected presentation failure");
+            }
+        } else if (presented < 0) {
             result = -1;
-            snprintf(error, sizeof(error), "injected presentation failure");
         }
     }
     performance_end(PerfPresentWait);
