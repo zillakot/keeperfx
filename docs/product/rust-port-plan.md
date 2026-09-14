@@ -255,13 +255,20 @@ Next PRs, in order:
    whole frame, and each serial segment rasters once over the tiles its own records reach).
    At busy 640x480 with GPU drawing behind the SDL presenter, matched pairs: bridge
    target-change flushes 39.3 → 0 per frame, tile-list allocations 0, buffer allocations
-   198.5 → 161.3, Rust allocator calls 30.3 M → 6.0 M per measured window, CPU drawing
-   0.506 → 0.470-0.531 ms and presentation 0.943 → 0.884-0.903 ms. **Rust batches did not
+   198.5 → 161.3, Rust allocator calls 30.0 M → 5.7 M per measured window, CPU drawing
+   0.506 → 0.470-0.531 ms and presentation 0.943 → 0.884-0.903 ms. The allocator drop is the
+   per-batch tile lists this step deletes: a wgpu-presenter profile of `master` attributes 15%
+   of `frame_flush` samples to `RawVec` growth, and the frame's record buffers are now reused
+   across frames as well. **Rust batches did not
    fall** (72.5 → 71.7-75.1): ~38 creature shadows per frame each close a raster segment, so
    the design's "≈ 4" needs the mask chain hoisted as well as terrain, ordered sprites and
    the lens/minimap folds. GPU blocking wait rose 9.08 → 10.91 ms per frame and observed FPS
-   fell 56.5 → 54.5-56.1, because root-space binning misaligns view-local commands against
-   the 16x16 tile grid. The wgpu-presenter pair is outstanding.
+   fell 56.5 → 54.5-56.1. That cost is unattributed: the record layout and root-space tile
+   misalignment were both measured and rejected (the latter at 3.5% more tile entries than a
+   view-space binning of the same frame). Under the wgpu presenter on `master` the frame is
+   GPU-bound — 82% of main-thread samples in the swapchain wait at 1920x1080, 9.8 FPS, with
+   drawing at 0.5-0.7 ms and no blocking waits — so the presenter pair is the measurement that
+   decides whether this matters, and it is outstanding.
 5. The rest of the single-stream restructure, guided by the design document under
    [`docs/architecture/`](../architecture/).
 

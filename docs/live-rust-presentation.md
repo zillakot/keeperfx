@@ -141,7 +141,7 @@ index per pixel. A frame is one immutable command stream in the root's coordinat
 every record carries the origin of the view it was issued against, so views are
 offset aliases of the root and a target change is not a boundary. One counting sort
 over renderer-owned scratch bins the whole stream into 16×16 tiles, preserving
-command order; each GPU invocation owns one destination pixel and evaluates its
+command order, and a retired frame leaves its record buffers behind for the next one; each GPU invocation owns one destination pixel and evaluates its
 ordered commands. The stream is cut into raster passes only at genuinely serial work
 — ordered sprites, the alias lens, minimap modes that read the target, snapshot
 copies, creature shadows and terrain triangles — and each pass dispatches over the
@@ -297,7 +297,7 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `rejected_commands` / `rejected_spans`: pending generic commands and terrain spans the target never received because the run was dropped without a CPU replay; each such drop invalidates the frame.
 - `frame_checkpoints`, `frame_gpu_checkpoint_copy_bytes`, `frame_validation_waits` and `frame_validation_bytes`: queued-frame flushes and what they used to cost. The copy bytes and both validation figures are structurally zero: a flush records the batches straight into the root and publishes the status word instead of aggregating per-batch flags under a blocking poll.
 - `frame_flagged_invalid`, `frame_status_reads` and `frame_status_stalls`: frames a kernel flagged as having an out-of-range lookup, completed status ring reads, and publishes skipped because every ring slot was still mapped. A stall only defers the flag to the next publish; it never loses it.
-- `tile_allocations` counts growths of the persistent binning scratch and is zero after warm-up; `tile_entries` is the per-frame size of the tile index the raster passes share.
+- `tile_allocations` counts growths of the persistent binning scratch and is zero after warm-up; `tile_entries` is the per-frame size of the tile index the raster passes share. The ordered-sprite preflight builds an index it never uploads and is excluded from `tile_entries`.
 - `bridge_target_flushes`: pending work flushed because the target was not a view of the frame root at all. Target and view changes inside the frame root no longer flush; `bridge_target_runs` counts those.
 - `gpu_batches` counts bridge submission routes, not GPU submissions. Inside a queued frame a route is an `enqueue_commands` call that may still merge with its neighbour, so a lower count means fewer FFI crossings and fewer command copies, not fewer dispatches; `gpu_submits` and `gpu_dispatches` measure those.
 - No GPU execution time is collected. It was not attempted because the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable and the copy-only submissions carry no pass for `timestamp_writes`.
