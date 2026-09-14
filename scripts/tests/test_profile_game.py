@@ -157,7 +157,8 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(submits["mean"], 9)
             self.assertAlmostEqual(submits["p95"], 17.1)
             self.assertIsNone(drawing["per_frame"]["host_staged_asset_bytes"]["total"])
-            self.assertEqual(drawing["per_frame"]["ordered_sprites"]["min"], 15)
+            self.assertEqual(drawing["per_frame"]["ordered_sprites"]["min"],
+                             profile.DRAWING_COUNTERS.index("ordered_sprites"))
             self.assertTrue(any("not GPU execution time" in item for item in report["limitations"]))
             self.assertTrue(any("GPU execution time is not implemented" in item
                                 for item in report["limitations"]))

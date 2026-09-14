@@ -45,7 +45,8 @@ impl TrianglePipelines {
 }
 
 impl DrawRenderer {
-    /// Submissions retain triangle order and reject invalid resources or shades before target writes.
+    /// Submissions retain triangle order. Invalid resources are rejected before any target
+    /// write; an out-of-range shade skips its own pixels and raises the frame status flag.
     pub fn submit_triangles(&mut self, target: u64, commands: &[TriangleCommand]) -> Result<()> {
         if self.enqueue_triangles(target, commands)? {
             return Ok(());
@@ -135,23 +136,6 @@ impl DrawRenderer {
             ],
             wgpu::BufferUsages::UNIFORM,
         );
-        let status = buffer(
-            &self.device,
-            &mut self.counters,
-            "triangle resource validation",
-            &[0],
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        );
-        let staging = if self.deferred_status.is_none() {
-            Some(self.tracked_buffer(&wgpu::BufferDescriptor {
-                label: Some("triangle validation flag readback"),
-                size: 4,
-                mapped_at_creation: false,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            }))
-        } else {
-            None
-        };
         {
             let pipelines = self.triangles.as_ref().unwrap();
             let validation = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -160,7 +144,7 @@ impl DrawRenderer {
                 entries: &[
                     entry(0, &prepared.rows),
                     entry(3, &params),
-                    entry(5, &status),
+                    entry(6, &self.status),
                 ],
             });
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -169,31 +153,7 @@ impl DrawRenderer {
             pass.dispatch_workgroups(target.height.div_ceil(64), commands.len() as u32, 1);
         }
         self.counters.dispatches += 1;
-        if let Some(staging) = &staging {
-            encoder.copy_buffer_to_buffer(&status, 0, staging, 0, 4);
-        }
-        self.submit_encoder(encoder);
         self.counters.command_upload_bytes += commands.len() as u64 * 96 + 36;
-        if let Some(statuses) = &mut self.deferred_status {
-            statuses.push(status);
-        } else {
-            let staging = staging.unwrap();
-            let (sender, receiver) = std::sync::mpsc::channel();
-            staging
-                .slice(..)
-                .map_async(wgpu::MapMode::Read, move |result| {
-                    let _ = sender.send(result);
-                });
-            self.wait_for_queue()?;
-            receiver.recv()??;
-            let mapped = staging.slice(..).get_mapped_range()?;
-            let invalid = mapped.iter().any(|&byte| byte != 0);
-            drop(mapped);
-            staging.unmap();
-            self.counters.readback_bytes += 4;
-            self.check_status()?;
-            ensure!(!invalid, "invalid triangle shade");
-        }
         let asset_buffer = match &assets {
             Some(assets) => buffer(
                 &self.device,
@@ -213,7 +173,6 @@ impl DrawRenderer {
             &metadata,
             wgpu::BufferUsages::STORAGE,
         );
-        let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let pipelines = self.triangles.as_ref().unwrap();
             let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -225,6 +184,7 @@ impl DrawRenderer {
                     entry(2, &target.indices),
                     entry(3, &params),
                     entry(4, &metadata_buffer),
+                    entry(6, self.status_binding()),
                 ],
             });
             let mut pass = encoder.begin_compute_pass(&Default::default());

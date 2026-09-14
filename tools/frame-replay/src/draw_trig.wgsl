@@ -208,15 +208,3 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
     return assets[ghost + (destination << 8u) + source];
 }
 
-@group(0) @binding(5) var<storage, read_write> trig_status: atomic<u32>;
-@compute @workgroup_size(8, 8)
-fn validate_trig(@builtin(global_invocation_id) id: vec3<u32>) {
-    if id.x >= parameters.x || id.y >= parameters.y { return; }
-    let pixel = vec2<i32>(id.xy);
-    for (var i = 0u; i < parameters.z; i++) {
-        let c = commands[i];
-        if c.operation.x != 9u || any(pixel < c.clip.xy) || any(pixel >= c.clip.zw)
-            || any(pixel < c.bounds.xy) || any(pixel >= c.bounds.zw) { continue; }
-        if trig_sample(c, pixel, 0u) == 257u { atomicStore(&trig_status, 1u); }
-    }
-}

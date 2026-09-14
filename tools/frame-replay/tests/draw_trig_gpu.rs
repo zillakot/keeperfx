@@ -1,5 +1,5 @@
 use anyhow::{Result, ensure};
-use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, SPRITE, TRIG};
+use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, IMAGE, OPAQUE, SPRITE, TRIG};
 
 #[test]
 #[ignore = "requires Metal/Vulkan and KFX_TRIG_FIXTURE"]
@@ -121,24 +121,38 @@ fn native_general_triangles() -> Result<()> {
         height,
         ..Default::default()
     };
+    let clear9 = Command {
+        kind: CLEAR,
+        colour: 9,
+        ..Default::default()
+    };
+    let restore_source = draw.create_resource(&original, width, height, width)?;
+    let restore = Command {
+        kind: IMAGE,
+        source: restore_source,
+        width,
+        height,
+        clip_width: width,
+        clip_height: height,
+        source_width: width,
+        source_height: height,
+        transparent: OPAQUE,
+        ..Default::default()
+    };
+    let cleared = vec![9u8; (width * height) as usize];
+    draw.submit(target, &[clear9, invalid_command])?;
     ensure!(
-        draw.submit(
-            target,
-            &[
-                Command {
-                    kind: CLEAR,
-                    colour: 9,
-                    ..Default::default()
-                },
-                invalid_command
-            ]
-        )
-        .is_err(),
-        "GPU accepted an invalid late shade lookup"
+        draw.readback(target)? == cleared,
+        "a flagged late shade lookup wrote triangle pixels"
     );
     ensure!(
+        draw.frame_status().1 & 0b11 == 0b11,
+        "an invalid late shade lookup raised no frame flag"
+    );
+    draw.submit(target, &[restore])?;
+    ensure!(
         draw.readback(target)? == original,
-        "GPU preflight failure changed target"
+        "the restore image did not reproduce the target"
     );
     let mut sprite = vec![199, 2];
     for n in [5_u32, 2, 5, 2] {
@@ -159,32 +173,23 @@ fn native_general_triangles() -> Result<()> {
         ..Default::default()
     };
     let sprite_target = draw.create_target(width, height)?;
-    draw.submit(sprite_target, &[sprite_command])?;
+    draw.submit(sprite_target, &[clear9, sprite_command])?;
+    let with_sprite = draw.readback(sprite_target)?;
     ensure!(
-        draw.readback(sprite_target)?.contains(&199),
+        with_sprite.contains(&199),
         "valid ordered sprite did not draw"
     );
     draw.release_target(sprite_target)?;
+    draw.submit(target, &[clear9, sprite_command, invalid_command])?;
     ensure!(
-        draw.submit(
-            target,
-            &[
-                Command {
-                    kind: CLEAR,
-                    colour: 9,
-                    ..Default::default()
-                },
-                sprite_command,
-                invalid_command
-            ]
-        )
-        .is_err(),
-        "mixed ordered sprite batch accepted late invalid triangle"
+        draw.readback(target)? == with_sprite,
+        "the ordered sprite must draw beside a flagged triangle"
     );
     ensure!(
-        draw.readback(target)? == original,
-        "mixed sprite/triangle rejection changed target"
+        draw.frame_status().1 & 0b11 == 0b11,
+        "a mixed ordered-sprite batch raised no frame flag"
     );
+    draw.submit(target, &[restore])?;
     for mode in [5, 6, 9, 20, 21, 24, 25, 26] {
         for transparent in [false, true] {
             let mut source = Vec::new();
@@ -211,26 +216,20 @@ fn native_general_triangles() -> Result<()> {
             if skips_fade {
                 draw.submit(target, &[c])?;
             } else {
+                draw.submit(target, &[clear9, sprite_command, c])?;
                 ensure!(
-                    draw.submit(
-                        target,
-                        &[
-                            Command {
-                                kind: CLEAR,
-                                colour: 9,
-                                ..Default::default()
-                            },
-                            sprite_command,
-                            c,
-                        ]
-                    )
-                    .is_err(),
-                    "mode {mode} accepted an invalid computed fade access"
+                    draw.readback(target)? == with_sprite,
+                    "mode {mode} wrote an invalid computed fade access"
                 );
+                ensure!(
+                    draw.frame_status().1 & 0b11 == 0b11,
+                    "mode {mode} raised no frame flag for an invalid fade access"
+                );
+                draw.submit(target, &[restore])?;
             }
             ensure!(
                 draw.readback(target)? == original,
-                "mode {mode} changed target on transparency or rejection"
+                "mode {mode} changed target on transparency or recovery"
             );
             draw.release_resource(source)?;
         }
@@ -252,24 +251,19 @@ fn native_general_triangles() -> Result<()> {
             source_x: mode,
             ..invalid_command
         };
+        draw.submit(target, &[clear9, c])?;
         ensure!(
-            draw.submit(
-                target,
-                &[
-                    Command {
-                        kind: CLEAR,
-                        colour: 9,
-                        ..Default::default()
-                    },
-                    c,
-                ]
-            )
-            .is_err(),
-            "mode {mode} accepted a computed texture access beyond its extent"
+            draw.readback(target)? == cleared,
+            "mode {mode} wrote a computed texture access beyond its extent"
         );
         ensure!(
+            draw.frame_status().1 & 0b11 == 0b11,
+            "mode {mode} raised no frame flag for a texture access beyond its extent"
+        );
+        draw.submit(target, &[restore])?;
+        ensure!(
             draw.readback(target)? == original,
-            "mode {mode} texture rejection changed target"
+            "mode {mode} texture recovery changed target"
         );
         draw.release_resource(source)?;
     }

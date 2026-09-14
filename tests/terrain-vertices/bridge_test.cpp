@@ -149,15 +149,52 @@ int main()
         char error[1024] = {};
         assert(kfx_wgpu_draw_frame_counters(bridge.Context(), &queued, error, sizeof(error)) == 1);
         assert(queued.checkpoints == (verify ? 6 : 0));
-        assert(queued.validation_waits == (verify ? 3 : 0));
+        assert(queued.validation_waits == 0);
         assert(bridge.EndFrame(true));
         assert(kfx_wgpu_draw_frame_counters(bridge.Context(), &queued, error, sizeof(error)) == 1);
         assert(queued.checkpoints == (verify ? 6 : 1));
-        assert(queued.validation_waits == (verify ? 3 : 1));
+        assert(queued.validation_waits == 0);
         assert(actual == expected && !bridge.Failed());
         assert(bridge.GetCounters().barrier_readbacks == 1);
-        std::printf("Full frame native vertices+HUD: verify=%d, triangles=300, HUD=3, root_targets=1, view_barriers=0, final_materializations=1, GPU_checkpoints=%llu, validation_waits=%llu\n", verify,
-            static_cast<unsigned long long>(queued.checkpoints), static_cast<unsigned long long>(queued.validation_waits));
+        assert(queued.checkpoint_copy_bytes == 0);
+        std::printf("Full frame native vertices+HUD: verify=%d, triangles=300, HUD=3, root_targets=1, view_barriers=0, final_materializations=1, GPU_checkpoints=%llu, validation_waits=%llu, checkpoint_copy_bytes=%llu\n", verify,
+            static_cast<unsigned long long>(queued.checkpoints), static_cast<unsigned long long>(queued.validation_waits),
+            static_cast<unsigned long long>(queued.checkpoint_copy_bytes));
+    }
+    {
+        std::vector<uint8_t> actual(87 * 67 + 32, 167);
+        KfxGpolyTarget frame = {actual.data() + 16, 83, 67, 87};
+        WgpuTerrainBridge bridge(0, false, false, true);
+        auto invalid = triangle;
+        for (auto& vertex : invalid.vertices) vertex.shade = 64 * 65536;
+        assert(bridge.BeginFrame(frame));
+        bridge.Boundary(true);
+        vertex_draw(&frame, &triangle, texture.data(), fade.data(), 0);
+        vertex_draw(&frame, &invalid, texture.data(), fade.data(), 0);
+        bridge.Boundary(false);
+        assert(bridge.EndFrame(true));
+        // Flag and recover: the batch is accepted, the invalid triangle writes nothing.
+        assert(!bridge.Failed() && bridge.FrameValid());
+        assert(bridge.GetCounters().rejected_triangles == 0);
+        assert(bridge.GetCounters().gpu_triangles == 2);
+        assert(bridge.GetCounters().invalid_frames == 0);
+        uint64_t invalid_frames = 0;
+        int observed = 0;
+        for (; observed < 2 && invalid_frames == 0; ++observed) {
+            assert(bridge.BeginFrame(frame));
+            assert(bridge.EndFrame(true));
+            invalid_frames = bridge.GetCounters().invalid_frames;
+        }
+        assert(invalid_frames == 1 && observed <= 2);
+        assert(!bridge.Failed() && bridge.FrameValid());
+        KfxWgpuFrameCounters queued = {};
+        char error[1024] = {};
+        assert(kfx_wgpu_draw_frame_counters(bridge.Context(), &queued, error, sizeof(error)) == 1);
+        assert(queued.validation_waits == 0 && queued.checkpoint_copy_bytes == 0);
+        std::printf("Flagged frame recovery: observed after %d frames, invalid_frames=%llu, status_reads=%llu, status_stalls=%llu\n",
+            observed, static_cast<unsigned long long>(invalid_frames),
+            static_cast<unsigned long long>(queued.status_reads),
+            static_cast<unsigned long long>(queued.status_stalls));
     }
     std::puts("PASS: native original vertices bypass CPU setup; Metal exact clipped overlaps/resource mutations, CPU interleaving, original-input batch recovery and initialization fallback");
 }

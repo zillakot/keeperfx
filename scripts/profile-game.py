@@ -22,7 +22,8 @@ _spec.loader.exec_module(capture)
 KINDS = ("simulation", "draw", "presentation", "present_wait", "frame_interval")
 DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
-                    "checkpoint_copy_bytes", "validation_waits", "upload_bytes", "readback_bytes",
+                    "checkpoint_copy_bytes", "validation_waits",
+                    "flagged_invalid_frames", "status_stalls", "upload_bytes", "readback_bytes",
                     "full_readbacks", "full_readback_bytes", "buffers", "buffer_bytes",
                     "batches", "commands", "ordered_sprites",
                     "arena_evictions", "arena_overflows", "arena_bytes_uploaded",

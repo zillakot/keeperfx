@@ -7,8 +7,8 @@ extern "C" {
 #endif
 
 /* Snapshot handles are distinct from CPU asset handles. Region bounds must fit the
- * target; pitch is in indices and padding is zero. Captures prior queued draws using
- * GPU copies only. Each handle is an immutable version, surviving target writes and
+ * target; pitch is in indices and padding is zero. Captures prior queued draws by
+ * flushing the frame's recorded work, using GPU copies only. Each handle is an immutable version, surviving target writes and
  * release. Release never cancels submitted sampling. All calls require serialization.
  * These versions have no CPU reconstruction data: terminal device loss invalidates
  * them. Callers must retain reconstructible inputs before adopting software fallback.
@@ -25,14 +25,14 @@ int32_t kfx_wgpu_draw_target_snapshot_release(void *drawing, uint64_t snapshot,
  * source_x=1 smooths the specified rectangle from the source snapshot and ghost table.
  * Uses IMAGE nearest sampling, clip, transparency and blend semantics. Overlap reads
  * immutable snapshot pixels, never earlier destination writes. Calls order with other
- * draw submissions. Invalid batches leave the target unchanged; terminal GPU failure
+ * draw submissions. Host-rejected batches leave the target unchanged; terminal GPU failure
  * requires reconstruction. Returns 1 on acceptance, -1 on error.
  */
 int32_t kfx_wgpu_draw_submit_target_images(void *drawing, uint64_t target,
     const struct KfxWgpuDrawCommand *commands, size_t count, char *error, size_t capacity);
 
 /* TRIG sources contain 60 geometry bytes; the texture is a resident 256x256 mask slot.
- * Tables remain CPU asset handles. Entire batches validate before target writes.
+ * Tables remain CPU asset handles.
  */
 int32_t kfx_wgpu_draw_submit_target_triangles(void *drawing, uint64_t target,
     const struct KfxWgpuDrawCommand *commands, size_t count, uint32_t slot,

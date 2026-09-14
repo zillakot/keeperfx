@@ -45,7 +45,9 @@ extern "C" {
  * Handles belong to their creating drawing context. Release does not cancel submitted work.
  * Coordinates and clips are target-relative; rectangles use half-open bounds.
  * GPOLY starts are already clipped/truncated by legacy setup; shader steps wrap at 64 bits.
- * Submit returns 1 when accepted, -1 on error; rejected batches do not mutate targets.
+ * Submit returns 1 when accepted, -1 on error; host-rejected batches do not mutate targets.
+ * A GPU-detected invalid lookup is not a rejection: the command's own write is skipped and
+ * the frame flag is raised for kfx_wgpu_draw_frame_status.
  * A terminal GPU error requires reconstruction before software fallback can display pixels.
  */
 #pragma pack(push, 8)

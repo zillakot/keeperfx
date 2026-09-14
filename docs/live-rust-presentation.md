@@ -143,7 +143,9 @@ integer operations preserve texture/shade lookup and destination-index palette
 composition. The [drawing C ABI](../src/kfx/renderer/WgpuDraw.h) owns copied,
 immutable resource versions and validates complete batches before submission.
 Its direct GPU-target palette presentation API is tested offscreen, but the game
-still presents the synchronized native framebuffer.
+still presents the synchronized native framebuffer. Host validation rejects a batch
+before any target write; a lookup only the kernel can find out of range skips its own
+write and raises a frame flag instead, and the frame presents as drawn.
 
 [WgpuTerrainBridge](../src/kfx/renderer/WgpuTerrainBridge.cpp) batches selected
 terrain and generic commands between audited world-dispatch boundaries. Accepted textured gpoly calls
@@ -214,11 +216,16 @@ frame-replay workflow's software Vulkan tests; live window presentation remains
 macOS-only. Missing GPU adapters fail the fixture rather than skip its comparisons.
 
 The native destination changes only after successful execution/readback and any
-enabled comparison. Failure reconstructs accepted original triangles with the
-native gpoly rasterizer using immutable vertices and resources; the retained span
-path uses its CPU interpreter. Reconstruction writes scratch storage and commits
-only after the complete batch succeeds. Invalid replay shades or allocation
-failure leave the native target unchanged and report a rejected batch. Failure
+enabled comparison. A queued frame writes the canonical target as it is recorded;
+there is no per-flush scratch copy and no rollback. An out-of-range GPU lookup skips
+its own write, the frame presents as drawn, and the flag reaches the bridge through
+`kfx_wgpu_draw_frame_status` at the head of a later frame, within two frames; the
+bridge then counts the frame and takes the existing full redraw. Failure reconstructs
+accepted original triangles with the native gpoly rasterizer using immutable vertices
+and resources; the retained span path uses its CPU interpreter. Reconstruction writes
+scratch storage and commits only after the complete batch succeeds. Invalid replay
+shades or allocation failure leave the native target unchanged and report a rejected
+batch. Failure
 disables GPU consumption for the bridge lifetime. A declined 2D command runs its
 legacy pixel loop once. Neither path reruns gameplay or picking wrappers. Resource/target changes and cache limits
 also flush pending work. Complete GPU target ownership will require equivalent
@@ -226,8 +233,10 @@ same-frame recovery for every new command and persistent effect target.
 
 ### Drawing validation and counters
 
-`KFX_WGPU_DRAW_VERIFY=1` compares bridge output with a separate CPU oracle before
-committing it. For creature shadows the oracle runs on the game's own scratch and its
+Production frames never block: the aggregate validation wait and the per-batch
+validation readbacks are gone, and the status flag reaches the CPU through a mapped
+ring one or two frames later. `KFX_WGPU_DRAW_VERIFY=1` compares bridge output with a
+separate CPU oracle before committing it, and keeps its blocking reads. For creature shadows the oracle runs on the game's own scratch and its
 mask is compared against a blocking read of the resident chain; when the two priors
 already differ the shadow is counted as `shadow_prior_divergence` instead of compared, and
 the CPU scratch is re-seeded from the resident chain so the next shadows are verified again.
@@ -245,7 +254,7 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `gpu_spans` / `gpu_pixels`: retained span-path work only; `native_commands`: committed generic drawing commands, including primitives, sprites, raw images and clears; `gpu_sprite_commands`: committed sprite subset.
 - `cpu_gpoly_spans`: declined span sink calls only; `cpu_replayed_spans`: span recovery.
 - `verified_triangles` / `verified_batches`: successfully compared triangles/batches; `verification_cpu_spans` and `verification_cpu_commands`: explicitly enabled CPU oracle work.
-- `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers, including four-byte triangle validation flags.
+- `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers.
 
 - `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations.
 - `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_host_staged_asset_bytes`: host-side staged asset bytes the drawing context holds, a gauge rather than a total, and not GPU memory.
@@ -254,6 +263,8 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `gpu_shadow_commands`: committed creature shadows. `shadow_scratch_upload_bytes` and `shadow_scratch_copy_bytes` are zero because the mask chain is GPU resident; `shadow_scratch_readback_bytes` is zero unless `KFX_WGPU_DRAW_VERIFY` is set, which adds one blocking 256 KiB scratch read per shadow.
 - `shadow_prior_divergence`: verification only. Counts *events*, not every shadow after the first: a shadow whose resident prior scratch no longer matched the `big_scratch` bytes the software path would have used is skipped for the mask and pixel comparison and kept out of `verified_batches`, and the CPU scratch is then re-seeded from the resident prior so verification resumes on the next shadow. `shadow_scratch_copy_bytes` counts those re-seeds and is zero without them. It measures how often the resident chain and the legacy shared scratch disagree; it is not a failure count.
 - `rejected_commands` / `rejected_spans`: pending generic commands and terrain spans the target never received because the run was dropped without a CPU replay; each such drop invalidates the frame.
+- `frame_checkpoints`, `frame_gpu_checkpoint_copy_bytes`, `frame_validation_waits` and `frame_validation_bytes`: queued-frame flushes and what they used to cost. The copy bytes and both validation figures are structurally zero: a flush records the batches straight into the root and publishes the status word instead of aggregating per-batch flags under a blocking poll.
+- `frame_flagged_invalid`, `frame_status_reads` and `frame_status_stalls`: frames a kernel flagged as having an out-of-range lookup, completed status ring reads, and publishes skipped because every ring slot was still mapped. A stall only defers the flag to the next publish; it never loses it.
 - `gpu_batches` counts bridge submission routes, not GPU submissions. Inside a queued frame a route is an `enqueue_commands` call that may still merge with its neighbour, so a lower count means fewer FFI crossings and fewer command copies, not fewer dispatches; `gpu_submits` and `gpu_dispatches` measure those.
 - No GPU execution time is collected. It was not attempted because the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable and the copy-only submissions carry no pass for `timestamp_writes`.
 

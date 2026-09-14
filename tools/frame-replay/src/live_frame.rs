@@ -80,6 +80,25 @@ pub unsafe extern "C" fn kfx_wgpu_draw_frame_counters(
     }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_frame_status(
+    handle: *mut c_void,
+    flags: *mut u32,
+    error: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    unsafe {
+        let result: Option<i32> = boundary(error, capacity, || {
+            ensure!(!handle.is_null() && !flags.is_null(), "null frame status");
+            *flags = (*handle.cast::<crate::draw::DrawRenderer>())
+                .frame_status()
+                .1;
+            Ok(Some(1))
+        });
+        result.unwrap_or(-1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

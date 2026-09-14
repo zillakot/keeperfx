@@ -242,7 +242,14 @@ Next PRs, in order:
    the counters PR and bridge batching, per-frame checkpoints fall 9.4 → 1.0, blocking
    waits 29.8 → 2.9 and shadow readback bytes 2.43 MB → 0 at busy 640x480; the two
    remaining waits are the bridge's full-target readbacks for CPU presentation).
-3. The single-stream restructure, guided by a design document added under
+3. Non-blocking validation and no double copy (landed: the validation flag lives in the
+   raster kernels and reaches the CPU through a mapped ring one or two frames later, and
+   queued frames write the root directly). At busy 640x480 with GPU drawing behind the SDL
+   presenter: blocking waits 3.0 → 2.0 per frame, aggregate validation waits 1.0 → 0,
+   checkpoint copy bytes 2.46 MB → 0, submits 116.7 → 76.4, buffer allocations 241.6 → 200.6,
+   frame interval 19.75 ms → 18.58 ms and observed 50.6 → 53.8 frames/s. The two remaining
+   waits are the CPU presenter's full-target readbacks; the wgpu-presenter pair is outstanding.
+4. The single-stream restructure, guided by a design document added under
    [`docs/architecture/`](../architecture/).
 
 Coverage work remains independent of performance: arbitrary Lua pixel/batch
@@ -351,7 +358,8 @@ compared 597,800 setup words and 6,202,175 palette indices, including pitch padd
 against independent native output on Metal. It consumes GPU-produced rows directly
 in a subsequent GPU pass. The production [triangle test](../../tools/frame-replay/tests/draw_triangles_gpu.rs)
 at `17e993a84` separately checks all 1,225 triangles in ordered overlapping batches,
-immutable texture/fade versions and atomic shade/resource/coordinate rejection.
+immutable texture/fade versions, host resource/coordinate rejection and the flagged
+out-of-range shade that skips its own pixels.
 Independent review fixes at `ab2300ea1` add allocation and pixel-dispatch limits;
 three limited-device Metal cases preserve the target and a usable device. Counter
 hardening at `10eb96a35` counts verified triangles only after a complete exact

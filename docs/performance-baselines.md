@@ -150,9 +150,15 @@ measured window, emitted through the existing JSON sidecar; there is no per-fram
 file I/O. The report gives per-frame min, mean, p95 and max plus the window total
 for queue submits, full-target compute dispatches, blocking device polls and
 their measured host wait time, frame checkpoints and GPU-to-GPU checkpoint copy
-bytes, aggregate validation waits, command and asset upload bytes, GPU readback
-bytes, full-target readbacks, buffer allocations and bytes, batches, commands and
-ordered sprites. `dispatches` counts every compute dispatch the drawing context
+bytes, aggregate validation waits, kernel-flagged invalid frames, skipped status
+publishes, command and asset upload bytes, GPU readback bytes, full-target
+readbacks, buffer allocations and bytes, batches, commands and ordered sprites.
+`checkpoint_copy_bytes` and `validation_waits` are structurally zero: a queued
+frame records its batches straight into the root and publishes its validation flag
+through a mapped ring instead of a blocking poll. `flagged_invalid_frames` counts
+frames a raster kernel found an out-of-range lookup in — each one is presented as
+drawn and then redrawn — and `status_stalls` counts publishes skipped because
+every ring slot was still mapped, which defers a flag rather than losing it. `dispatches` counts every compute dispatch the drawing context
 issues, including the single-workgroup ordered-sprite passes.
 `host_staged_asset_bytes` is a gauge sampled at frame end holding the CPU copies
 the drawing context stages, not GPU memory, so its window total is meaningless.

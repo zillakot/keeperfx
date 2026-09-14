@@ -94,7 +94,6 @@ impl DrawRenderer {
             return Ok(());
         }
         let tiles = bin_commands(&words, width, height, limit)?;
-        self.prepare_trig();
         let cb = buffer(
             &self.device,
             &mut self.counters,
@@ -139,18 +138,6 @@ impl DrawRenderer {
         }
         self.counters.asset_upload_bytes += uploaded;
         self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4 + 20;
-        let valid = self.validate_trig_batch(
-            &cb,
-            &assets,
-            &params,
-            width,
-            height,
-            mask.map(|source| (source, slot)),
-        )?;
-        if self.deferred_status.is_none() {
-            self.counters.readback_bytes += 4;
-        }
-        ensure!(valid, "snapshot triangle invalid lookup");
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.compute.get_bind_group_layout(0),
@@ -161,9 +148,13 @@ impl DrawRenderer {
                 entry(3, &params),
                 entry(4, &tb),
                 entry(6, self.shadow_slot_binding()),
+                entry(7, self.status_binding()),
             ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        if let Some(source) = mask {
+            self.record_shadow_mask(&mut encoder, source, slot)?;
+        }
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.compute);

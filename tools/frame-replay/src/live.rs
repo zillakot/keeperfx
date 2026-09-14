@@ -1092,6 +1092,15 @@ mod draw_abi_tests {
                 ),
                 -1
             );
+            assert_eq!(
+                crate::live::frame_queue::kfx_wgpu_draw_frame_status(
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    error.as_mut_ptr(),
+                    error.len()
+                ),
+                -1
+            );
             assert!(
                 kfx_wgpu_draw_context(std::ptr::null_mut(), error.as_mut_ptr(), error.len())
                     .is_null()

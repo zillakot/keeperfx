@@ -81,7 +81,8 @@ constexpr int DrawingGaugeCount = 2;
 /* Names must stay in PerformanceDrawingCounters member order; gauges come last. */
 const char* const drawing_counter_names[DrawingCounterCount] = {
     "submits", "dispatches", "waits", "wait_ns", "checkpoints", "checkpoint_copy_bytes",
-    "validation_waits", "upload_bytes", "readback_bytes", "full_readbacks", "full_readback_bytes",
+    "validation_waits", "flagged_invalid_frames", "status_stalls",
+    "upload_bytes", "readback_bytes", "full_readbacks", "full_readback_bytes",
     "buffers", "buffer_bytes", "batches", "commands", "ordered_sprites",
     "arena_evictions", "arena_overflows", "arena_bytes_uploaded",
     "host_staged_asset_bytes", "arena_bytes_resident"};
