@@ -247,7 +247,7 @@ static void map_command(uint32_t *h)
                 memcpy(bytes+h[14], PanelColours, h[15]);
             }
             struct KfxGpolyTarget target = {lbDisplay.WScreen, h[1], h[2], h[1]};
-            struct KfxWgpuNativeResource source = {bytes, length, 1, 1, 1};
+            struct KfxWgpuNativeResource source = {bytes, length, 1, 1, 1, NULL, 0};
             struct KfxWgpuDrawCommand command = {0};
             command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
             command.kind = KFX_WGPU_DRAW_MINIMAP;

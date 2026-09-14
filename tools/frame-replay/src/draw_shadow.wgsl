@@ -1,7 +1,9 @@
 @group(0) @binding(0) var<storage,read_write> scratch:array<u32>;
 @group(0) @binding(1) var<storage,read> source:array<u32>;
-@group(0) @binding(2) var<storage,read_write> slot:array<u32>;
-fn word(at:u32)->u32 {return source[at]|(source[at+1u]<<8u)|(source[at+2u]<<16u)|(source[at+3u]<<24u);}
+@group(0) @binding(2) var<uniform> arena:vec4<u32>;
+@group(0) @binding(3) var<storage,read_write> slot:array<u32>;
+fn asset(at:u32)->u32 {return source[arena.x+at];}
+fn word(at:u32)->u32 {return asset(at)|(asset(at+1u)<<8u)|(asset(at+2u)<<16u)|(asset(at+3u)<<24u);}
 // One invocation owns one address, so reading and writing the resident scratch needs no second buffer.
 @compute @workgroup_size(8,8)
 fn shadow_mask(@builtin(global_invocation_id) id:vec3<u32>) {
@@ -16,11 +18,11 @@ fn shadow_mask(@builtin(global_invocation_id) id:vec3<u32>) {
     if address>=first && source_row<word(12u) {
         var cursor=152u;
         for(var row=0u;row<source_row;row++) {
-            loop {let run=source[cursor];cursor++;if run==0u {break;} if run<128u {cursor+=run;}}
+            loop {let run=asset(cursor);cursor++;if run==0u {break;} if run<128u {cursor+=run;}}
         }
         var x=0u;
         loop {
-            let run=source[cursor];cursor++;
+            let run=asset(cursor);cursor++;
             if run==0u {break;}
             if run>=128u {x+=256u-run;continue;}
             var artwork_x=i32(address)-i32(256u*(offy+source_row)+offx);

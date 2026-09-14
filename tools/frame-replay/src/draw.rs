@@ -1,3 +1,6 @@
+#[path = "draw_arena.rs"]
+mod arena;
+pub use arena::ArenaCounters;
 #[path = "draw_frame.rs"]
 mod frame_queue;
 pub use frame_queue::FrameCounters;
@@ -187,6 +190,8 @@ pub struct DrawRenderer {
     frame_counters: FrameCounters,
     deferred_status: Option<Vec<wgpu::Buffer>>,
     deferred_snapshot_releases: Vec<u64>,
+    arena: arena::Arena,
+    asset_generation: u64,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -256,6 +261,7 @@ impl DrawRenderer {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+        let limits = device.limits();
         Ok(Self {
             device,
             queue,
@@ -281,6 +287,12 @@ impl DrawRenderer {
             frame_counters: FrameCounters::default(),
             deferred_status: None,
             deferred_snapshot_releases: Vec::new(),
+            arena: arena::Arena::new(
+                limits
+                    .max_storage_buffer_binding_size
+                    .min(limits.max_buffer_size),
+            ),
+            asset_generation: 1,
             failure: renderer.failure.clone(),
         })
     }
@@ -309,6 +321,16 @@ impl DrawRenderer {
 
     pub fn counters(&self) -> Counters {
         self.counters
+    }
+
+    pub fn arena_counters(&self) -> ArenaCounters {
+        self.arena.counters()
+    }
+
+    /// Retires every arena resident so the next batch re-uploads it; used when
+    /// a discarded frame leaves the arena's residency unproven.
+    pub(super) fn invalidate_assets(&mut self) {
+        self.asset_generation += 1;
     }
 
     /// Host-side staged asset bytes the drawing context holds; not GPU memory and
@@ -422,6 +444,7 @@ impl DrawRenderer {
         let released = self.resources.remove(&id).context("unknown resource")?;
         debug_assert!(self.resource_bytes >= released.bytes.len());
         self.resource_bytes = self.resource_bytes.saturating_sub(released.bytes.len());
+        self.arena.forget(id);
         Ok(())
     }
 
@@ -444,13 +467,24 @@ impl DrawRenderer {
             self.prepare_trig();
         }
         let (target_width, target_height) = self.target_dimensions(target)?;
-        let (words, assets) = pack_commands(
+        let limit = self.storage_limit() as usize;
+        let mut packer = asset_packer(
+            &self.device,
+            &self.queue,
+            &mut self.arena,
+            &mut self.counters,
+            self.asset_generation,
+            limit,
+        );
+        let words = pack_commands(
+            &mut packer,
             commands,
             &self.resources,
             target_width,
             target_height,
-            self.storage_limit() as usize,
+            limit,
         )?;
+        let assets = packer.finish();
         let target = self.targets.get(&target).context("unknown target")?.clone();
         if commands.is_empty() {
             return Ok(());
@@ -481,13 +515,18 @@ impl DrawRenderer {
             &words,
             wgpu::BufferUsages::STORAGE,
         );
-        let asset_buffer = buffer(
-            &self.device,
-            &mut self.counters,
-            "immutable asset versions",
-            &assets,
-            wgpu::BufferUsages::STORAGE,
-        );
+        let asset_buffer = match &assets {
+            Some(assets) => buffer(
+                &self.device,
+                &mut self.counters,
+                "immutable asset versions",
+                assets,
+                wgpu::BufferUsages::STORAGE,
+            ),
+            None => self
+                .arena
+                .binding(&self.device, &self.queue, &mut self.counters),
+        };
         let parameters = buffer(
             &self.device,
             &mut self.counters,
@@ -504,7 +543,9 @@ impl DrawRenderer {
             ],
             wgpu::BufferUsages::UNIFORM,
         );
-        self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+        if let Some(assets) = &assets {
+            self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+        }
         self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4;
         if commands.iter().any(|c| c.kind == TRIG) {
             let valid = self.validate_trig_batch(
@@ -719,6 +760,107 @@ fn bounds(x: i32, y: i32, width: u32, height: u32) -> Result<[u32; 4]> {
     ])
 }
 
+/// Resolves an asset handle to the word offset the kernels sample from, either
+/// in the persistent arena or in a batch-lifetime asset vector.
+pub(super) enum AssetPacker<'a> {
+    Batch {
+        assets: Vec<u32>,
+        offsets: HashMap<u64, u32>,
+        limit: usize,
+    },
+    Arena {
+        device: &'a wgpu::Device,
+        queue: &'a wgpu::Queue,
+        arena: &'a mut arena::Arena,
+        counters: &'a mut Counters,
+        generation: u64,
+    },
+}
+
+pub(super) fn asset_packer<'a>(
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    arena: &'a mut arena::Arena,
+    counters: &'a mut Counters,
+    generation: u64,
+    limit: usize,
+) -> AssetPacker<'a> {
+    if arena.enabled() {
+        arena.begin_batch();
+        AssetPacker::Arena {
+            device,
+            queue,
+            arena,
+            counters,
+            generation,
+        }
+    } else {
+        AssetPacker::batch(limit)
+    }
+}
+
+impl AssetPacker<'_> {
+    pub(super) fn batch(limit: usize) -> Self {
+        Self::Batch {
+            assets: Vec::new(),
+            offsets: HashMap::new(),
+            limit,
+        }
+    }
+
+    pub(super) fn offset(&mut self, id: u64, bytes: &[u8]) -> Result<u32> {
+        self.prefix(id, bytes, bytes.len())
+    }
+
+    /// Only the batch path honours `length`; the arena keeps whole resources
+    /// resident and the kernels read no further than their own bounds.
+    pub(super) fn prefix(&mut self, id: u64, bytes: &[u8], length: usize) -> Result<u32> {
+        match self {
+            Self::Batch {
+                assets,
+                offsets,
+                limit,
+            } => {
+                if let Some(offset) = offsets.get(&id) {
+                    return Ok(*offset);
+                }
+                ensure!(
+                    assets
+                        .len()
+                        .checked_add(length)
+                        .context("asset length overflow")?
+                        <= *limit / 4,
+                    arena::OVERFLOW
+                );
+                let offset = assets.len() as u32;
+                assets.extend(bytes[..length].iter().map(|byte| u32::from(*byte)));
+                offsets.insert(id, offset);
+                Ok(offset)
+            }
+            Self::Arena {
+                device,
+                queue,
+                arena,
+                counters,
+                generation,
+            } => arena.offset_of(device, queue, counters, id, *generation, bytes),
+        }
+    }
+
+    /// `None` when the assets are resident in the arena instead.
+    pub(super) fn finish(self) -> Option<Vec<u32>> {
+        match self {
+            Self::Batch { mut assets, .. } => {
+                if assets.is_empty() {
+                    assets.push(0);
+                }
+                Some(assets)
+            }
+            Self::Arena { .. } => None,
+        }
+    }
+}
+
 /// Kinds `pack_commands` accepts in a multi-command batch. `WgpuTerrainBridge::PacksInBatch`
 /// mirrors this set; a change here needs the same change there.
 pub(crate) fn packable(kind: u32) -> bool {
@@ -726,19 +868,18 @@ pub(crate) fn packable(kind: u32) -> bool {
 }
 
 fn pack_commands(
+    packer: &mut AssetPacker,
     commands: &[Command],
     resources: &HashMap<u64, Resource>,
     width: u32,
     height: u32,
     limit: usize,
-) -> Result<(Vec<u32>, Vec<u32>)> {
+) -> Result<Vec<u32>> {
     ensure!(
         commands.len() <= MAX_COMMANDS && commands.len() * 112 <= limit,
         "command batch exceeds limit"
     );
     let mut words = Vec::with_capacity(commands.len() * 28);
-    let mut assets = Vec::new();
-    let mut offsets = HashMap::new();
     for c in commands {
         ensure!(
             c.abi_version == ABI_VERSION && c.reserved == [0; 3],
@@ -778,7 +919,7 @@ fn pack_commands(
         ) {
             let source = resources.get(&c.source).context("unknown source version")?;
             source_pitch = source.pitch;
-            source_offset = pack_resource(c.source, source, &mut offsets, &mut assets, limit)?;
+            source_offset = packer.offset(c.source, &source.bytes)?;
             if matches!(c.kind, IMAGE | RAW_IMAGE | TILED_IMAGE) {
                 ensure!(
                     c.width > 0 && c.height > 0 && c.source_width > 0 && c.source_height > 0,
@@ -855,7 +996,7 @@ fn pack_commands(
                     low = low.wrapping_add(c.step_low);
                 }
             }
-            table_offset = pack_resource(c.table, table, &mut offsets, &mut assets, limit)?;
+            table_offset = packer.offset(c.table, &table.bytes)?;
         }
         words.extend([c.kind, c.blend, 0, c.colour]);
         words.extend(rectangle);
@@ -865,34 +1006,7 @@ fn pack_commands(
         words.extend([c.start_low, c.start_high, c.step_low, c.step_high]);
         words.extend([c.transparent, 0, 0, 0]);
     }
-    if assets.is_empty() {
-        assets.push(0);
-    }
-    Ok((words, assets))
-}
-
-fn pack_resource(
-    id: u64,
-    resource: &Resource,
-    offsets: &mut HashMap<u64, u32>,
-    assets: &mut Vec<u32>,
-    limit: usize,
-) -> Result<u32> {
-    if let Some(offset) = offsets.get(&id) {
-        return Ok(*offset);
-    }
-    ensure!(
-        assets
-            .len()
-            .checked_add(resource.bytes.len())
-            .context("asset length overflow")?
-            <= limit / 4,
-        "asset batch exceeds storage limit"
-    );
-    let offset = assets.len() as u32;
-    assets.extend(resource.bytes.iter().map(|byte| u32::from(*byte)));
-    offsets.insert(id, offset);
-    Ok(offset)
+    Ok(words)
 }
 
 fn buffer(
@@ -1030,7 +1144,8 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            assert!(pack_commands(&[command], &resources, 32, 32, 1 << 20).is_err());
+            let mut packer = AssetPacker::batch(1 << 20);
+            assert!(pack_commands(&mut packer, &[command], &resources, 32, 32, 1 << 20).is_err());
         }
         assert!(validate_resource(31, 32, 1, 32).is_err());
         assert!(validate_resource(256, 32, 8, 31).is_err());
@@ -1061,7 +1176,9 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let (words, _) = pack_commands(&commands, &HashMap::new(), 32, 32, 1 << 20).unwrap();
+        let mut packer = AssetPacker::batch(1 << 20);
+        let words =
+            pack_commands(&mut packer, &commands, &HashMap::new(), 32, 32, 1 << 20).unwrap();
         let tiles = bin_commands(&words, 32, 32, 1024).unwrap();
         for (tile, expected) in [&[0, 1, 2][..], &[0, 1], &[0, 1], &[0, 1]]
             .iter()

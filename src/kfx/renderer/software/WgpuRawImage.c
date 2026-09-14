@@ -31,7 +31,7 @@ static int submit(uint8_t *dst, int pitch, int height, struct KfxWgpuDrawCommand
         (size_t)sw * sh > 16 * 1024 * 1024 || !oracle ||
         !disjoint(source, (size_t)sw * sh, dst, (size_t)pitch * height)) return 0;
     struct KfxGpolyTarget target = {dst, pitch, height, pitch};
-    struct KfxWgpuNativeResource asset = {source, (size_t)sw * sh, sw, sh, sw};
+    struct KfxWgpuNativeResource asset = {source, (size_t)sw * sh, sw, sh, sw, NULL, 0};
     command->abi_version = KFX_WGPU_DRAW_ABI_VERSION;
     command->transparent = KFX_WGPU_DRAW_OPAQUE;
     command->clip_width = pitch;

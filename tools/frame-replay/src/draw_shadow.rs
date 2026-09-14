@@ -146,15 +146,38 @@ impl DrawRenderer {
             "shadow asset exceeds GPU limit"
         );
         ensure!(slot < SLOTS, "shadow mask slot exceeds the resident ring");
-        let values: Vec<_> = asset.bytes.iter().map(|&b| u32::from(b)).collect();
         self.shadow_residency()?;
         self.shadow_pipeline()?;
-        let input = buffer(
+        let limit = self.storage_limit() as usize;
+        let bytes = &self.resources[&source].bytes;
+        let mut packer = asset_packer(
+            &self.device,
+            &self.queue,
+            &mut self.arena,
+            &mut self.counters,
+            self.asset_generation,
+            limit,
+        );
+        let base = packer.offset(source, bytes)?;
+        let values = packer.finish();
+        let input = match &values {
+            Some(values) => buffer(
+                &self.device,
+                &mut self.counters,
+                "immutable shadow artwork",
+                values,
+                wgpu::BufferUsages::STORAGE,
+            ),
+            None => self
+                .arena
+                .binding(&self.device, &self.queue, &mut self.counters),
+        };
+        let region = buffer(
             &self.device,
             &mut self.counters,
-            "immutable shadow artwork",
-            &values,
-            wgpu::BufferUsages::STORAGE,
+            "shadow arena region",
+            &[base, 0, 0, 0],
+            wgpu::BufferUsages::UNIFORM,
         );
         let pipeline = self.shadow.as_ref().unwrap();
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -163,8 +186,9 @@ impl DrawRenderer {
             entries: &[
                 entry(0, self.shadow_scratch.as_ref().unwrap()),
                 entry(1, &input),
+                entry(2, &region),
                 wgpu::BindGroupEntry {
-                    binding: 2,
+                    binding: 3,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: self.shadow_slots.as_ref().unwrap(),
                         offset: u64::from(slot) * MASK_WORDS as u64 * 4,
@@ -180,7 +204,9 @@ impl DrawRenderer {
             pass.dispatch_workgroups(32, 32, 1);
         }
         self.counters.dispatches += 1;
-        self.counters.asset_upload_bytes += values.len() as u64 * 4;
+        if let Some(values) = &values {
+            self.counters.asset_upload_bytes += values.len() as u64 * 4;
+        }
         self.counters.commands += 1;
         Ok(())
     }

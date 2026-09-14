@@ -137,7 +137,7 @@ fn snapshots_preserve_order_regions_pitch_versions_and_queued_lifetimes() {
     }
     reference(&mut expected, 13, &cropped, &region_pixels, 9, &[]);
     draw.release_target_snapshot(region).unwrap();
-    assert_eq!(draw.counters().asset_upload_bytes, 8);
+    assert_eq!(draw.counters().asset_upload_bytes, 0);
     assert_eq!(draw.counters().readback_bytes, 0);
     assert_eq!(draw.readback(output).unwrap(), expected);
     draw.submit_target_images(output, &[image(later, 13, 7)])
@@ -217,7 +217,7 @@ fn overlapping_images_use_immutable_sources_and_ordered_blend_destinations() {
         .unwrap();
     draw.release_target_snapshot(after).unwrap();
     assert_eq!(draw.counters().readback_bytes, 0);
-    assert_eq!(draw.counters().asset_upload_bytes, 65536 * 4 + 8);
+    assert_eq!(draw.counters().asset_upload_bytes, 65536 * 4);
     assert_eq!(
         draw.target_resource_counters().sampling_copy_bytes,
         64 * 4 * 2

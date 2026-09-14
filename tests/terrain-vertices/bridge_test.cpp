@@ -126,7 +126,7 @@ int main()
             }
             bridge.Boundary(false);
             uint8_t source_pixels[4] = {static_cast<uint8_t>(batch), 11, 21, 31};
-            KfxWgpuNativeResource source = {source_pixels, 4, 2, 2, 2};
+            KfxWgpuNativeResource source = {source_pixels, 4, 2, 2, 2, nullptr, 0};
             KfxWgpuDrawCommand hud = {};
             hud.abi_version = 1;
             hud.kind = KFX_WGPU_DRAW_IMAGE;
@@ -136,6 +136,9 @@ int main()
             assert(bridge.SubmitNative(frame, hud, &source, nullptr, hud_oracle, source_pixels) == 1);
             hud_oracle(expected.data() + 16, 87, source_pixels);
         }
+        // Batched commands are counted at their flush, and this snapshot is about GPU-side
+        // accumulation, so close the run first. Flush submits without materializing.
+        bridge.Flush();
         const auto before = bridge.GetCounters();
         assert(actual == initial && actual != expected);
         assert(before.target_creations == 1 && before.target_alias_barriers == 0);

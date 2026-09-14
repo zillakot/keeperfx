@@ -111,7 +111,6 @@ impl DrawRenderer {
                 .all(|n| n <= self.device.limits().max_compute_workgroups_per_dimension),
             "lens dispatch exceeds device limit"
         );
-        let words: Vec<u32> = source.bytes.iter().map(|&b| u32::from(b)).collect();
         if self.effects.is_none() {
             let shader = self
                 .device
@@ -131,21 +130,39 @@ impl DrawRenderer {
                 });
             self.effects = Some(pipeline);
         }
-        let pipeline = self.effects.as_ref().unwrap();
-        let assets = buffer(
+        let limit = self.storage_limit() as usize;
+        let bytes = &self.resources[&command.source].bytes;
+        let mut packer = asset_packer(
             &self.device,
+            &self.queue,
+            &mut self.arena,
             &mut self.counters,
-            "immutable lens sources and maps",
-            &words,
-            wgpu::BufferUsages::STORAGE,
+            self.asset_generation,
+            limit,
         );
+        let base = packer.offset(command.source, bytes)?;
+        let words = packer.finish();
+        let assets = match &words {
+            Some(words) => buffer(
+                &self.device,
+                &mut self.counters,
+                "immutable lens sources and maps",
+                words,
+                wgpu::BufferUsages::STORAGE,
+            ),
+            None => self
+                .arena
+                .binding(&self.device, &self.queue, &mut self.counters),
+        };
+        let target = &self.targets[&target_id];
         let view = buffer(
             &self.device,
             &mut self.counters,
             "target view",
-            &[target.width, target.pitch, target.offset, 0],
+            &[target.width, target.pitch, target.offset, base],
             wgpu::BufferUsages::UNIFORM,
         );
+        let pipeline = self.effects.as_ref().unwrap();
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native lens"),
             layout: &pipeline.get_bind_group_layout(0),
@@ -170,7 +187,9 @@ impl DrawRenderer {
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += 1;
-        self.counters.asset_upload_bytes += words.len() as u64 * 4;
+        if let Some(words) = &words {
+            self.counters.asset_upload_bytes += words.len() as u64 * 4;
+        }
         Ok(())
     }
 }
