@@ -23,11 +23,16 @@ struct KeeperSprite *keepersprite_array(unsigned short n) { (void)n; return sele
 static long heap_manage_keepersprite(unsigned short n) { (void)n; heap_calls++; return 1; }
 #include "shadow_oracle.inc"
 static unsigned char pixels[83 * 63], shadow_storage[65536 + 8], rle[132000];
+/* The engine answers an invalidated frame with a full CPU redraw before drawing again. */
+void shadow_native_recover(void);
 static uint32_t seed = 0x971413;
 static uint32_t random32(void) { seed = seed * 1664525u + 1013904223u; return seed; }
 static FILE *output;
 static unsigned emitted;
-uint64_t shadow_hash;
+static unsigned char carried[65536];
+/* Simulation code writes big_scratch from offset 0; set to model a prior the GPU cannot know. */
+unsigned shadow_perturb_cases;
+uint64_t shadow_hash, shadow_scratch_hash;
 static void word(FILE *f, uint32_t n) { unsigned char b[] = {n,n>>8,n>>16,n>>24}; if(fwrite(b,1,4,f)!=4)abort(); }
 #ifndef KFX_SHADOW_NATIVE
 int kfx_wgpu_native_enabled(void) { return !fixture_disabled; }
@@ -40,6 +45,7 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target, const struct KfxWg
     KfxWgpuNativeOracle oracle, void *context) {
     (void)target;(void)command;(void)source;(void)table;(void)oracle;(void)context;abort();
 }
+void shadow_native_recover(void) {}
 int kfx_wgpu_native_shadow(const struct KfxGpolyTarget *target, const struct KfxWgpuDrawCommand *command,
     const struct KfxWgpuNativeResource *source, const struct KfxWgpuNativeResource *table,
     uint8_t *mirror, KfxWgpuNativeOracle oracle, void *context) {
@@ -54,7 +60,8 @@ int kfx_wgpu_native_shadow(const struct KfxGpolyTarget *target, const struct Kfx
 }
 #endif
 int shadow_cases(FILE *file, int expected_accept) {
-    output=file; seed=0x971413; shadow_hash=0;
+    output=file; seed=0x971413; shadow_hash=0; shadow_scratch_hash=0;
+    memset(carried,0,sizeof(carried));
     memset(pixels,167,sizeof(pixels));memset(shadow_storage,203,sizeof(shadow_storage));
     vec_screen=pixels+83;poly_screen=pixels;big_scratch=shadow_storage+4;vec_map=big_scratch;
     vec_mode=10;
@@ -84,7 +91,8 @@ int shadow_cases(FILE *file, int expected_accept) {
             }
             rle[n++]=0;
         }
-        for(unsigned i=0;i<65536;i++)big_scratch[i]=random32()>>24;
+        memcpy(big_scratch,carried,65536);
+        if(shadow_perturb_cases&&c>=1&&c<=2)for(unsigned i=0;i<65536;i++)big_scratch[i]^=0x5au;
         struct PolyPoint v[]={{3,53,0,(fh-1)<<16,0},{7,4,0,0,0},
             {72,2,(fw-1)<<16,0,0},{75,49,(fw-1)<<16,(fh-1)<<16,0}};
         if(c%3==0){v[0].X-=20;v[1].X-=20;v[2].X+=20;v[3].X+=20;}
@@ -92,8 +100,9 @@ int shadow_cases(FILE *file, int expected_accept) {
         memcpy(oracle.vertices,v,sizeof(v));vec_colour=c%64;
         int accepted=kfx_wgpu_shadow_sprite(&oracle.sprite,v,big_scratch,shadow_oracle,&oracle);
         if(accepted!=(expected_accept==2 ? c==0 : expected_accept)) {fprintf(stderr,"shadow acceptance mismatch case %u\n",c);return 1;}
-        if(!accepted)shadow_oracle(vec_screen,83,&oracle);
-        for(unsigned i=0;i<65536;i++)shadow_hash=shadow_hash*33+big_scratch[i];
+        if(!accepted){shadow_native_recover();shadow_oracle(vec_screen,83,&oracle);}
+        memcpy(carried,big_scratch,65536);
+        for(unsigned i=0;i<65536;i++)shadow_scratch_hash=shadow_scratch_hash*33+big_scratch[i];
         for(unsigned y=0;y<61;y++)for(unsigned x=0;x<79;x++)shadow_hash=shadow_hash*33+vec_screen[y*83+x];
         for(unsigned y=0;y<63;y++)for(unsigned x=(y==0||y==62)?0:79;x<83;x++)if(pixels[y*83+x]!=167)abort();
         for(unsigned i=0;i<padding;i++)if(shadow_storage[i]!=203)abort();

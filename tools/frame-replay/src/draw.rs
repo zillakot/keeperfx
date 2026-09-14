@@ -173,6 +173,10 @@ pub struct DrawRenderer {
     effects: Option<wgpu::ComputePipeline>,
     trig_validate: Option<wgpu::ComputePipeline>,
     shadow: Option<wgpu::ComputePipeline>,
+    shadow_scratch: Option<wgpu::Buffer>,
+    shadow_slots: Option<wgpu::Buffer>,
+    shadow_placeholder: wgpu::Buffer,
+    shadow_next_slot: u32,
     minimap: Option<minimap::MinimapState>,
     triangles: Option<triangles::TrianglePipelines>,
     present: wgpu::RenderPipeline,
@@ -251,6 +255,12 @@ impl DrawRenderer {
             cache: None,
         });
         renderer.check_status()?;
+        let shadow_placeholder = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unbound creature shadow mask slots"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let limits = device.limits();
         Ok(Self {
             device,
@@ -260,6 +270,10 @@ impl DrawRenderer {
             effects: None,
             trig_validate: None,
             shadow: None,
+            shadow_scratch: None,
+            shadow_slots: None,
+            shadow_placeholder,
+            shadow_next_slot: 0,
             minimap: None,
             triangles: None,
             present,
@@ -540,6 +554,7 @@ impl DrawRenderer {
                 &parameters,
                 target.width,
                 target.height,
+                None,
             )?;
             if self.deferred_status.is_none() {
                 self.counters.readback_bytes += 4;
@@ -556,6 +571,7 @@ impl DrawRenderer {
                 entry(2, &asset_buffer),
                 entry(3, &parameters),
                 entry(4, &tile_buffer),
+                entry(6, self.shadow_slot_binding()),
             ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());

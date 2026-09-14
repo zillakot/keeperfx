@@ -132,6 +132,7 @@ impl DrawRenderer {
                 &parameters,
                 width,
                 height,
+                None,
             )?;
             if self.deferred_status.is_none() {
                 self.counters.readback_bytes += 4;
@@ -164,6 +165,8 @@ impl DrawRenderer {
         self.trig_validate = Some(pipeline);
     }
 
+    /// `mask` records a shadow mask pass ahead of the validation dispatch, so validation
+    /// samples the slot the batch actually reads rather than its previous contents.
     pub(super) fn validate_trig_batch(
         &mut self,
         commands: &wgpu::Buffer,
@@ -171,6 +174,7 @@ impl DrawRenderer {
         params: &wgpu::Buffer,
         width: u32,
         height: u32,
+        mask: Option<(u64, u32)>,
     ) -> Result<bool> {
         let status = buffer(
             &self.device,
@@ -189,6 +193,10 @@ impl DrawRenderer {
         } else {
             None
         };
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        if let Some((source, slot)) = mask {
+            self.record_shadow_mask(&mut encoder, source, slot)?;
+        }
         let pipeline = self.trig_validate.as_ref().unwrap();
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -198,9 +206,9 @@ impl DrawRenderer {
                 entry(2, assets),
                 entry(3, params),
                 entry(5, &status),
+                entry(6, self.shadow_slot_binding()),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(pipeline);

@@ -55,6 +55,7 @@ public:
         uint64_t native_commands = 0, verification_cpu_commands = 0, gpu_sprite_commands = 0;
         uint64_t gpu_ordered_sprites = 0;
         uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
+        uint64_t shadow_prior_divergence = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
         uint64_t bridge_solo_batches = 0;
         uint64_t rejected_commands = 0, rejected_spans = 0;
@@ -165,14 +166,17 @@ private:
     std::vector<uint8_t> m_expected, m_cpu_checkpoint;
     bool m_oracle_active = false;
     uint8_t* m_shadow_scratch = nullptr;
+    // Verification only: the resident GPU scratch as of the last comparison.
+    std::vector<uint8_t> m_shadow_prior = std::vector<uint8_t>(65536, 0);
     void* m_context = nullptr;
     uint64_t m_target = 0;
     uint32_t m_width = 0, m_height = 0;
     uint64_t m_fail_after;
     bool m_allow_terrain = false;
     KfxGpolyTarget m_native_target = {};
-    // One run per contiguous same-source stretch; the three vectors are read in run order.
-    struct PendingRun { bool triangles; uint32_t count; };
+    // One run per contiguous same-route stretch; the three vectors are read in run order.
+    enum RunKind : uint8_t { kRunCommands, kRunTriangles, kRunShadow };
+    struct PendingRun { RunKind kind; uint32_t count; };
     std::vector<KfxWgpuDrawCommand> m_pending;
     std::vector<uint64_t> m_pending_sources;
     std::vector<KfxWgpuTriangle> m_triangles;

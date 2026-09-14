@@ -35,6 +35,12 @@ fn trig_shade(initial: i32, step: i32, count: u32, mode: u32) -> u32 {
     }
     return shade;
 }
+@group(0) @binding(6) var<storage, read> shadow_slots: array<u32>;
+// A non-zero assets.w selects the resident mask slot (1-based) instead of the batch arena.
+fn trig_texel(command: Command, uv: u32) -> u32 {
+    if command.assets.w != 0u { return shadow_slots[(command.assets.w - 1u) * 65536u + uv]; }
+    return assets[command.assets.x + 60u + uv];
+}
 fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
     let p = trig_vertex(command.assets.x, 0u);
     let q = trig_vertex(command.assets.x, 1u);
@@ -153,7 +159,7 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
         let v = (u32(clipped.y >> 16u) + count * u32(step.y >> 16u)) & select(31u, 255u, mode == 26u);
         let uv = (v << 8u) | u;
         if uv >= command.source.y { return 257u; }
-        let source = assets[command.assets.x + 60u + uv];
+        let source = trig_texel(command, uv);
         let shade = ((u32(clipped.z >> 8u) + count * (u32(step.z >> 8u) & 65535u)) >> 8u) & 255u;
         if shade >= 64u { return 257u; }
         let shaded = assets[fade + (shade << 8u) + source];
@@ -170,7 +176,7 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
     }
     let uv = ((v & select(31u, 255u, full_v)) << 8u) | ((u32(value.x) >> 16u) & 255u);
     if uv >= command.source.y { return 257u; }
-    let source = assets[command.assets.x + 60u + uv];
+    let source = trig_texel(command, uv);
     if mode == 9u {
         if source == 0u { return destination; }
         if source >= 64u { return 257u; }

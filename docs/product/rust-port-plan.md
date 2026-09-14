@@ -238,7 +238,10 @@ Next PRs, in order:
 
 1. Measured-window drawing-backend, submit, wait and transfer counters, plus the
    two free fixes (in progress).
-2. Shadows as queued commands rather than synchronous readback chains.
+2. Shadows as queued commands rather than synchronous readback chains (landed: with
+   the counters PR and bridge batching, per-frame checkpoints fall 9.4 → 1.0, blocking
+   waits 29.8 → 2.9 and shadow readback bytes 2.43 MB → 0 at busy 640x480; the two
+   remaining waits are the bridge's full-target readbacks for CPU presentation).
 3. The single-stream restructure, guided by a design document added under
    [`docs/architecture/`](../architecture/).
 
@@ -329,7 +332,7 @@ ownership, synchronization, counters and failure behavior.
 | Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Original vertices → GPU setup, clipping, scan conversion and texture/shade stores; general-triangle kernels cover the other implemented modes | Broader scene/resource and allocation/alias coverage; full offscreen possession target ownership |
 | Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` original-vertex terrain batching is wired | Independent front-view runtime proof; sprites and interleaved overlays |
 | General triangles: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | Original vertices feed GPU kernels for modes 0–26; native adapter covers 26 modes and dedicated shadows provide mode10 | Allocation/alias fallback, combined-head native coverage and resident target integration |
-| Creature shadows: [shadow adapter](../../src/kfx/renderer/software/WgpuShadow.h), world dispatch | Original RLE/frame metadata → GPU silhouette → immutable GPU snapshot → both native-order mode10 triangles; partial scratch clear preserved | Prior scratch upload and native mirror remain; scratch-alias residency, broader assets and combined-head gameplay |
+| Creature shadows: [shadow adapter](../../src/kfx/renderer/software/WgpuShadow.h), world dispatch | Original RLE/frame metadata → GPU silhouette in a resident 256x256 scratch → one of two resident mask slots → both native-order mode10 triangles in the next submission; partial scratch clear preserved | The resident chain and the shared `big_scratch` are unreconciled in both directions, measured by `shadow_prior_divergence` under verification; scratch-alias residency, broader assets and combined-head gameplay |
 | World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores | Ordered GPU run copies cover solid scaled-up horizontal flips, including native alignment/chunk behavior; asset/destination aliases and custom-asset/gameplay coverage remain open |
 | Pixels, boxes, HV lines and circles: [bflib_vidraw.c](../../src/kfx/renderer/software/bflib_vidraw.c) | Reviewed native GPU hooks and 1,116 exact fixtures; circles preserve repeated blend hits | Circle radii above 8,191 and other unsupported inputs decline to CPU; complete runtime coverage remains open |
 | General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level primitives; scaled normal/remap/one-colour/alpha and immediate normal/one-colour sprites | General-line coverage/color selection, unsupported sprite modes and full interleaving validation |
@@ -387,12 +390,37 @@ all 64 constant shades, four scratch alignments, partial clears, offsets, flip s
 crossings and padded cumulative targets. Separate selection checks cover 72 native
 frame/orientation/base/custom choices. The ASan native bridge verifies 192 accepted
 calls and exact fallback after initialization failure or one successful batch.
-Independent review also requires the same complete target/scratch hash from 192
-production calls with verification disabled and zero CPU oracle commands.
-Accepted production calls perform no CPU mask rasterization: the mask snapshot is
-sampled GPU-to-GPU before its mirror readback. The first 64 KiB of scratch is still
-uploaded as prior state and committed after successful destination/oracle checks;
-remaining scratch is untouched. Generic scratch aliases and complete residency remain open.
+Independent review also requires the same complete target hash from 192 production
+calls with verification disabled and zero CPU oracle commands.
+Accepted production calls perform no CPU mask rasterization and no readback: the mask
+chain lives in a persistent GPU scratch buffer, each mask is stamped into one of two
+resident slots, and the mode10 triangles sample that slot. Mask *i* is submitted ahead of
+the triangles that read slot *i*, and queue submissions execute in order, so no later mask
+can overwrite a slot an earlier submission still reads. The asset carries only header,
+geometry and RLE. Under `KFX_WGPU_DRAW_VERIFY` the CPU oracle runs on the game's own
+scratch and one blocking scratch read per shadow compares the two masks. `FullRedraw`
+resets the cross-frame scratch; a rejected queued frame does not roll the scratch back,
+but it invalidates the frame, and the invalidation forces the `FullRedraw` that resets it
+before the next accepted shadow.
+
+The resident chain and the legacy `big_scratch` chain are now unreconciled in both
+directions, and nothing detects a divergence beyond counting it. Simulation code writes
+[`big_scratch`](../../src/custom_sprites.c) from offset 0 — inside the 64 KiB mask window —
+in `spdigger_stack.c`, `player_complookup.c`, `room_lair.c`, `player_utils.c` and
+`power_specials.c`; a declined shadow CPU-rasterizes into it without telling the GPU
+(`engine_render.c`); a rejected queued frame's mask writes are not rolled back, and are
+undone only by the `FullRedraw` its invalidation forces; a CPU fallback after accepted GPU
+shadows rebuilds its mask over
+whatever that buffer holds; and a level change that detaches the presenter leaves the
+scratch resident while loading clobbers `big_scratch`. Nothing bounds the sampled region
+to the cleared rectangle either — neither the Rust descriptor checks nor the C guard — so
+carried bytes can reach the triangles. `KFX_WGPU_DRAW_VERIFY` runs its oracle on the
+game's own scratch and reports `shadow_prior_divergence` when the two priors differ,
+skipping the mask and pixel comparison for that shadow rather than failing it. The counter
+counts events, not shadows after the first: verification re-seeds the CPU scratch from the
+GPU prior after each event, so the following shadows are checked again for their own mask
+and pixel correctness. That counter is the measurement, not a fix. Reproducing the legacy scratch contents on the GPU
+is explicitly not a goal. Generic scratch aliases remain open.
 
 The cursor slice at `95c4ec603` has [actual native pointer and SDL surface oracles](../../tests/cursor/cursor_test.cpp),
 including 81 backup/draw/restore cycles and 12 scale/hotspot/position/begin-end-swap

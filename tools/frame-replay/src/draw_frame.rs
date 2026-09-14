@@ -16,6 +16,7 @@ pub struct FrameCounters {
 pub(super) enum Batch {
     Commands(u64, Vec<Command>),
     Triangles(u64, Vec<TriangleCommand>),
+    Shadow(u64, u64, u32, Vec<Command>),
 }
 
 pub(super) struct QueuedFrame {
@@ -217,6 +218,38 @@ impl DrawRenderer {
         Ok(true)
     }
 
+    /// A mask and the triangles reading its slot are adjacent submissions on one queue,
+    /// which is what keeps a later mask from overwriting a slot an earlier one still reads.
+    pub(super) fn enqueue_shadow(
+        &mut self,
+        target: u64,
+        source: u64,
+        slot: u32,
+        commands: &[Command],
+    ) -> Result<bool> {
+        if self.frame.is_none() {
+            return Ok(false);
+        }
+        self.check_status()?;
+        let aliases = self.frame_target_aliases(target)?;
+        self.check_queued_resource(source)?;
+        for command in commands {
+            self.check_queued_resource(command.source)?;
+            self.check_queued_resource(command.table)?;
+        }
+        if !aliases {
+            return Ok(false);
+        }
+        self.check_queued_target(commands.len())?;
+        let frame = self.frame.as_mut().unwrap();
+        frame.count += commands.len();
+        self.frame_counters.queued_commands += commands.len() as u64;
+        frame
+            .batches
+            .push(Batch::Shadow(target, source, slot, commands.to_vec()));
+        Ok(true)
+    }
+
     pub(super) fn defer_resource_release(&mut self, resource: u64) -> Result<bool> {
         let Some(frame) = &mut self.frame else {
             return Ok(false);
@@ -332,6 +365,9 @@ impl DrawRenderer {
                     Batch::Commands(target, commands) => self.submit(target, &commands)?,
                     Batch::Triangles(target, commands) => {
                         self.submit_triangles(target, &commands)?
+                    }
+                    Batch::Shadow(target, source, slot, commands) => {
+                        self.submit_shadow_batch(target, source, slot, &commands)?
                     }
                 }
             }
