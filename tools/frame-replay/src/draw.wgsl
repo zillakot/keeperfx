@@ -22,17 +22,16 @@ const STATUS_FRAME: u32 = 0u;
 const STATUS_TRIG_LOOKUP: u32 = 1u;
 fn raise(cause: u32) { atomicStore(&status[STATUS_FRAME], 1u); atomicStore(&status[cause], 1u); }
 fn pixel_address(i: u32) -> u32 { return parameters.offset + (i / parameters.x) * parameters.pitch + i % parameters.x; }
-// The frame's views live at the head of the tile buffer, three words each: a record
-// names one in operation.z instead of carrying its origin, which keeps the record at
-// 112 bytes and the per-pixel command fetch coalesced.
+// The frame's views live at the head of the tile buffer, four words each: a record names
+// one in operation.z. Only the sampled kinds read it, and they read it once per command.
 fn view_of(c: Command) -> vec3<u32> {
     let base = c.operation.z * 4u;
     return vec3(tiles[base], tiles[base + 1u], tiles[base + 2u]);
 }
 // Bounds and clip are stored in the dispatch's space; samplers work in the view the
 // command was issued against, which is that space shifted by the view's origin.
-fn view_bounds(c: Command) -> vec4<i32> {
-    let o = vec2<i32>(view_of(c).xy);
+fn view_bounds(c: Command, view: vec3<u32>) -> vec4<i32> {
+    let o = vec2<i32>(view.xy);
     return c.bounds - vec4(o, o);
 }
 
@@ -131,20 +130,24 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
             let shade = low & 0xff00u;
             source = assets[c.assets.y + shade + assets[c.assets.x + uv]];
         }
-        let local_pixel = pixel - vec2<i32>(view_of(c).xy);
-        let viewed = vec2<u32>(local_pixel);
-        if c.operation.x == 9u {
-            let sampled = trig_sample(c, local_pixel, destination);
-            if sampled == 257u { raise(STATUS_TRIG_LOOKUP); continue; }
-            destination = sampled;
-            continue;
+        // Kinds below SPRITE never leave the dispatch's space, so they never read the view.
+        if c.operation.x >= 6u {
+            let view = view_of(c);
+            let local_pixel = pixel - vec2<i32>(view.xy);
+            let viewed = vec2<u32>(local_pixel);
+            if c.operation.x == 9u {
+                let sampled = trig_sample(c, local_pixel, destination);
+                if sampled == 257u { raise(STATUS_TRIG_LOOKUP); continue; }
+                destination = sampled;
+                continue;
+            }
+            if c.operation.x == 16u { source = transition_sample(c, viewed, view); }
+            if c.operation.x == 15u { source = bitmap_sample(c, viewed); }
+            if c.operation.x == 14u { source = map_view_sample(c, viewed, destination, view); }
+            if c.operation.x == 13u { source = movie_sample(c, viewed, view); }
+            if c.operation.x == 6u { source = sprite_sample(c, viewed); }
+            if c.operation.x == 7u || c.operation.x == 8u { source = raw_sample(c, viewed, view); }
         }
-        if c.operation.x == 16u { source = transition_sample(c, viewed); }
-        if c.operation.x == 15u { source = bitmap_sample(c, viewed); }
-        if c.operation.x == 14u { source = map_view_sample(c, viewed, destination); }
-        if c.operation.x == 13u { source = movie_sample(c, viewed); }
-        if c.operation.x == 6u { source = sprite_sample(c, viewed); }
-        if c.operation.x == 7u || c.operation.x == 8u { source = raw_sample(c, viewed); }
         if source == c.options.x { continue; }
         var hits = 1u;
         if c.operation.x == 4u || c.operation.x == 5u {

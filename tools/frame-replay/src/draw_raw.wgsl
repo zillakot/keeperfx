@@ -1,6 +1,6 @@
-fn raw_sample(c: Command, pixel: vec2<u32>) -> u32 {
+fn raw_sample(c: Command, pixel: vec2<u32>, view: vec3<u32>) -> u32 {
     if c.operation.x == 8u {
-        let sample = vec2<u32>(vec2<i32>(pixel) - view_bounds(c).xy) % c.source.zw;
+        let sample = vec2<u32>(vec2<i32>(pixel) - view_bounds(c, view).xy) % c.source.zw;
         return assets[c.assets.x + sample.y * c.assets.z + sample.x];
     }
     let local = vec2<i32>(pixel) - bitcast<vec2<i32>>(c.accumulator.xy);

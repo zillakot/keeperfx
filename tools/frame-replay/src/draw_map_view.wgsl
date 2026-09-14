@@ -1,10 +1,10 @@
 fn map_i32(offset: u32) -> i32 {
     return bitcast<i32>(assets[offset] | assets[offset+1u]<<8u | assets[offset+2u]<<16u | assets[offset+3u]<<24u);
 }
-fn map_view_sample(c: Command, pixel: vec2<u32>, destination: u32) -> u32 {
-    let view_width = view_of(c).z;
+fn map_view_sample(c: Command, pixel: vec2<u32>, destination: u32, view: vec3<u32>) -> u32 {
+    let view_width = view.z;
     let base = c.assets.x;
-    let local = vec2<u32>(vec2<i32>(pixel) - view_bounds(c).xy);
+    let local = vec2<u32>(vec2<i32>(pixel) - view_bounds(c, view).xy);
     if c.source.x == 0u {
         let cell = local.x / c.source.w;
         let style = assets[base+cell*2u] | (assets[base+cell*2u+1u]<<8u);

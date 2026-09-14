@@ -1,5 +1,5 @@
-fn movie_sample(c: Command, pixel: vec2<u32>) -> u32 {
-    let view_width = view_of(c).z;
+fn movie_sample(c: Command, pixel: vec2<u32>, view: vec3<u32>) -> u32 {
+    let view_width = view.z;
     let mode = c.source.x;
     let double_width = select(1u, 2u, (mode & 1u) != 0u);
     let row_step = select(1u, 2u, (mode & 6u) != 0u);

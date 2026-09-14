@@ -1,9 +1,9 @@
-fn transition_sample(c: Command, pixel: vec2<u32>) -> u32 {
+fn transition_sample(c: Command, pixel: vec2<u32>, view: vec3<u32>) -> u32 {
     if c.source.x == 1u {
         let offset = c.assets.x + pixel.y * c.assets.z + pixel.x;
         return assets[c.assets.y + (assets[offset] << 8u) + assets[offset + 1u]];
     }
-    let p = vec2<i32>(pixel) - view_bounds(c).xy;
+    let p = vec2<i32>(pixel) - view_bounds(c, view).xy;
     let w = i32(c.source.z);
     let h = i32(c.source.w);
     let step = i32(c.accumulator.z);
