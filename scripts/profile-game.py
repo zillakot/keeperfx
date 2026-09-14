@@ -23,10 +23,12 @@ _spec = importlib.util.spec_from_file_location("capture_frame", Path(__file__).w
 capture = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(capture)
 KINDS = ("simulation", "draw", "presentation", "present_wait", "frame_interval")
+PRESENTER_COUNTERS = ("acquire_ns", "acquire_block_ns", "reconfigure_count", "present_record_ns",
+                      "submit_ns", "allocations", "allocated_bytes")
 DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "checkpoint_copy_bytes", "validation_waits",
-                    "flagged_invalid_frames", "status_stalls", "upload_bytes", "readback_bytes",
+                    "flagged_invalid_frames", "status_stalls", "asset_upload_bytes", "command_upload_bytes", "upload_bytes", "readback_bytes",
                     "full_readbacks", "full_readback_bytes", "buffers", "buffer_bytes",
                     "batches", "commands", "ordered_sprites",
                     "ordered_sprite_layers", "ordered_sprite_passes",
@@ -316,6 +318,8 @@ def summarize(output, args):
     if type(breakdown) is not bool or breakdown != getattr(args, "draw_breakdown", False):
         raise RuntimeError("engine draw breakdown does not match the request")
     kinds = KINDS + DRAW_KINDS if breakdown else KINDS
+    if metadata.get("replay_scope") is True:
+        kinds += ("replay",)
     samples = {kind: [] for kind in kinds}
     sample_turns = {kind: [] for kind in kinds}
     pending_draw = []
@@ -349,6 +353,8 @@ def summarize(output, args):
     presentations = sample_turns["presentation"]
     if sample_turns["draw"] != presentations or sample_turns["present_wait"] != presentations:
         raise RuntimeError("each drawn frame must have exactly one matching presentation and present_wait")
+    if "replay" in samples and sample_turns["replay"] != presentations:
+        raise RuntimeError("replay must cover every presentation in order")
     if sample_turns["frame_interval"] != presentations[1:]:
         raise RuntimeError("frame intervals must cover consecutive presentations, excluding the first")
     if any(duration <= 0 for duration in samples["frame_interval"]):
@@ -385,6 +391,7 @@ def summarize(output, args):
             "Breakdown zero samples mean the scope was not visited or took less than clock resolution; they do not prove a drawing family was absent.",
             "Compare matched runs with and without --draw-breakdown to measure instrumentation overhead; overhead is not assumed negligible.",
         ]
+    presenter_report = summarize_presenter(metadata.get("presenter"), samples)
     wall_ms = {kind: distribution(values) for kind, values in samples.items()}
     window_ms = resource_report.get("wall_ms")
     observed = {"frames_per_second": 1000 / wall_ms["frame_interval"]["mean"],
@@ -392,9 +399,39 @@ def summarize(output, args):
                 "frame_cap": cap["label"]}
     return {"engine": metadata, "frame_cap": cap, "observed": observed, "wall_ms": wall_ms,
             "presentation_mode": "offscreen" if offscreen(args) else "swapchain",
-            "resources": resource_report, "drawing": drawing_report,
+            "resources": resource_report, "drawing": drawing_report, "presenter": presenter_report,
             "percentile_method": "linear interpolation at (sample_count - 1) * percentile / 100",
             "limitations": limitations + (["HEADLESS SOFTWARE SMOKE TEST: not a native presentation baseline."] if args.headless else [])}
+
+
+def summarize_presenter(presenter, samples):
+    if presenter is None:
+        return None
+    rows = presenter.get("per_frame")
+    if not isinstance(rows, list):
+        raise RuntimeError("invalid presenter counters")
+    if not rows:
+        return None
+    if len(rows) != len(samples["presentation"]) or "replay" not in samples:
+        raise RuntimeError("presenter counters must cover every presentation")
+    if any(not isinstance(row, list) or len(row) != len(PRESENTER_COUNTERS)
+           or any(type(value) is not int or value < 0 for value in row) for row in rows):
+        raise RuntimeError("invalid presenter counter row")
+    if any(row[1] > row[0] for row in rows):
+        raise RuntimeError("acquire block exceeds acquire")
+    cpu = [present - row[1] - wait for present, row, wait in
+           zip(samples["presentation"], rows, samples["present_wait"])]
+    if any(value < 0 for value in cpu):
+        raise RuntimeError("presentation waits exceed presentation")
+    samples["presentation_cpu"] = cpu
+    counters = {name: drawing_distribution([row[index] for row in rows])
+                for index, name in enumerate(PRESENTER_COUNTERS)}
+    counters["replay_ns"] = drawing_distribution(samples["replay"])
+    residual = [present - row[0] - row[3] - row[4]
+                for present, row in zip(samples["presentation"], rows)]
+    return {"frames": len(rows), "per_frame": counters,
+            "residual_ms": distribution(residual),
+            "residual_fraction": sum(residual) / sum(samples["presentation"])}
 
 
 def drawing_distribution(values, gauge=False):
@@ -415,13 +452,15 @@ def summarize_drawing(drawing, presentations):
     if type(drawing.get("available")) is not bool or not isinstance(drawing.get("backend"), str) \
             or not drawing["backend"]:
         raise RuntimeError("invalid drawing counter availability or backend")
-    if tuple(drawing.get("counters", ())) != DRAWING_COUNTERS:
+    names = tuple(drawing.get("counters", ()))
+    legacy = tuple(name for name in DRAWING_COUNTERS if name not in ("asset_upload_bytes", "command_upload_bytes"))
+    if names not in (DRAWING_COUNTERS, legacy):
         raise RuntimeError("drawing counter names do not match this profiler")
     rows = drawing.get("per_frame")
     if not isinstance(rows, list) or drawing.get("frames") != len(rows):
         raise RuntimeError("drawing counter frame count does not match the recorded rows")
     for row in rows:
-        if not isinstance(row, list) or len(row) != len(DRAWING_COUNTERS) or any(
+        if not isinstance(row, list) or len(row) != len(names) or any(
                 type(value) is not int or value < 0 for value in row):
             raise RuntimeError("invalid drawing counter row")
     result = {"backend": drawing["backend"], "available": drawing["available"],
@@ -437,7 +476,7 @@ def summarize_drawing(drawing, presentations):
         raise RuntimeError("drawing gauge names do not match this profiler")
     result["per_frame"] = {name: drawing_distribution([row[index] for row in rows],
                                                       name in DRAWING_GAUGES)
-                           for index, name in enumerate(DRAWING_COUNTERS)}
+                           for index, name in enumerate(names)}
     return result
 
 
@@ -516,6 +555,14 @@ def write_report(output, report):
     if allocations:
         lines += ["", f"Rust global-allocator calls: {allocations['calls']}; requested bytes: {allocations['requested_bytes']}. "
                   "This excludes C/C++, SDL, driver/GPU allocations and does not measure retained memory."]
+    presenter = report.get("presenter")
+    if presenter:
+        lines += ["", "Presenter host counters per frame (nanoseconds, calls or bytes):", "",
+                  "| Counter | Mean | p95 | Max |", "| --- | ---: | ---: | ---: |"]
+        for name, stats in presenter["per_frame"].items():
+            lines.append(f"| {name} | {stats['mean']:.2f} | {stats['p95']:.2f} | {stats['max']} |")
+        lines += ["", f"Unattributed presentation residual: {presenter['residual_ms']['mean']:.4f} ms "
+                  f"({presenter['residual_fraction']:.2%}); acquire + present record + submit, excluding replay."]
     drawing = report.get("drawing")
     if drawing:
         lines += ["", f"Active drawing backend: {drawing['backend']}."]

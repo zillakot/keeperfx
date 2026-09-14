@@ -9,6 +9,7 @@ enum PerformanceScope {
     PerfDraw,
     PerfPresentation,
     PerfPresentWait,
+    PerfReplay,
     PerfDrawScene,
     PerfDrawRaster,
     PerfDrawFrontRaster,
@@ -22,6 +23,7 @@ struct PerformanceDrawingCounters {
     unsigned long long submits, dispatches, waits, wait_ns;
     unsigned long long checkpoints, checkpoint_copy_bytes, validation_waits;
     unsigned long long flagged_invalid_frames, status_stalls;
+    unsigned long long asset_upload_bytes, command_upload_bytes;
     unsigned long long upload_bytes, readback_bytes, full_readbacks, full_readback_bytes;
     unsigned long long buffers, buffer_bytes, batches, commands, ordered_sprites;
     unsigned long long ordered_sprite_layers, ordered_sprite_passes;
@@ -44,6 +46,12 @@ struct PerformanceDrawingCounters {
 };
 void performance_drawing_backend(const char* backend);
 void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulative);
+
+struct PerformancePresenterCounters {
+    unsigned long long acquire_ns, acquire_block_ns, reconfigure_count, present_record_ns, submit_ns;
+    unsigned long long allocations, allocated_bytes;
+};
+void performance_presenter_frame(const struct PerformancePresenterCounters* counters);
 
 int performance_requested(void);
 int performance_active(void);
