@@ -885,6 +885,11 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
                         run.count, m_error.data(), m_error.size()) != 1) return false;
                 triangles += run.count;
             } else if (run.kind == kRunShadow) {
+                // AppendCommand opens a fresh run per shadow, and the route accepts one command.
+                if (run.count != 1) {
+                    std::snprintf(m_error.data(), m_error.size(), "shadow run must hold one command");
+                    return false;
+                }
                 if (kfx_wgpu_draw_submit_shadow(m_context, destination, m_pending.data() + commands,
                         m_error.data(), m_error.size()) != 1) return false;
                 commands += run.count;
@@ -912,12 +917,15 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
         else for (uint32_t row = 0; row < m_height; ++row)
             std::memcpy(expected.data() + static_cast<size_t>(row) * m_width,
                 m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch, m_width);
+        bool prior_diverged = false;
         if (oracle != nullptr) {
             const bool compare_scratch = shadow_route && m_shadow_scratch != nullptr;
-            // The CPU oracle continues the resident chain, not whatever the game left in the scratch.
-            if (compare_scratch) {
-                std::memcpy(m_shadow_scratch, m_shadow_prior.data(), 65536);
-                m_counts.shadow_scratch_copy_bytes += 65536;
+            // The oracle runs on the scratch the software path would have used, so a resident
+            // chain that has drifted from it is measured rather than hidden by re-seeding.
+            if (compare_scratch &&
+                std::memcmp(m_shadow_scratch, m_shadow_prior.data(), 65536) != 0) {
+                prior_diverged = true;
+                ++m_counts.shadow_prior_divergence;
             }
             m_oracle_active = true;
             oracle(expected.data() + ExpectedOffset(), m_width, oracle_context);
@@ -927,7 +935,8 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
                 if (kfx_wgpu_draw_shadow_scratch_read(m_context, resident.data(), resident.size(),
                         m_error.data(), m_error.size()) != 1) return false;
                 m_counts.shadow_scratch_readback_bytes += 65536 * sizeof(uint32_t);
-                if (std::memcmp(m_shadow_scratch, resident.data(), 65536) != 0) {
+                if (!prior_diverged &&
+                    std::memcmp(m_shadow_scratch, resident.data(), 65536) != 0) {
                     std::snprintf(m_error.data(), m_error.size(), "GPU shadow scratch index comparison failed");
                     return false;
                 }
@@ -941,13 +950,17 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
             }
             m_counts.verification_cpu_spans += m_pending.size();
         }
-        if (expected != m_readback) {
+        // A diverged prior makes the two masks legitimately different, so the batch is counted
+        // instead of compared; the GPU result stays authoritative for the resident checkpoint.
+        if (!prior_diverged && expected != m_readback) {
             std::snprintf(m_error.data(), m_error.size(), "GPU terrain index comparison failed");
             return false;
         }
-        if (m_resident_lease) m_expected = std::move(expected);
-        m_counts.verified_triangles += m_triangles.size();
-        ++m_counts.verified_batches;
+        if (m_resident_lease) m_expected = prior_diverged ? m_readback : std::move(expected);
+        if (!prior_diverged) {
+            m_counts.verified_triangles += m_triangles.size();
+            ++m_counts.verified_batches;
+        }
     }
     if (!m_resident_lease) {
         for (uint32_t row = 0; row < m_height; ++row)

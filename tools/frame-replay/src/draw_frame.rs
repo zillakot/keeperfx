@@ -218,7 +218,8 @@ impl DrawRenderer {
         Ok(true)
     }
 
-    /// The mask records immediately before its triangles, so the slot ring never reorders.
+    /// Each mask and its triangles share one submission, which is what keeps a later mask
+    /// from overwriting a slot an earlier queued batch still reads.
     pub(super) fn enqueue_shadow(
         &mut self,
         target: u64,

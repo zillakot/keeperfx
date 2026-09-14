@@ -23,7 +23,8 @@ int main() {
         expected_scratch = shadow_scratch_hash;
         const auto &c = bridge.GetCounters();
         if (bridge.Failed() || c.gpu_shadow_commands != 192 || c.verified_batches != 192 ||
-            c.shadow_scratch_upload_bytes || c.shadow_scratch_copy_bytes != 192 * 65536 ||
+            c.shadow_scratch_upload_bytes || c.shadow_scratch_copy_bytes ||
+            c.shadow_prior_divergence ||
             c.shadow_scratch_readback_bytes != 192 * 65536 * 4) {
             std::fprintf(stderr, "shadow bridge: %s\n", bridge.GetError());return 2;
         }
@@ -35,7 +36,7 @@ int main() {
         if (run(bridge, 1) || shadow_hash != expected || bridge.Failed() ||
             c.gpu_shadow_commands != 192 || c.verified_batches || c.verification_cpu_commands ||
             c.shadow_scratch_upload_bytes || c.shadow_scratch_readback_bytes ||
-            c.shadow_scratch_copy_bytes) {
+            c.shadow_scratch_copy_bytes || c.shadow_prior_divergence) {
             std::fprintf(stderr, "production shadow bridge: %s\n", bridge.GetError());return 5;
         }
     }

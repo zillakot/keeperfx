@@ -55,6 +55,7 @@ public:
         uint64_t native_commands = 0, verification_cpu_commands = 0, gpu_sprite_commands = 0;
         uint64_t gpu_ordered_sprites = 0;
         uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
+        uint64_t shadow_prior_divergence = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
         uint64_t bridge_solo_batches = 0;
         uint64_t rejected_commands = 0, rejected_spans = 0;

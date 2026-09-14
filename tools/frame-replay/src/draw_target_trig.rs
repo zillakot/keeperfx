@@ -139,7 +139,14 @@ impl DrawRenderer {
         }
         self.counters.asset_upload_bytes += uploaded;
         self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4 + 20;
-        let valid = self.validate_trig_batch(&cb, &assets, &params, width, height)?;
+        let valid = self.validate_trig_batch(
+            &cb,
+            &assets,
+            &params,
+            width,
+            height,
+            mask.map(|source| (source, slot)),
+        )?;
         if self.deferred_status.is_none() {
             self.counters.readback_bytes += 4;
         }
@@ -157,9 +164,6 @@ impl DrawRenderer {
             ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        if let Some(source) = mask {
-            self.record_shadow_mask(&mut encoder, source, slot)?;
-        }
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.compute);

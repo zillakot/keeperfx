@@ -155,8 +155,8 @@ consumes the bounded triangle batch in submission order. A four-byte GPU shade
 validation flag is read back before target writes. Pending terrain spans, terrain
 triangles and generic commands share one ordered record list, so the span and
 triangle paths no longer flush each other. Inside a resident frame a batch closes
-only at a kind the GPU packer accepts alone (shadow, transition, minimap, lens
-effect), an ordered sprite, a target or view change, a snapshot, readback or
+only at a kind the GPU packer accepts alone (transition, minimap, lens effect),
+an ordered sprite, a target or view change, a snapshot, readback or
 barrier, a rasterizer change, texture or fade cache eviction, 128 pending
 triangles, 32,768 pending spans, the 4,096 command cap, or verification mode. A
 world-bucket boundary and an emitter head only stop terrain from continuing;
@@ -175,8 +175,9 @@ with duplicated rows use ordered GPU run copies, preserving native extra-left pi
 four-byte copy grouping and target alignment. The [cursor adapter](../src/kfx/renderer/WgpuCursor.cpp)
 uses GPU sprite scaling and immutable GPU snapshots for backup, keyed composition
 and opaque restoration. The [shadow adapter](../src/kfx/renderer/software/WgpuShadow.h)
-sends original RLE artwork and vertices; the GPU generates the silhouette and samples
-its snapshot in both mode10 triangles. Mutable sprite artwork/remap/blend tables that
+sends original RLE artwork and vertices; the GPU generates the silhouette into a
+resident scratch buffer, stamps it into a mask slot and samples that slot in both
+mode10 triangles. Mutable sprite artwork/remap/blend tables that
 overlap the target decline before submission. Ordinary sprite glyphs reach these
 wrappers; direct DBC glyph writes remain CPU. The [raw adapter](../src/kfx/renderer/software/WgpuRawImage.c)
 submits source images for exact native scaling/letterbox and clipped slab tiling.
@@ -197,10 +198,10 @@ cursor composition and existing screenshot/recording behavior. It also incurs
 full-target transfers and waits. Resource versions are repacked/uploaded per
 batch; the path has no measured performance benefit.
 
-The shadow slice at `feat/wgpu-drawing` commit `3add2d680` preserves the native
-partial clear and retained scratch bytes. Its generated mask feeds both triangles
-before a counted 64 KiB compatibility mirror commit; subsequent shadows still
-upload the prior scratch checkpoint. The cursor slice at `feat/wgpu-drawing`
+The shadow slice preserves the native partial clear and the retained scratch bytes,
+but the chain now lives on the GPU: the mask reads and writes a resident 256x256
+scratch buffer, stamps a mask slot and feeds both triangles from it. No prior
+scratch is uploaded, no mask is read back and the CPU scratch is not mirrored. The cursor slice at `feat/wgpu-drawing`
 commit `95c4ec603` keeps native scale/hotspot and begin/end-swap timing. Its SDL
 wrappers synchronize the screen for backup/draw/restore and retain native
 recovery checkpoints. The borrowed-context target methods queue GPU copies without those
@@ -226,9 +227,10 @@ same-frame recovery for every new command and persistent effect target.
 ### Drawing validation and counters
 
 `KFX_WGPU_DRAW_VERIFY=1` compares bridge output with a separate CPU oracle before
-committing it. For creature shadows it seeds the CPU scratch from the resident GPU
-chain, then compares the oracle's mask against a blocking read of that chain. This
-verifies indexed drawing; `KFX_WGPU_VERIFY=1` separately checks acquired wgpu
+committing it. For creature shadows the oracle runs on the game's own scratch and its
+mask is compared against a blocking read of the resident chain; when the two priors
+already differ the shadow is counted as `shadow_prior_divergence` instead of compared.
+This verifies indexed drawing; `KFX_WGPU_VERIFY=1` separately checks acquired wgpu
 presentation surfaces. A screenshot of the synchronized native
 image does not prove a window surface was acquired or displayed. Visible surface
 validation for this drawing candidate is pending an unlocked display; the current
@@ -248,7 +250,8 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_host_staged_asset_bytes`: host-side staged asset bytes the drawing context holds, a gauge rather than a total, and not GPU memory.
 - `arena_evictions`, `arena_overflows`, `arena_bytes_uploaded`: persistent asset arena LRU reclaims, exhausted allocations that reject a batch, and bytes actually written into the arena. `arena_bytes_resident` is a gauge: the arena extent suballocated so far in expanded bytes — one `u32` per source byte, free-listed slots and power-of-two class padding included — so it bounds the live working set rather than tracking it exactly. Assets the arena does not own yet — the per-shadow `submit_target_triangles` tables — stay in `gpu_asset_upload_bytes` without appearing in `arena_bytes_uploaded`.
 - `bridge_solo_batches`: the `gpu_batches` subset a single command occupied alone because its kind cannot share a submission. Shadows left this set: the shadow route still takes one command, but it keeps its place in the ordered record list instead of flushing around itself.
-- `gpu_shadow_commands`: committed creature shadows. `shadow_scratch_upload_bytes` and `shadow_scratch_copy_bytes` are zero in production because the mask chain is GPU resident; `shadow_scratch_readback_bytes` is zero unless `KFX_WGPU_DRAW_VERIFY` is set, which adds one blocking 256 KiB scratch read per shadow.
+- `gpu_shadow_commands`: committed creature shadows. `shadow_scratch_upload_bytes` and `shadow_scratch_copy_bytes` are zero because the mask chain is GPU resident; `shadow_scratch_readback_bytes` is zero unless `KFX_WGPU_DRAW_VERIFY` is set, which adds one blocking 256 KiB scratch read per shadow.
+- `shadow_prior_divergence`: verification only. Shadows whose resident prior scratch no longer matched the `big_scratch` bytes the software path would have used, so the mask and pixel comparison was skipped for that shadow and it is not in `verified_batches`. It measures how often the resident chain and the legacy shared scratch disagree; it is not a failure count.
 - `rejected_commands` / `rejected_spans`: pending generic commands and terrain spans the target never received because the run was dropped without a CPU replay; each such drop invalidates the frame.
 - `gpu_batches` counts bridge submission routes, not GPU submissions. Inside a queued frame a route is an `enqueue_commands` call that may still merge with its neighbour, so a lower count means fewer FFI crossings and fewer command copies, not fewer dispatches; `gpu_submits` and `gpu_dispatches` measure those.
 - No GPU execution time is collected. It was not attempted because the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable and the copy-only submissions carry no pass for `timestamp_writes`.

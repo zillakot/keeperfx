@@ -224,9 +224,11 @@ today's one pass per sprite.
 then `scratch_i = mask_i`, then two `TRIG` commands sample `mask_i`. Because the mask never depends on the
 frame target, the chain lives in a persistent 256x256 scratch buffer and each mask is stamped into one of
 **two** resident slots. Mask *i* is recorded immediately before `TRIG` *i* in the same encoder rather than
-hoisted to its head: wgpu already orders passes inside one encoder, so hoisting bought only pass-setup
-overhead while costing a >= 14-deep slot ring, a slot-exhaustion fallback and the subtlest correctness
-argument in this design. That removes N checkpoints, N validation waits, N readbacks and 2N 256 KB copies.
+hoisted to its head. The invariant that makes slot reuse safe is **one submission per mask/`TRIG`
+pair**, not the slot count: queue submissions execute in order, so a later mask cannot overwrite a slot
+an earlier queued batch still reads. `SLOTS = 2` is headroom, and a future change that put two masks in
+one submission would need a real ring plus a slot-exhaustion path — which is what hoisting costs, on top
+of the subtlest correctness argument in this design, for only pass-setup overhead. That removes N checkpoints, N validation waits, N readbacks and 2N 256 KB copies.
 Revisit hoisting in PR 12 if the counters justify it.
 
 **Cursor.** Backup, compose, palette pass and restore are recorded into the same encoder in the order
@@ -368,7 +370,9 @@ New fixtures required for parity:
 3. **Ordered-sprite layering.** Asserts layering never reorders an overlapping pair and that a
    fully-overlapping set degenerates to one sprite per layer, extending
    `tests/sprites/copy_fixture.c`'s 576 alignment cases into a multi-sprite frame.
-4. **Shadow hoisting.** Extends the `tests/shadows` chains so shadows interleave with other families,
+4. **Shadow hoisting.** Landed as the interleaved queued-frame chain, which interleaves shadows with
+   queued `RECT` commands and a scratch reset; `IMAGE`, general `TRIG`, ordered `SPRITE` and periodic
+   full-view `CLEAR` interleaves remain open. Extends the `tests/shadows` chains so shadows interleave with other families,
    asserting hoisted mask passes equal the alternating mask/raster chain.
 5. **Arena residency and eviction.** Forces eviction mid-frame; asserts identical pixels, a generation
    bump producing a new upload, and that a stale generation never aliases.

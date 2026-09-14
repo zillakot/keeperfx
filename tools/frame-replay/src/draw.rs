@@ -554,6 +554,7 @@ impl DrawRenderer {
                 &parameters,
                 target.width,
                 target.height,
+                None,
             )?;
             if self.deferred_status.is_none() {
                 self.counters.readback_bytes += 4;

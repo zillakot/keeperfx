@@ -397,10 +397,22 @@ chain lives in a persistent GPU scratch buffer, each mask is stamped into one of
 resident slots, and the mode10 triangles sample that slot in the same encoder. The asset
 carries only header, geometry and RLE. Under `KFX_WGPU_DRAW_VERIFY` the CPU oracle
 continues the resident chain and one blocking scratch read per shadow feeds the exact
-comparison. `FullRedraw` resets the cross-frame scratch. Because production no longer
-mirrors the mask back, a CPU fallback that follows accepted GPU shadows rebuilds its mask
-over whatever the shared 16 MB scratch holds; the sampled region is cleared and restamped,
-but bytes outside it are not reconciled. Generic scratch aliases remain open.
+comparison. `FullRedraw` resets the cross-frame scratch.
+
+The resident chain and the legacy `big_scratch` chain are now unreconciled in both
+directions, and nothing detects a divergence beyond counting it. Simulation code writes
+[`big_scratch`](../../src/custom_sprites.c) from offset 0 — inside the 64 KiB mask window —
+in `spdigger_stack.c`, `player_complookup.c`, `room_lair.c`, `player_utils.c` and
+`power_specials.c`; a declined shadow CPU-rasterizes into it without telling the GPU
+(`engine_render.c`); a CPU fallback after accepted GPU shadows rebuilds its mask over
+whatever that buffer holds; and a level change that detaches the presenter leaves the
+scratch resident while loading clobbers `big_scratch`. Nothing bounds the sampled region
+to the cleared rectangle either — neither the Rust descriptor checks nor the C guard — so
+carried bytes can reach the triangles. `KFX_WGPU_DRAW_VERIFY` runs its oracle on the
+game's own scratch and reports `shadow_prior_divergence` when the two priors differ,
+skipping the mask and pixel comparison for that shadow rather than failing it; that
+counter is the measurement, not a fix. Reproducing the legacy scratch contents on the GPU
+is explicitly not a goal. Generic scratch aliases remain open.
 
 The cursor slice at `95c4ec603` has [actual native pointer and SDL surface oracles](../../tests/cursor/cursor_test.cpp),
 including 81 backup/draw/restore cycles and 12 scale/hotspot/position/begin-end-swap
