@@ -119,6 +119,73 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(report["resources"]["rust_allocations"]["calls_per_presentation"], 0.5)
             self.assertTrue(any("HEADLESS" in item for item in report["limitations"]))
 
+    def test_presenter_fields_and_per_frame_cpu_tail(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            metadata = engine_output(output)
+            metadata["replay_scope"] = True
+            rows = []
+            raw = (output / "raw.csv").read_text().splitlines()
+            for line in raw:
+                if line.startswith("presentation,"):
+                    _, turn, value = line.split(",")
+                    rows.append(f"replay,{turn},{int(value) * 2}")
+                if line.startswith("present_wait,"):
+                    _, turn, value = line.split(",")
+                    line = f"present_wait,{turn},100000"
+                rows.append(line)
+            (output / "raw.csv").write_text("\n".join(rows) + "\n")
+            counters = [[300000, 200000, 0, 40000, 90000, 2000000, 7, 256] for _ in range(20)]
+            metadata["presenter"] = {"per_frame": counters}
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            report = profile.summarize(output, arguments())
+            self.assertAlmostEqual(report["wall_ms"]["presentation_cpu"]["mean"], 10.2)
+            self.assertAlmostEqual(report["wall_ms"]["presentation_cpu"]["p95"], 18.75)
+            self.assertEqual(report["wall_ms"]["replay"]["mean"], 21)
+            host = report["presenter"]
+            self.assertEqual(host["frames"], 20)
+            self.assertEqual(host["per_frame"]["allocations"]["mean"], 7)
+            self.assertEqual(host["per_frame"]["replay_ns"]["mean"], 2000000)
+            self.assertAlmostEqual(host["residual_ms"]["mean"], 10.07)
+            self.assertAlmostEqual(host["residual_fraction"], 10.07 / 10.5)
+            for bad in (counters[:-1], [[-1] * 8] * 20, [[0] * 7] * 20,
+                        [[1, 2, 0, 0, 0, 0, 0, 0]] * 20):
+                metadata["presenter"]["per_frame"] = bad
+                (output / "raw.csv.json").write_text(json.dumps(metadata))
+                with self.assertRaises(RuntimeError):
+                    profile.summarize(output, arguments())
+
+    def test_new_rust_report_requires_presenter_samples(self):
+        for presenter in (None, {"per_frame": []}):
+            with self.assertRaisesRegex(RuntimeError, "cover every presentation"):
+                profile.summarize_presenter(presenter, {}, required=True)
+
+    def test_presenter_cpu_is_unavailable_for_legacy_reports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            engine_output(output)
+            report = profile.summarize(output, arguments())
+            self.assertIsNone(report["presenter"])
+            self.assertNotIn("presentation_cpu", report["wall_ms"])
+
+    def test_split_upload_counters_and_legacy_schema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            engine_output(output)
+            metadata = drawing_metadata(output, 19)
+            report = profile.summarize(output, arguments())
+            for field in ("asset_upload_bytes", "command_upload_bytes", "upload_bytes"):
+                self.assertIn(field, report["drawing"]["per_frame"])
+            for name in ("asset_upload_bytes", "command_upload_bytes"):
+                index = metadata["drawing"]["counters"].index(name)
+                metadata["drawing"]["counters"].pop(index)
+                for row in metadata["drawing"]["per_frame"]:
+                    row.pop(index)
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            report = profile.summarize(output, arguments())
+            self.assertIn("upload_bytes", report["drawing"]["per_frame"])
+            self.assertNotIn("asset_upload_bytes", report["drawing"]["per_frame"])
+
     def test_draw_breakdown_is_nested_and_reports_per_frame_remainder(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)

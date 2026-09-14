@@ -17,6 +17,10 @@ int32_t kfx_wgpu_submit(void* handle, const uint8_t* indices, size_t length,
     uint32_t output_width, uint32_t output_height, int32_t vsync, char* error, size_t capacity);
 int32_t kfx_wgpu_present(void* handle, char* error, size_t capacity);
 int32_t kfx_wgpu_details(void* handle, char* text, size_t capacity);
+struct KfxWgpuPresentCounters {
+    uint64_t acquire_ns, acquire_block_ns, reconfigure_count, present_record_ns, submit_ns;
+};
+void kfx_wgpu_present_counters(void* handle, struct KfxWgpuPresentCounters* output);
 void kfx_wgpu_destroy(void* handle);
 void kfx_wgpu_allocation_counts(uint64_t* allocations, uint64_t* requested_bytes);
 

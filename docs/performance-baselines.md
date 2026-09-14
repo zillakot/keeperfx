@@ -75,15 +75,15 @@ and drawing run at different rates.
 | --- | --- |
 | `simulation` | One `update()` call; excludes input polling, packet exchange and turn pacing |
 | `draw` | One `keeper_screen_redraw()` call drawing world and HUD into CPU pixels; excludes light-area setup, focus waiting, direct-message overlays and presentation |
-| `presentation` | Per-frame cursor composition, palette/pixel processing and upload, rendering/present submission and cursor cleanup. Original SDL includes texture lock, indexed-to-RGBA blit, texture unlock/upload and clear/draw/present. Rust includes its surface acquisition, uploads, submission and polling. Excludes target setup and metadata queries. |
+| `replay` | GPU frame replay through `ResidentTarget`, including bridge flush/target lookup; zero for software drawing. Recorded as a child but subtracted from exported `presentation`, so `draw + replay + presentation` is additive. |
+| `presentation` | Excludes `replay`. Per-frame cursor composition, palette/pixel processing and upload, rendering/present submission and cursor cleanup. Original SDL includes texture lock, indexed-to-RGBA blit, texture unlock/upload and clear/draw/present. Rust includes its surface acquisition, uploads, submission and polling. Excludes target setup and metadata queries. |
 | `present_wait` | Nested SDL or Rust present call, including host work and blocking inside that call; **already included in presentation**. Backend implementations distribute work differently, so this is a diagnostic, not a common GPU/VSync-cost measurement. |
 | `frame_interval` | Time between starts of successive measured presentation calls; includes simulation, drawing, event handling, pacing and scheduling between them |
 
 All series measure elapsed **wall time**, including descheduling or waiting.
 `draw` measures work implemented on the CPU, but is not a thread/process CPU-time
 counter. `present_wait` is not a pure VSync wait: drivers can also block on texture
-lock/upload or elsewhere. No GPU timestamps or GPU completion latency are
-collected. Do not add nested series or call them GPU benchmarks.
+lock/upload or elsewhere. GPU timestamps are separately opt-in; these scopes do not measure GPU completion latency. Do not add nested series or call them GPU benchmarks.
 
 Separate measured-window counters record process user and system CPU time using
 `getrusage(RUSAGE_SELF)` on macOS/Linux or `GetProcessTimes` on Windows. They include
@@ -210,6 +210,71 @@ Counters cover the drawing context the bridge owns. Surface acquisition,
 presentation by the Rust presenter, and a cursor that owns its own drawing context
 rather than borrowing the bridge's are not counted, so the counters explain the
 drawing scopes rather than the whole frame.
+
+## Presenter host attribution
+
+Rust-presenter runs include one `presenter.per_frame` sample per presentation;
+SDL and older reports leave it unavailable. `acquire_ns` covers all of acquisition,
+including polling and reconfiguration. `acquire_block_ns` covers only
+`get_current_texture()` (all attempts), or offscreen ring-slot acquisition;
+it is included in `acquire_ns`. `reconfigure_count` counts runtime reconfigurations.
+`present_record_ns` covers `present_into` or `render_into`; `submit_ns` covers the
+frame submit and present call and is included in `present_wait`. `replay_ns` times
+`frame_flush` in the bridge; the `replay` scope also includes bridge orchestration.
+Allocation calls and requested bytes are sampled across presentation, excluding
+its replay child; they cover the Rust global allocator, not native or GPU memory.
+
+`presentation_cpu = presentation - acquire_block_ns - present_wait` is computed
+per frame before its mean and percentiles are taken, in milliseconds. It remains
+host wall time, including scheduling, rather than process CPU time. The attribution
+residual is `presentation - acquire_ns - present_record_ns - submit_ns`; report its
+mean and fraction of presentation. Do not add the nested acquire block, present
+wait, or the separately exported replay to that timer sum.
+
+The frame-interval anchor and cursor composition/restore order are unchanged.
+For comparisons with older GPU reports, use `presentation + replay` to recover
+the previous presentation boundary. Drawing counters retain `upload_bytes` as
+`asset_upload_bytes + command_upload_bytes`; existing gauges and GPU timestamps
+keep their meanings. Counters are buffered and written only at capture completion.
+
+### Presenter cost, PR A: measured 2026-09-14
+
+Runtime `65e3ff9c2`, Apple M5/Metal, two 2560×1440 Acer displays at 75 Hz,
+AC power, 200 turns/cell, guards enabled, load/core 0.169–0.325. Matched busy
+1920×1080 capped pairs, all approximately 46 dispatches/frame; means in ms:
+
+| Pair | Master presentation | Branch presentation | Branch replay | Buffers master → branch |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 3.859 | 0.657 | 3.186 | 90.40 → 88.39 |
+| 2 | 3.871 | 0.656 | 3.051 | 90.41 → 88.39 |
+
+Presentation + replay reconstructs the old boundary: this is chiefly attribution.
+All capped matrix cells sustain 60 FPS and 20 turns/s; `presentation_cpu` is
+0.013–0.025 ms. Mean attribution residual is 0.35–0.85% across branch timing
+cells (worst individual frame 3.11%, below the 10% gate). Comparable pre-P4 HD
+runs reduce scoped allocation calls 643 → 612/frame and present record
+14.917 → 6.734–7.125 µs; requested allocation bytes do not uniformly fall.
+
+Uncapped busy 1080p remains a separate comparison:
+
+| Pair | Master FPS | Branch FPS |
+| --- | ---: | ---: |
+| 1 | 198.94 | 197.98 |
+| 2 | 173.15 | 195.08 |
+
+All sustain 20 turns/s; no ceiling increase is established from these two pairs.
+Replay and submission remain: about 11 MB/frame asset uploads (94% of HD upload
+bytes, P3) and `submit_ns` of 0.58–0.78 ms dominate the capped presenter work.
+Drawable blocking is about 15 µs capped versus 0.33 ms mean / 1.47–1.79 ms p95
+uncapped. These are host timings, not GPU execution costs.
+
+Surface parity passes GPU/software at both resolutions: 715/710/717/716 frames
+each equally verified, no mismatch or fallback. The corrected drawing oracle
+verifies 171,918 batches and 202,743 triangles through camera input, pause/resume
+and parchment return, with all required errors/rejections zero and one non-failing
+shadow-prior divergence diagnostic. The first oracle attempt stopped on a helper
+response-envelope bug at turn 5 and is excluded. Full tables, identities, tails,
+load and both attempts are recorded in [PR #39](https://github.com/zillakot/keeperfx/pull/39).
 
 ## Collection bounds and outputs
 

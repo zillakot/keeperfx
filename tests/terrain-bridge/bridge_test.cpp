@@ -332,7 +332,9 @@ int main()
             bridge.Flush();
         }
         assert(resident_pixels != independent);
-        assert(bridge.ResidentTarget(resident) != 0);
+        uint64_t replay_ns = UINT64_MAX;
+        assert(bridge.ResidentTarget(resident, &replay_ns) != 0);
+        assert(replay_ns != UINT64_MAX);
         const auto before = bridge.GetCounters();
         assert(before.bridge_initial_index_bytes == 236);
         assert(before.resident_batches == 5 && before.native_copy_bytes == 0);

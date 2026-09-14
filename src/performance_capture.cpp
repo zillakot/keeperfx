@@ -82,7 +82,7 @@ constexpr int DrawingGaugeCount = 3;
 const char* const drawing_counter_names[DrawingCounterCount] = {
     "submits", "dispatches", "waits", "wait_ns", "checkpoints", "checkpoint_copy_bytes",
     "validation_waits", "flagged_invalid_frames", "status_stalls",
-    "upload_bytes", "readback_bytes", "full_readbacks", "full_readback_bytes",
+    "asset_upload_bytes", "command_upload_bytes", "upload_bytes", "readback_bytes", "full_readbacks", "full_readback_bytes",
     "buffers", "buffer_bytes", "batches", "commands", "ordered_sprites",
     "ordered_sprite_layers", "ordered_sprite_passes",
     "arena_evictions", "arena_overflows", "arena_bytes_uploaded",
@@ -116,6 +116,7 @@ struct Profile {
     bool drawing_seen = false;
     PerformanceDrawingCounters drawing_previous = {};
     std::vector<std::array<unsigned long long, DrawingCounterCount>> drawing_frames;
+    std::vector<PerformancePresenterCounters> presenter_frames;
     Resources start_resources;
     int width = 0, height = 0, output_width = 0, output_height = 0, vsync = -2;
 };
@@ -176,10 +177,10 @@ void finish(Profile& p)
     const Resources end_resources = resources();
     const bool cpu_available = p.start_resources.cpu_available && end_resources.cpu_available;
     const uint64_t wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_resources.wall - p.start_resources.wall).count();
-    const char* names[] = {"simulation", "draw", "presentation", "present_wait", "draw_scene", "draw_raster", "draw_front_raster", "draw_overlays", "frame_interval"};
+
     std::fprintf(p.file, "kind,turn,wall_ns\n");
     for (const Sample& s : p.samples)
-        std::fprintf(p.file, "%s,%lu,%llu\n", names[s.scope], s.turn, static_cast<unsigned long long>(s.ns));
+        std::fprintf(p.file, "%s,%lu,%llu\n", PerformanceScopeNames[s.scope], s.turn, static_cast<unsigned long long>(s.ns));
     bool failed = std::ferror(p.file) != 0;
     failed = std::fclose(p.file) != 0 || failed;
     p.file = nullptr;
@@ -229,6 +230,13 @@ void finish(Profile& p)
         for (int i = 0; i < DrawingCounterCount; ++i)
             std::fprintf(info, "%s%llu", i ? "," : "", p.drawing_frames[frame][i]);
         std::fprintf(info, "]");
+    }
+    std::fprintf(info, "]},\"replay_scope\":true,\"presenter\":{\"per_frame\":[");
+    for (size_t frame = 0; frame < p.presenter_frames.size(); ++frame) {
+        const auto& c = p.presenter_frames[frame];
+        std::fprintf(info, "%s[%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu]", frame ? "," : "",
+            c.acquire_ns, c.acquire_block_ns, c.reconfigure_count, c.present_record_ns, c.submit_ns,
+            c.replay_ns, c.allocations, c.allocated_bytes);
     }
     std::fprintf(info, "]}}\n");
     failed = std::ferror(info) != 0;
@@ -299,6 +307,7 @@ void performance_prepare_turn(void)
     p.start_turn = get_gameturn();
     p.start_resources = resources();
     p.drawing_frames.reserve(p.turns * 4);
+    p.presenter_frames.reserve(p.turns * 4);
     p.active = true;
 }
 
@@ -314,9 +323,12 @@ void performance_begin(enum PerformanceScope scope)
         }
     }
     Scope& s = p.scopes[scope];
-    if (s.active || (scope == PerfPresentWait && !p.scopes[PerfPresentation].active)) {
+    if (s.active || ((scope == PerfPresentWait || scope == PerfReplay) && !p.scopes[PerfPresentation].active)
+        || (scope == PerfReplay && p.scopes[PerfPresentWait].active)
+        || (scope == PerfPresentWait && p.scopes[PerfReplay].active)) {
         fail(p, "invalid timing scope nesting"); return;
     }
+    if (scope == PerfPresentation) p.scopes[PerfReplay].total_ns = 0;
     if (scope == PerfDraw) {
         for (int child = PerfDrawScene; child < PerfScopeCount; ++child) p.scopes[child].total_ns = 0;
     }
@@ -342,16 +354,23 @@ void performance_end(enum PerformanceScope scope)
     Scope& s = p.scopes[scope];
     if (!s.active) { fail(p, "unmatched timing scope end"); return; }
     const auto end = Clock::now();
-    const uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - s.start).count();
+    uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - s.start).count();
     s.active = false;
-    if (scope >= PerfDrawScene) {
+    if (scope >= PerfDrawScene || scope == PerfReplay) {
         s.total_ns += ns;
         return;
     }
     if (scope == PerfPresentation && p.scopes[PerfPresentWait].active) {
         fail(p, "unfinished present_wait scope"); return;
     }
-    const size_t count = scope == PerfDraw && p.draw_breakdown ? 1 + PerfScopeCount - PerfDrawScene : 1;
+    if (scope == PerfPresentation) {
+        if (p.scopes[PerfReplay].active || p.scopes[PerfReplay].total_ns > ns) {
+            fail(p, "invalid replay scope"); return;
+        }
+        ns -= p.scopes[PerfReplay].total_ns;
+    }
+    const size_t count = scope == PerfDraw && p.draw_breakdown ? 1 + PerfScopeCount - PerfDrawScene
+        : scope == PerfPresentation ? 2 : 1;
     if (p.samples.size() + count > 100000) { fail(p, "sample limit reached"); return; }
     if (scope == PerfDraw && p.draw_breakdown) {
         uint64_t accounted = 0;
@@ -363,6 +382,7 @@ void performance_end(enum PerformanceScope scope)
         for (int child = PerfDrawScene; child < PerfScopeCount; ++child)
             p.samples.push_back({child, s.turn, p.scopes[child].total_ns});
     }
+    if (scope == PerfPresentation) p.samples.push_back({PerfReplay, s.turn, p.scopes[PerfReplay].total_ns});
     p.samples.push_back({scope, s.turn, ns});
 }
 
@@ -437,4 +457,12 @@ int performance_active(void) { return profile().active; }
 void performance_failed(const char* reason)
 {
     if (profile().active) fail(profile(), reason);
+}
+
+void performance_presenter_frame(const struct PerformancePresenterCounters* counters)
+{
+    Profile& p = profile();
+    if (!p.active || !counters) return;
+    if (p.presenter_frames.size() >= 100000) { fail(p, "presenter sample limit reached"); return; }
+    p.presenter_frames.push_back(*counters);
 }

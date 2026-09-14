@@ -55,6 +55,30 @@ fn count_allocation(size: usize) {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct PresentCounters {
+    acquire_ns: u64,
+    acquire_block_ns: u64,
+    reconfigure_count: u64,
+    present_record_ns: u64,
+    submit_ns: u64,
+}
+
+#[unsafe(no_mangle)]
+#[cfg(target_os = "macos")]
+pub unsafe extern "C" fn kfx_wgpu_present_counters(
+    handle: *mut c_void,
+    output: *mut PresentCounters,
+) {
+    if !handle.is_null() && !output.is_null() {
+        unsafe {
+            *output = std::mem::take(&mut (*handle.cast::<Presenter>()).counters);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Default)]
 struct Slot {
     texture: Option<wgpu::Texture>,
@@ -82,6 +106,7 @@ enum Target {
 
 #[cfg(target_os = "macos")]
 struct Presenter {
+    counters: PresentCounters,
     target: Target,
     format: wgpu::TextureFormat,
     pending_view: Option<wgpu::TextureView>,
@@ -152,6 +177,7 @@ impl Presenter {
         surface.configure(renderer.device(), &config);
         renderer.check_status()?;
         Ok(Self {
+            counters: PresentCounters::default(),
             target: Target::Swapchain {
                 surface,
                 layer,
@@ -189,6 +215,7 @@ impl Presenter {
         let renderer = Renderer::with_format(device, queue, format)?;
         renderer.check_status()?;
         Ok(Self {
+            counters: PresentCounters::default(),
             target: Target::Offscreen {
                 slots: Default::default(),
                 next: 0,
@@ -226,6 +253,13 @@ impl Presenter {
     }
 
     fn acquire(&mut self, width: u32, height: u32, vsync: bool) -> Result<bool> {
+        let start = std::time::Instant::now();
+        let result = self.acquire_inner(width, height, vsync);
+        self.counters.acquire_ns += start.elapsed().as_nanos() as u64;
+        result
+    }
+
+    fn acquire_inner(&mut self, width: u32, height: u32, vsync: bool) -> Result<bool> {
         ensure!(!self.failed, "presenter is terminal");
         ensure!(
             self.pending_view.is_none(),
@@ -242,6 +276,7 @@ impl Presenter {
             renderer,
             instance,
             pending_view,
+            counters,
             format,
             ..
         } = self;
@@ -249,11 +284,13 @@ impl Presenter {
         match target {
             Target::Offscreen { slots, next, size } => {
                 if *size != (width, height) {
+                    counters.reconfigure_count += 1;
                     *size = (width, height);
                     for slot in slots.iter_mut() {
                         slot.texture = None;
                     }
                 }
+                let block_start = std::time::Instant::now();
                 let slot = &mut slots[*next];
                 // The ring is the offscreen path's only back-pressure: `nextDrawable`
                 // was what kept an uncapped host from running away from the GPU.
@@ -280,6 +317,7 @@ impl Presenter {
                         view_formats: &[],
                     })
                 });
+                counters.acquire_block_ns += block_start.elapsed().as_nanos() as u64;
                 *pending_view = Some(texture.create_view(&Default::default()));
                 renderer.check_status()?;
                 Ok(true)
@@ -299,11 +337,15 @@ impl Presenter {
                     config.width = width;
                     config.height = height;
                     config.present_mode = mode;
+                    counters.reconfigure_count += 1;
                     surface.configure(device, config);
                     *reconfigure = false;
                 }
                 for _ in 0..2 {
-                    match surface.get_current_texture() {
+                    let block_start = std::time::Instant::now();
+                    let acquired = surface.get_current_texture();
+                    counters.acquire_block_ns += block_start.elapsed().as_nanos() as u64;
+                    match acquired {
                         wgpu::CurrentSurfaceTexture::Success(frame) => {
                             *pending_view = Some(frame.texture.create_view(&Default::default()));
                             *pending = Some(frame);
@@ -317,7 +359,10 @@ impl Presenter {
                         }
                         wgpu::CurrentSurfaceTexture::Timeout
                         | wgpu::CurrentSurfaceTexture::Occluded => return Ok(false),
-                        wgpu::CurrentSurfaceTexture::Outdated => surface.configure(device, config),
+                        wgpu::CurrentSurfaceTexture::Outdated => {
+                            counters.reconfigure_count += 1;
+                            surface.configure(device, config);
+                        }
                         wgpu::CurrentSurfaceTexture::Lost => {
                             renderer.check_status()?;
                             *surface = unsafe {
@@ -325,6 +370,7 @@ impl Presenter {
                                     wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(*layer),
                                 )
                             }?;
+                            counters.reconfigure_count += 1;
                             surface.configure(device, config);
                         }
                         wgpu::CurrentSurfaceTexture::Validation => {
@@ -451,7 +497,8 @@ pub unsafe extern "C" fn kfx_wgpu_submit(
                 return Ok(Some(0));
             }
             let view = presenter.pending_view.clone().unwrap();
-            presenter.renderer.render_into(
+            let record_start = std::time::Instant::now();
+            let recorded = presenter.renderer.render_into(
                 width,
                 height,
                 std::slice::from_raw_parts(indices, length),
@@ -460,7 +507,9 @@ pub unsafe extern "C" fn kfx_wgpu_submit(
                 output_width,
                 output_height,
                 &view,
-            )?;
+            );
+            presenter.counters.present_record_ns += record_start.elapsed().as_nanos() as u64;
+            recorded?;
             if presenter.verify {
                 verify_surface(
                     &presenter.renderer,
@@ -493,6 +542,7 @@ pub unsafe extern "C" fn kfx_wgpu_present(
     error: *mut c_char,
     capacity: usize,
 ) -> i32 {
+    let submit_start = std::time::Instant::now();
     let result: Option<i32> = unsafe {
         boundary(error, capacity, || {
             ensure!(!handle.is_null(), "null presenter");
@@ -545,6 +595,12 @@ pub unsafe extern "C" fn kfx_wgpu_present(
             if let Some(drawing) = presenter.drawing.as_mut() {
                 drawing.frame_discard();
             }
+        }
+    }
+    if !handle.is_null() {
+        unsafe {
+            (*handle.cast::<Presenter>()).counters.submit_ns +=
+                submit_start.elapsed().as_nanos() as u64;
         }
     }
     result.unwrap_or(-1)
@@ -886,6 +942,73 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a native Metal adapter"]
+    fn presenter_host_timers_cover_software_and_gpu_paths() {
+        let mut presenter = Presenter::offscreen(2, 2).unwrap();
+        let palette = [255u8; 1024];
+        let mut error = [0i8; 1024];
+        for gpu in [false, true] {
+            let handle = (&raw mut presenter).cast();
+            let result = if gpu {
+                let drawing = presenter.drawing().unwrap();
+                let root = drawing.create_target(2, 2).unwrap();
+                drawing.frame_begin(root).unwrap();
+                unsafe {
+                    kfx_wgpu_draw_prepare_present(
+                        handle,
+                        root,
+                        palette.as_ptr(),
+                        1024,
+                        3,
+                        3,
+                        0,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                }
+            } else {
+                unsafe {
+                    kfx_wgpu_submit(
+                        handle,
+                        [0u8; 4].as_ptr(),
+                        4,
+                        2,
+                        2,
+                        2,
+                        palette.as_ptr(),
+                        1024,
+                        2,
+                        2,
+                        0,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                }
+            };
+            assert_eq!(result, 1);
+            assert_eq!(
+                unsafe { kfx_wgpu_present(handle, error.as_mut_ptr(), error.len()) },
+                1
+            );
+            let mut counters = PresentCounters::default();
+            unsafe {
+                kfx_wgpu_present_counters(handle, &mut counters);
+            }
+            assert!(counters.acquire_ns >= counters.acquire_block_ns);
+            assert!(counters.acquire_block_ns > 0);
+            assert!(counters.present_record_ns > 0);
+            assert!(counters.submit_ns > 0);
+            assert_eq!(counters.reconfigure_count, u64::from(gpu));
+            unsafe {
+                kfx_wgpu_present_counters(handle, &mut counters);
+            }
+            assert_eq!(counters.acquire_ns, 0);
+            assert_eq!(counters.submit_ns, 0);
+            assert_eq!(counters.present_record_ns, 0);
+        }
+    }
+
+    #[test]
     fn rejects_null_handles_and_invalid_modes() {
         let mut error = [0i8; 100];
         unsafe {
@@ -1192,13 +1315,16 @@ pub unsafe extern "C" fn kfx_wgpu_draw_prepare_present(
                 return Ok(Some(0));
             }
             let view = presenter.pending_view.clone().unwrap();
-            presenter.drawing()?.present_into(
+            let record_start = std::time::Instant::now();
+            let recorded = presenter.drawing()?.present_into(
                 target,
                 std::slice::from_raw_parts(palette, palette_length),
                 output_width,
                 output_height,
                 &view,
-            )?;
+            );
+            presenter.counters.present_record_ns += record_start.elapsed().as_nanos() as u64;
+            recorded?;
             presenter.renderer.check_status()?;
             if presenter.verify {
                 let (width, height) = presenter.drawing()?.target_dimensions(target)?;

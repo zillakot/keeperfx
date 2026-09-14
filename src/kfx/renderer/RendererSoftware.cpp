@@ -284,6 +284,7 @@ void RendererSoftware::report_drawing()
         gpu.submits, gpu.dispatches, gpu.waits, gpu.wait_ns,
         frame.checkpoints, frame.checkpoint_copy_bytes, frame.validation_waits,
         frame.invalid_frames, frame.status_stalls,
+        gpu.asset_upload_bytes, gpu.command_upload_bytes,
         gpu.asset_upload_bytes + gpu.command_upload_bytes, gpu.readback_bytes,
         counts.bridge_readbacks, counts.gpu_readback_bytes,
         gpu.buffers, gpu.buffer_bytes, gpu.batches, gpu.commands, counts.gpu_ordered_sprites,
@@ -498,15 +499,27 @@ bool RendererSoftware::present_rust_frame()
         performance_renderer_details(m_rust_details);
     }
     char error[1024] = {};
+    KfxWgpuPresentCounters host = {};
+    kfx_wgpu_present_counters(m_rust, &host);
+    uint64_t allocations = 0, allocated_bytes = 0, replay_allocations = 0, replay_bytes = 0;
+    kfx_wgpu_allocation_counts(&allocations, &allocated_bytes);
     performance_begin(PerfPresentation);
     LbMouseOnBeginSwap();
     SDL_Palette* palette = SDL_GetSurfacePalette(lbDrawSurface);
     int result = -1;
+    uint64_t replay_ns = 0;
     if (palette != nullptr && palette->ncolors == 256) {
         const KfxGpolyTarget native = {static_cast<uint8_t*>(lbDrawSurface->pixels),
             static_cast<uint32_t>(lbDrawSurface->w), static_cast<uint32_t>(lbDrawSurface->h),
             static_cast<uint32_t>(lbDrawSurface->pitch)};
-        const uint64_t target = m_drawing && m_drawing->UsesPresenter() ? m_drawing->ResidentTarget(native) : 0;
+        uint64_t replay_start = 0, replay_bytes_start = 0;
+        kfx_wgpu_allocation_counts(&replay_start, &replay_bytes_start);
+        performance_begin(PerfReplay);
+        const uint64_t target = m_drawing && m_drawing->UsesPresenter() ? m_drawing->ResidentTarget(native, &replay_ns) : 0;
+        performance_end(PerfReplay);
+        kfx_wgpu_allocation_counts(&replay_allocations, &replay_bytes);
+        replay_allocations -= replay_start;
+        replay_bytes -= replay_bytes_start;
         if (target) {
             result = kfx_wgpu_draw_prepare_present(m_rust, target,
                 reinterpret_cast<const uint8_t*>(palette->colors), sizeof(SDL_Color) * 256,
@@ -552,6 +565,13 @@ bool RendererSoftware::present_rust_frame()
     }
     performance_end(PerfPresentWait);
     performance_end(PerfPresentation);
+    uint64_t end_allocations = 0, end_bytes = 0;
+    kfx_wgpu_allocation_counts(&end_allocations, &end_bytes);
+    kfx_wgpu_present_counters(m_rust, &host);
+    const PerformancePresenterCounters sample = {host.acquire_ns, host.acquire_block_ns,
+        host.reconfigure_count, host.present_record_ns, host.submit_ns, replay_ns,
+        end_allocations - allocations - replay_allocations, end_bytes - allocated_bytes - replay_bytes};
+    performance_presenter_frame(&sample);
     if (m_vsync != (vsync_enabled ? 1 : 0)) {
         m_vsync = vsync_enabled ? 1 : 0;
         kfx_wgpu_details(m_rust, m_rust_details, sizeof(m_rust_details));

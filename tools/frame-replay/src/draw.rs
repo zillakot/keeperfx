@@ -229,6 +229,15 @@ pub struct Counters {
     pub gpu_pass_union_ns: u64,
 }
 
+struct PresentBuffers {
+    palette: wgpu::Buffer,
+    parameters: wgpu::Buffer,
+    previous_palette: Option<[u8; 1024]>,
+    binding: Option<([u64; 7], wgpu::Buffer, wgpu::BindGroup)>,
+    palette_writes: u64,
+    binding_builds: u64,
+}
+
 pub struct DrawRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -257,6 +266,8 @@ pub struct DrawRenderer {
     frame_flags: u32,
     frame_flags_index: u64,
     present: wgpu::RenderPipeline,
+    present_buffers: Vec<PresentBuffers>,
+    present_cursor: usize,
     targets: HashMap<u64, Target>,
     resources: HashMap<u64, Resource>,
     resource_bytes: usize,
@@ -400,6 +411,8 @@ impl DrawRenderer {
             frame_flags: 0,
             frame_flags_index: 0,
             present,
+            present_buffers: Vec::new(),
+            present_cursor: 0,
             targets: HashMap::new(),
             resources: HashMap::new(),
             resource_bytes: 0,
@@ -653,6 +666,7 @@ impl DrawRenderer {
     /// The arena pin scope and the stream ring's bump cursor both end with the
     /// encoder, because that is the submission whose head every staged write reaches.
     fn end_encoder_scope(&mut self) {
+        self.present_cursor = 0;
         self.arena.lock(false);
         self.arena.release_hold();
         self.stream_commands.reset();
@@ -1078,6 +1092,7 @@ impl DrawRenderer {
     ) -> Result<()> {
         self.checkpoint_target(target)?;
         self.check_status()?;
+        let target_id = target;
         let target = self.targets.get(&target).context("unknown target")?.clone();
         crate::frame::dimensions(output_width, output_height)?;
         ensure!(
@@ -1088,44 +1103,82 @@ impl DrawRenderer {
             output_width.max(output_height) <= self.device.limits().max_texture_dimension_2d,
             "output exceeds texture limit"
         );
-        let palette_words: Vec<_> = palette
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|v| u32::from_le_bytes(*v))
-            .collect();
-        let palette_buffer = buffer(
-            &self.device,
-            &mut self.counters,
-            "presentation palette version",
-            &palette_words,
-            wgpu::BufferUsages::STORAGE,
-        );
-        let parameters = buffer(
-            &self.device,
-            &mut self.counters,
-            "presentation dimensions",
-            &[
-                target.width,
-                target.height,
-                output_width,
-                output_height,
-                target.pitch,
-                target.offset,
-                0,
-                0,
-            ],
-            wgpu::BufferUsages::UNIFORM,
-        );
-        let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("GPU-owned presentation"),
-            layout: &self.present.get_bind_group_layout(0),
-            entries: &[
-                entry(0, &target.indices),
-                entry(1, &palette_buffer),
-                entry(2, &parameters),
-            ],
-        });
+        // Staged writes precede the whole encoder; multiple palette passes need separate slots.
+        if self.present_cursor == self.present_buffers.len() {
+            let palette = self.tracked_buffer(&wgpu::BufferDescriptor {
+                label: Some("presentation palette"),
+                size: 1024,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let parameters = self.tracked_buffer(&wgpu::BufferDescriptor {
+                label: Some("presentation dimensions"),
+                size: 32,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.present_buffers.push(PresentBuffers {
+                palette,
+                parameters,
+                previous_palette: None,
+                binding: None,
+                palette_writes: 0,
+                binding_builds: 0,
+            });
+        }
+        let slot = &mut self.present_buffers[self.present_cursor];
+        self.present_cursor += 1;
+        let palette: &[u8; 1024] = palette.try_into().unwrap();
+        if slot.previous_palette.as_ref() != Some(palette) {
+            self.queue.write_buffer(&slot.palette, 0, palette);
+            slot.previous_palette = Some(*palette);
+            slot.palette_writes += 1;
+        }
+        let words = [
+            target.width,
+            target.height,
+            output_width,
+            output_height,
+            target.pitch,
+            target.offset,
+            0,
+            0,
+        ];
+        let mut parameters = [0u8; 32];
+        for (word, bytes) in words.iter().zip(parameters.as_chunks_mut::<4>().0) {
+            bytes.copy_from_slice(&word.to_le_bytes());
+        }
+        self.queue.write_buffer(&slot.parameters, 0, &parameters);
+        let key = [
+            target_id,
+            target.width.into(),
+            target.height.into(),
+            target.pitch.into(),
+            target.offset.into(),
+            output_width.into(),
+            output_height.into(),
+        ];
+        if !slot
+            .binding
+            .as_ref()
+            .is_some_and(|(old, indices, _)| *old == key && *indices == target.indices)
+        {
+            slot.binding = Some((
+                key,
+                target.indices.clone(),
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("GPU-owned presentation"),
+                    layout: &self.present.get_bind_group_layout(0),
+                    entries: &[
+                        entry(0, &target.indices),
+                        entry(1, &slot.palette),
+                        entry(2, &slot.parameters),
+                    ],
+                }),
+            ));
+            slot.binding_builds += 1;
+        }
+        let binding = slot.binding.as_ref().unwrap().2.clone();
         let present = self.present.clone();
         let stamp = self.stamp(PASS_PRESENT);
         let encoder = self.frame_encoder();
@@ -2255,6 +2308,176 @@ mod tests {
         let renderer = crate::gpu::Renderer::new(device, queue).unwrap();
         let drawing = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
         (renderer, drawing)
+    }
+
+    fn read_present_pixel(renderer: &crate::gpu::Renderer, texture: &wgpu::Texture) -> [u8; 4] {
+        let staging = renderer.device().create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = renderer
+            .device()
+            .create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        renderer.queue().submit([encoder.finish()]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        staging
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).unwrap()
+            });
+        renderer
+            .device()
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+        receiver.recv().unwrap().unwrap();
+        let pixel = staging.slice(..).get_mapped_range().unwrap()[..4]
+            .try_into()
+            .unwrap();
+        staging.unmap();
+        pixel
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn persistent_present_palette_and_binding() {
+        let (renderer, mut drawing) = renderer();
+        let root = drawing.create_target(2, 2).unwrap();
+        let other = drawing.create_target(3, 3).unwrap();
+        let mut palette = [0u8; 1024];
+        palette[..4].copy_from_slice(&[11, 22, 33, 255]);
+        palette[4..8].copy_from_slice(&[77, 88, 99, 255]);
+        drawing
+            .submit(
+                other,
+                &[Command {
+                    kind: CLEAR,
+                    colour: 1,
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+        drawing.frame_begin(root).unwrap();
+        drawing.frame_end().unwrap();
+        let buffers = drawing.counters().buffers;
+        for (frame, target, size, writes, bindings) in [
+            (0, root, 2, 1, 1),
+            (1, root, 2, 1, 1),
+            (2, root, 2, 2, 1),
+            (3, root, 3, 2, 2),
+            (4, other, 3, 2, 3),
+            (5, root, 2, 2, 4),
+        ] {
+            if frame == 2 {
+                palette[..4].copy_from_slice(&[44, 55, 66, 255]);
+            }
+            let texture = renderer.device().create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            drawing.frame_begin(target).unwrap();
+            drawing
+                .present_into(
+                    target,
+                    &palette,
+                    size,
+                    size,
+                    &texture.create_view(&Default::default()),
+                )
+                .unwrap();
+            drawing.frame_submit().unwrap();
+            drawing.frame_end().unwrap();
+            assert_eq!(drawing.counters().buffers, buffers + 2);
+            assert_eq!(drawing.present_buffers[0].palette_writes, writes);
+            assert_eq!(drawing.present_buffers[0].binding_builds, bindings);
+            let colour = if target == other {
+                &palette[4..8]
+            } else {
+                &palette[..4]
+            };
+            assert_eq!(read_present_pixel(&renderer, &texture), colour);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn persistent_present_versions_share_one_submission() {
+        let (renderer, mut drawing) = renderer();
+        let root = drawing.create_target(1, 1).unwrap();
+        let textures: [_; 2] = std::array::from_fn(|_| {
+            renderer.device().create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        });
+        for _ in 0..2 {
+            drawing.frame_begin(root).unwrap();
+            let submits = drawing.counters().submits;
+            for (index, texture) in textures.iter().enumerate() {
+                let mut palette = [0u8; 1024];
+                palette[..4].copy_from_slice(&[index as u8 + 9, 22, 33, 255]);
+                drawing
+                    .present_into(
+                        root,
+                        &palette,
+                        1,
+                        1,
+                        &texture.create_view(&Default::default()),
+                    )
+                    .unwrap();
+            }
+            drawing.frame_submit().unwrap();
+            drawing.frame_end().unwrap();
+            assert_eq!(drawing.counters().submits, submits + 1);
+            for (index, texture) in textures.iter().enumerate() {
+                assert_eq!(
+                    read_present_pixel(&renderer, texture),
+                    [index as u8 + 9, 22, 33, 255]
+                );
+                assert_eq!(drawing.present_buffers[index].palette_writes, 1);
+                assert_eq!(drawing.present_buffers[index].binding_builds, 1);
+            }
+        }
     }
 
     #[test]

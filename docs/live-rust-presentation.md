@@ -96,12 +96,19 @@ below does require synchronous readback. wgpu/driver submission and staging allo
 still occur; retained resources do not imply allocation-free presentation.
 
 `presentation` covers cursor composition, acquisition, polling/reconfiguration,
-input upload, drawing submission, present submission and cursor cleanup. On the GPU
+input upload, present submission and cursor cleanup; frame replay is reported separately. On the GPU
 drawing path the frame's single submission happens inside the nested `present_wait`,
 so that scope now carries the whole frame's queue submission as well as the present
-API. Compare total presentation rather than treating the two APIs' nested durations
-as equivalent GPU work. [Performance baselines](performance-baselines.md) describe paired runs,
+API. The `replay` child is subtracted from exported `presentation`, preserving
+the frame-interval anchor and cursor order. These host scopes are not GPU work. [Performance baselines](performance-baselines.md) describe paired runs,
 process CPU counters, scoped Rust host allocations and reproducibility limits.
+
+The GPU palette pass retains palette and parameter buffers and caches its binding
+by target buffer and dimensions. Palette writes occur only when its 1024 bytes
+change; additional passes in one encoder use separate retained slots so staged
+writes cannot overwrite an earlier pass. Acquisition alone does not invalidate
+the binding. On this macOS/wgpu-hal 30.0.1 path, latency 2 already means three
+Metal drawables, the maximum; increasing swapchain depth is not available.
 
 ## Focused validation
 
@@ -304,6 +311,8 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `verified_triangles` / `verified_batches`: successfully compared triangles/batches; `verification_cpu_spans` and `verification_cpu_commands`: explicitly enabled CPU oracle work; `verification_flagged_shades`: batches the CPU oracle could not reproduce because a kernel flagged and skipped an out-of-range shade, counted rather than compared.
 - `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers.
 
+- Presenter report fields: `acquire_ns` (whole acquisition), `acquire_block_ns` (nested drawable/ring acquisition), `reconfigure_count`, `present_record_ns` (palette record/software upload), `submit_ns` (frame submit and present), and `replay_ns` (bridge frame flush). `allocations` and `allocated_bytes` are per-presentation Rust allocator deltas excluding replay. `presentation_cpu` subtracts acquire blocking and `present_wait` per frame; see [attribution](performance-baselines.md#presenter-host-attribution).
+- Profiler `asset_upload_bytes` and `command_upload_bytes` retain the drawing API split; `upload_bytes` remains their sum.
 - `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations. **A presented frame is one command buffer.** Every pass of the frame — the terrain prepare, each raster segment, each shadow mask and its triangles, the ordered-sprite layers, the lens and minimap passes, the cursor backup, composition and restore and the palette render pass — records into a single encoder opened at the frame's first record, and `kfx_wgpu_present` finishes and submits it. A flush is no longer a submission boundary: `frame_flush` replays what the frame has queued into that open encoder, which is why `frame_checkpoints` is structurally zero. Serial dependencies stay pass boundaries inside the encoder, where wgpu inserts the usage-transition barriers, so the per-pixel value sequence is the one the per-batch path produced.
 - `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_host_staged_asset_bytes`: host-side staged asset bytes the drawing context holds, a gauge rather than a total, and not GPU memory.
 - `ordered_sprite_layers` and `ordered_sprite_passes`: layers of mutually disjoint ordered sprites and the compute passes serving them, one pass of *M* workgroups per layer. They are equal by construction, so a divergence is a bug. `ordered_sprite_layers` below `gpu_ordered_sprites` is the only way the layering pays: measured on a busy 640x480 pair it is 2.68 against 2.69 ordered sprites, because consecutive ordered sprites are rare in the stream — a raster record between two of them orders them and ends the run. Each sprite's bound is its own scaling ranges, not its clip rectangle, which is always the whole drawing window.

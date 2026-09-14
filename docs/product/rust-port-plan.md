@@ -237,13 +237,22 @@ inside a frame, because `fits()` counts only resource bytes, taking the rare
 arena until the next `frame_begin`; and peak GPU memory is unmeasured and higher by
 construction, about 38 shadow arenas coexisting.
 
+**Presenter cost, PR A ([measurement](../performance-baselines.md#presenter-cost-pr-a-measured-2026-09-14)):**
+On `65e3ff9c2`, capped busy 1080p presentation is 0.657/0.656 ms plus
+3.186/3.051 ms replay, against 3.859/3.871 ms in master’s old combined scope.
+Buffers fall 90.40 → 88.39/frame; comparable scoped allocations 643 → 612 and
+present record 14.917 → 6.734–7.125 µs. Attribution residual is below 1% of
+the mean and native surface/drawing gates pass. Uncapped 197.98/195.08 FPS
+establishes no ceiling increase. Replay’s roughly 11 MB/frame asset uploads
+(P3) and 0.58–0.78 ms host submission remain the next costs to address.
+
 Next, in order:
 
-1. **Presenter cost.** Host timers for drawable acquisition and for the frame
-   replay, the replay moved out of the presentation scope, the 12–14 MB of
-   per-frame uploads cut, persistent palette and parameter buffers, late
-   acquisition. Acceptance: presentation minus acquisition wait at most 1.0 ms
-   and at least 260 uncapped FPS at 1080p with GPU drawing.
+1. **Presenter cost, remaining.** Cut the roughly 11 MB/frame asset uploads
+   identified by P0 (P3), investigate host submission cost, then evaluate the
+   software index-upload path and late cursor restoration separately. P0/P1/P4
+   are delivered; preserve `presentation_cpu` at most 1.0 ms and target at least
+   260 uncapped FPS at 1080p with GPU drawing.
 2. **Fold lens and minimap**, [migration step 12](../architecture/wgpu-single-stream-renderer.md#migration-sequence),
    after a minimap pass counter establishes what that pass costs.
 3. **Sprite artwork interning** — about 1 MB of per-frame uploads, keyed by
