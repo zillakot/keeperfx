@@ -23,8 +23,10 @@ pub const PASS_NAMES: [&str; PASS_KINDS] = [
 /// One shared query set; a submission takes a contiguous run of pairs from it and
 /// resolves into its own ring slot, so the ring bounds how many submissions can be
 /// in flight and the pair cursor can never overtake a slot that still holds pairs.
-const SLOT_PAIRS: u32 = 8;
-const SLOTS: usize = 256;
+/// A slot must hold a whole frame of passes, because a frame is one submission; a
+/// busy 1080p frame records about 114.
+const SLOT_PAIRS: u32 = 256;
+const SLOTS: usize = 8;
 const PAIRS: u32 = SLOT_PAIRS * SLOTS as u32;
 
 /// `KFX_WGPU_GPU_TIMING`: 1 resolves per-pass windows, 2 additionally drains the queue

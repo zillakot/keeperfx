@@ -63,13 +63,11 @@ impl DrawRenderer {
         let extents = vec![(view.width, view.height); geometry.len()];
         let (layout, rows) = row_layout(&geometry, &extents);
         let records: Vec<_> = commands.iter().copied().map(Record::Terrain).collect();
-        self.open_batch();
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -131,7 +129,11 @@ impl DrawRenderer {
         let pass = self.tile_index.passes()[0];
         self.raster_segment(
             &target,
-            &(command_buffer, tile_buffer, asset_buffer),
+            &(
+                Region::whole(command_buffer),
+                Region::whole(tile_buffer),
+                asset_buffer,
+            ),
             &pass,
             commands.len(),
             &mut prepare,

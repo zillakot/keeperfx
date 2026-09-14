@@ -14,6 +14,9 @@ pub struct ArenaCounters {
     pub overflows: u64,
     pub bytes_resident: u64,
     pub bytes_uploaded: u64,
+    /// Widest extent transient regions reached inside one pinning scope. Frame-scoped
+    /// pinning stops recycling them mid-frame, so this is what that costs.
+    pub scratch_bytes_peak: u64,
 }
 
 struct Residency {
@@ -35,9 +38,18 @@ pub(crate) struct Arena {
     lru: BTreeSet<(u64, u64)>,
     pinned: HashSet<u64>,
     scratch: Vec<(usize, u32)>,
+    scratch_words: u32,
+    /// Regions released while a hold is open. A recorded pass may still read them, and
+    /// a reuse would stage its upload at the head of that same submission.
+    retired: Vec<(usize, u32)>,
     staging: Vec<u8>,
     clock: u64,
-    holding: bool,
+    holds: u32,
+    /// Set while an encoder is open: growth would change the buffer identity under the
+    /// bind groups it already holds, and its forward copy would be overtaken by every
+    /// staged write of the submission.
+    locked: bool,
+    wanted: u32,
     enabled: bool,
     counters: ArenaCounters,
 }
@@ -68,9 +80,13 @@ impl Arena {
             lru: BTreeSet::new(),
             pinned: HashSet::new(),
             scratch: Vec::new(),
+            scratch_words: 0,
+            retired: Vec::new(),
             staging: Vec::new(),
             clock: 0,
-            holding: false,
+            holds: 0,
+            locked: false,
+            wanted: 0,
             enabled: limit_bytes >= MIN_LIMIT_BYTES,
             counters: ArenaCounters::default(),
         }
@@ -89,36 +105,75 @@ impl Arena {
         }
     }
 
-    /// Ends the pinning scope: everything referenced by the batch just built
-    /// becomes evictable and transient regions return to their free lists. Safe
-    /// only while every consumer submits its batch before opening the next one,
-    /// because a reused region is rewritten at the head of the following submit.
+    /// Ends the pinning scope unless a hold is open: everything referenced by the
+    /// batch just built becomes evictable and transient regions return to their free
+    /// lists. A recycled region is rewritten at the head of the next submission, so
+    /// this is safe only once the encoder that reads it has been submitted.
     pub(super) fn begin_batch(&mut self) {
         self.clock += 1;
-        if !self.holding {
-            self.pinned.clear();
+        if self.holds > 0 {
+            return;
         }
-        while let Some((class, offset)) = self.scratch.pop() {
-            self.free[class].push(offset);
-        }
+        self.pinned.clear();
+        self.recycle_scratch();
     }
 
-    /// Keeps every pin until the frame's last dispatch, because a frame packs its
-    /// whole stream before the serial routes between its raster passes open batches.
+    /// Extends the pinning scope to the open encoder, which is the submission every
+    /// staged write of this frame lands at the head of.
     pub(super) fn hold(&mut self) {
-        self.holding = true;
+        self.holds += 1;
     }
 
     pub(super) fn release_hold(&mut self) {
-        self.holding = false;
+        self.holds = self.holds.saturating_sub(1);
+        if self.holds > 0 {
+            return;
+        }
         self.pinned.clear();
+        self.recycle_scratch();
+    }
+
+    fn recycle_scratch(&mut self) {
+        for (class, offset) in self.scratch.drain(..).chain(self.retired.drain(..)) {
+            self.free[class].push(offset);
+        }
+        self.scratch_words = 0;
+    }
+
+    /// Locks growth for the life of an encoder, and grows ahead of it to the demand
+    /// the last frames showed so the cold path stays off the frame.
+    pub(super) fn lock(&mut self, locked: bool) {
+        self.locked = locked;
+    }
+
+    pub(super) fn pregrow(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        counters: &mut super::Counters,
+    ) {
+        if !self.enabled || self.locked {
+            return;
+        }
+        // The growth a locked frame had to refuse, plus a margin that takes the next
+        // doubling a frame early rather than inside one.
+        let need = self
+            .wanted
+            .saturating_sub(self.high_water)
+            .max(self.high_water / 16)
+            .max(ALIGN_WORDS);
+        self.reserve(device, queue, counters, need);
     }
 
     pub(super) fn forget(&mut self, id: u64) {
         if let Some(entry) = self.residency.remove(&id) {
             self.lru.remove(&(entry.last_used, id));
             self.pinned.remove(&id);
-            self.free[entry.class].push(entry.offset);
+            if self.holds > 0 {
+                self.retired.push((entry.class, entry.offset));
+            } else {
+                self.free[entry.class].push(entry.offset);
+            }
         }
     }
 
@@ -185,6 +240,11 @@ impl Arena {
         let class = size_class(words.max(ALIGN_WORDS));
         let offset = self.allocate(device, queue, counters, class)?;
         self.scratch.push((class, offset));
+        self.scratch_words = self.scratch_words.saturating_add(class_words(class));
+        self.counters.scratch_bytes_peak = self
+            .counters
+            .scratch_bytes_peak
+            .max(u64::from(self.scratch_words) * 4);
         Ok(offset)
     }
 
@@ -241,10 +301,11 @@ impl Arena {
             if self.reserve(device, queue, counters, need) {
                 continue;
             }
-            if self.evict() {
-                continue;
-            }
-            if self.reclaim() {
+            // Inside a pinning scope a reclaimed region cannot return to the free lists,
+            // so neither eviction nor defragmentation can make room: growth is the only
+            // way forward and the open encoder forbids it. The overflow is a host
+            // rejection, which `FullRedraw` already recovers from.
+            if self.holds == 0 && (self.evict() || self.reclaim()) {
                 continue;
             }
             self.counters.overflows += 1;
@@ -277,6 +338,12 @@ impl Arena {
         if wanted <= self.capacity {
             return false;
         }
+        if self.locked && self.buffer.is_some() {
+            // An open encoder names this buffer; `pregrow` takes the growth next frame.
+            self.wanted = self.wanted.max(wanted);
+            return false;
+        }
+        self.wanted = 0;
         let mut capacity = self.capacity.max(INITIAL_WORDS.min(self.limit));
         while capacity < wanted {
             capacity = capacity.saturating_mul(2).min(self.limit);
@@ -319,7 +386,10 @@ impl Arena {
     /// Defragments by starting over when nothing is live, which the class free
     /// lists cannot do on their own.
     fn reclaim(&mut self) -> bool {
-        if !self.residency.is_empty() || !self.scratch.is_empty() || self.high_water == ALIGN_WORDS
+        if !self.residency.is_empty()
+            || !self.scratch.is_empty()
+            || !self.retired.is_empty()
+            || self.high_water == ALIGN_WORDS
         {
             return false;
         }

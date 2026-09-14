@@ -73,7 +73,7 @@ impl DrawRenderer {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let encoder = self.tail_encoder();
+        let encoder = self.frame_encoder();
         for row in 0..height {
             encoder.copy_buffer_to_buffer(
                 &target.indices,
@@ -86,6 +86,7 @@ impl DrawRenderer {
                 u64::from(width) * 4,
             );
         }
+        self.pass_boundary();
         self.check_status()?;
         self.target_snapshots.insert(
             id,
@@ -157,11 +158,6 @@ impl DrawRenderer {
             limit,
         )?;
         self.checkpoint_target(target)?;
-        // `begin_batch` recycles scratch regions an already recorded pass may read, and a
-        // table upload lands at the head of the submission they share.
-        if self.tail_open() && !batch.tables.is_empty() {
-            self.tail_submit();
-        }
         let (assets, base) = if self.arena.enabled() {
             self.arena.begin_batch();
             let words =
@@ -175,13 +171,21 @@ impl DrawRenderer {
                 base,
             )
         } else {
+            let mut words = vec![0u32; batch.asset_words.max(1)];
+            for (&id, &offset) in &batch.tables {
+                let offset = offset as usize;
+                for (at, &byte) in self.resources[&id].bytes.iter().enumerate() {
+                    words[offset + at] = u32::from(byte);
+                }
+            }
             (
-                self.tracked_buffer(&wgpu::BufferDescriptor {
-                    label: Some("GPU snapshot sampling arena"),
-                    size: batch.asset_words as u64 * 4,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
+                buffer(
+                    &self.device,
+                    &mut self.counters,
+                    "GPU snapshot sampling arena",
+                    &words,
+                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                ),
                 0,
             )
         };
@@ -219,16 +223,26 @@ impl DrawRenderer {
                 )
             })
             .collect();
+        // Frame-scoped pinning keeps every scratch region distinct for the life of the
+        // encoder, so this staged write cannot reach a region a recorded pass reads.
         let mut uploaded = 0;
-        for (&id, &offset) in &batch.tables {
-            let bytes: Vec<_> = self.resources[&id]
-                .bytes
-                .iter()
-                .flat_map(|&b| u32::from(b).to_le_bytes())
-                .collect();
-            self.queue
-                .write_buffer(&assets, u64::from(base + offset) * 4, &bytes);
-            uploaded += bytes.len() as u64;
+        if self.arena.enabled() {
+            for (&id, &offset) in &batch.tables {
+                let bytes: Vec<_> = self.resources[&id]
+                    .bytes
+                    .iter()
+                    .flat_map(|&b| u32::from(b).to_le_bytes())
+                    .collect();
+                self.queue
+                    .write_buffer(&assets, u64::from(base + offset) * 4, &bytes);
+                uploaded += bytes.len() as u64;
+            }
+        } else {
+            uploaded = batch
+                .tables
+                .keys()
+                .map(|id| self.resources[id].bytes.len() as u64 * 4)
+                .sum();
         }
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered GPU snapshot sampling"),
@@ -245,13 +259,13 @@ impl DrawRenderer {
             ],
         });
         let compute = self.compute.clone();
-        let encoder = self.tail_encoder();
         let mut copied = 0;
-        for (source, offset, size) in &copies {
-            encoder.copy_buffer_to_buffer(source, 0, &assets, *offset, *size);
-            copied += *size;
-        }
         {
+            let encoder = self.frame_encoder();
+            for (source, offset, size) in &copies {
+                encoder.copy_buffer_to_buffer(source, 0, &assets, *offset, *size);
+                copied += *size;
+            }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("immutable source overlapping destination images"),
                 timestamp_writes: None,
@@ -261,6 +275,7 @@ impl DrawRenderer {
             pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
+        self.pass_boundary();
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
