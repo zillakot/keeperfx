@@ -22,8 +22,12 @@ pub const PASS_NAMES: [&str; PASS_KINDS] = [
     "present",
 ];
 
-const PAIRS: u32 = 64;
-const SLOTS: usize = 8;
+/// One shared query set; a submission takes a contiguous run of pairs from it and
+/// resolves into its own ring slot, so the ring bounds how many submissions can be
+/// in flight and the pair cursor can never overtake a slot that still holds pairs.
+const SLOT_PAIRS: u32 = 8;
+const SLOTS: usize = 256;
+const PAIRS: u32 = SLOT_PAIRS * SLOTS as u32;
 
 pub fn requested() -> bool {
     std::env::var("KFX_WGPU_GPU_TIMING").is_ok_and(|value| value == "1")
@@ -40,19 +44,21 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
 }
 
 struct Slot {
-    queries: wgpu::QuerySet,
     resolve: wgpu::Buffer,
     staging: wgpu::Buffer,
+    base: u32,
     kinds: Vec<u8>,
     pending: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
 }
 
 /// Per-pass GPU durations, resolved into a ring and read back without blocking.
-/// A submission whose ring slot is still in flight goes untimed rather than stalling.
+/// A submission whose ring is saturated goes untimed rather than stalling.
 pub(super) struct PassTimings {
     period: f64,
+    queries: wgpu::QuerySet,
     slots: Vec<Slot>,
     cursor: usize,
+    pairs: u32,
     active: Option<usize>,
     pub(super) ns: [u64; PASS_KINDS],
     pub(super) passes: u64,
@@ -64,33 +70,36 @@ impl PassTimings {
         if !requested() || !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             return None;
         }
+        let bytes = u64::from(SLOT_PAIRS) * 16;
         let slots = (0..SLOTS)
             .map(|_| Slot {
-                queries: device.create_query_set(&wgpu::QuerySetDescriptor {
-                    label: Some("per-pass GPU timestamps"),
-                    ty: wgpu::QueryType::Timestamp,
-                    count: PAIRS * 2,
-                }),
                 resolve: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("per-pass GPU timestamp resolve"),
-                    size: u64::from(PAIRS) * 16,
+                    size: bytes,
                     usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
                     mapped_at_creation: false,
                 }),
                 staging: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("per-pass GPU timestamp readback"),
-                    size: u64::from(PAIRS) * 16,
+                    size: bytes,
                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 }),
+                base: 0,
                 kinds: Vec::new(),
                 pending: None,
             })
             .collect();
         Some(Self {
             period: f64::from(queue.get_timestamp_period()),
+            queries: device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("per-pass GPU timestamps"),
+                ty: wgpu::QueryType::Timestamp,
+                count: PAIRS * 2,
+            }),
             slots,
             cursor: 0,
+            pairs: 0,
             active: None,
             ns: [0; PASS_KINDS],
             passes: 0,
@@ -104,6 +113,8 @@ impl PassTimings {
             let index = (self.cursor + step) % self.slots.len();
             if self.slots[index].pending.is_none() {
                 self.slots[index].kinds.clear();
+                self.slots[index].base = self.pairs;
+                self.pairs = (self.pairs + SLOT_PAIRS) % PAIRS;
                 self.cursor = (index + 1) % self.slots.len();
                 self.active = Some(index);
                 return;
@@ -117,23 +128,25 @@ impl PassTimings {
         let index = self.active?;
         let slot = &mut self.slots[index];
         let pair = slot.kinds.len() as u32;
-        if pair >= PAIRS {
+        if pair >= SLOT_PAIRS {
             self.dropped += 1;
             return None;
         }
         slot.kinds.push(kind as u8);
-        Some((slot.queries.clone(), pair * 2, pair * 2 + 1))
+        let query = (slot.base + pair) * 2;
+        Some((self.queries.clone(), query, query + 1))
     }
 
     /// Records the resolve and the staging copy into the encoder about to be submitted.
     pub(super) fn close(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<usize> {
         let index = self.active.take()?;
-        let used = self.slots[index].kinds.len() as u32;
+        let slot = &self.slots[index];
+        let used = slot.kinds.len() as u32;
         if used == 0 {
             return None;
         }
-        let slot = &self.slots[index];
-        encoder.resolve_query_set(&slot.queries, 0..used * 2, &slot.resolve, 0);
+        let first = slot.base * 2;
+        encoder.resolve_query_set(&self.queries, first..first + used * 2, &slot.resolve, 0);
         encoder.copy_buffer_to_buffer(&slot.resolve, 0, &slot.staging, 0, u64::from(used) * 16);
         Some(index)
     }
