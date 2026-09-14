@@ -31,6 +31,7 @@ static void api_process_multipart_json(const char *buffer, size_t length)
 #include "update.inc"
 
 static struct sockaddr_in address;
+static void wait_readable(int fd);
 
 static int connect_client(void)
 {
@@ -39,6 +40,7 @@ static int connect_client(void)
     struct timeval timeout = {1, 0};
     assert(setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
     assert(connect(peer, (struct sockaddr*)&address, sizeof(address)) == 0);
+    wait_readable(api.serverSocket);
     return peer;
 }
 
