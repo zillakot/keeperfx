@@ -2366,6 +2366,19 @@ mod tests {
         let other = drawing.create_target(3, 3).unwrap();
         let mut palette = [0u8; 1024];
         palette[..4].copy_from_slice(&[11, 22, 33, 255]);
+        palette[4..8].copy_from_slice(&[77, 88, 99, 255]);
+        drawing
+            .submit(
+                other,
+                &[Command {
+                    kind: CLEAR,
+                    colour: 1,
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+        drawing.frame_begin(root).unwrap();
+        drawing.frame_end().unwrap();
         let buffers = drawing.counters().buffers;
         for (frame, target, size, writes, bindings) in [
             (0, root, 2, 1, 1),
@@ -2407,7 +2420,12 @@ mod tests {
             assert_eq!(drawing.counters().buffers, buffers + 2);
             assert_eq!(drawing.present_buffers[0].palette_writes, writes);
             assert_eq!(drawing.present_buffers[0].binding_builds, bindings);
-            assert_eq!(read_present_pixel(&renderer, &texture), palette[..4]);
+            let colour = if target == other {
+                &palette[4..8]
+            } else {
+                &palette[..4]
+            };
+            assert_eq!(read_present_pixel(&renderer, &texture), colour);
         }
     }
 
