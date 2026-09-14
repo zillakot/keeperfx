@@ -4,6 +4,7 @@ use keeperfx_frame_replay::gpoly::Vertex;
 
 const FRAME_FLAG: u32 = 1;
 const TERRAIN_SHADE: u32 = 1 << 2;
+const RING_SLOTS: u64 = 8;
 
 fn triangle(source: u64, table: u64, shade: i64) -> TriangleCommand {
     TriangleCommand {
@@ -153,6 +154,40 @@ fn the_flagged_frame_is_presented_as_drawn() -> Result<()> {
     Ok(())
 }
 
+/// Advances frames until the raised flag surfaces. The publish is non-blocking, so the
+/// bound is progress rather than a frame count: the flag must arrive within one wrap of
+/// the ring, each stall buying the further wrap it deferred the flag by, and a ring that
+/// moves neither counter over twice its slots has stopped publishing.
+fn poll_for_flag(scene: &mut Scene) -> Result<u32> {
+    let start = scene.draw.frame_counters();
+    let mut seen = start;
+    let mut idle = 0;
+    loop {
+        let flags = scene.draw.frame_status().1;
+        if flags != 0 {
+            return Ok(flags);
+        }
+        let now = scene.draw.frame_counters();
+        let stalls = now.status_stalls - start.status_stalls;
+        ensure!(
+            now.status_reads - start.status_reads <= RING_SLOTS * (stalls + 1),
+            "a wrapped ring lost the flag it should only have deferred"
+        );
+        idle = match (now.status_reads, now.status_stalls)
+            == (seen.status_reads, seen.status_stalls)
+        {
+            true => idle + 1,
+            false => 0,
+        };
+        ensure!(
+            idle < RING_SLOTS * 2,
+            "the ring stopped publishing the status"
+        );
+        seen = now;
+        scene.frame(0)?;
+    }
+}
+
 /// The ring holds eight slots, so a longer run reuses each of them; a stall must defer
 /// a flag to the next publish rather than lose it.
 #[test]
@@ -171,8 +206,8 @@ fn the_status_ring_wraps_without_losing_a_flag() -> Result<()> {
     }
     let wrapped = scene.draw.frame_counters();
     ensure!(
-        wrapped.status_reads + wrapped.status_stalls >= 24,
-        "the ring published fewer times than it had frames"
+        wrapped.status_reads + wrapped.status_stalls + RING_SLOTS >= 24,
+        "the ring published fewer times than it had frames, beyond the slots in flight"
     );
     ensure!(
         scene.draw.counters().waits == before.waits,
@@ -190,17 +225,10 @@ fn the_status_ring_wraps_without_losing_a_flag() -> Result<()> {
         .draw
         .submit_triangles(scene.root, &[triangle(scene.source, scene.table, 70 << 16)])?;
     scene.draw.frame_end()?;
-    let mut flags = 0;
-    for _ in 0..=2u64 {
-        flags = scene.draw.frame_status().1;
-        if flags != 0 {
-            break;
-        }
-        scene.frame(0)?;
-    }
+    let flags = poll_for_flag(&mut scene)?;
     ensure!(
         flags & FRAME_FLAG != 0,
-        "a wrapped ring lost the flag it should only have deferred"
+        "the deferred flag surfaced as {flags:#x}"
     );
     ensure!(
         scene.draw.counters().waits == before.waits,
