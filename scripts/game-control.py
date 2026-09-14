@@ -75,7 +75,7 @@ class Client:
     def run(self, op, **fields):
         conditions = fields.pop("until", [])
         expected = {}
-        allowed = {"frontend", "view", "width", "height", "fullscreen", "minimized", "focused", "paused", "presenter"}
+        allowed = {"frontend", "view", "width", "height", "fullscreen", "minimized", "focused", "grabbed", "paused", "presenter"}
         for condition in conditions:
             key, separator, value = condition.partition("=")
             if not separator or key not in allowed:

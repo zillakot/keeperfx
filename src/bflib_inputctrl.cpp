@@ -624,13 +624,26 @@ void LbSetMouseGrab(TbBool grab_mouse)
     IWindowSystem* ws = GetSDLWindowSystem();
     if (!ws->HasOSCursor()) // consoles will have no OS cursor to grab or hide
         return;
+    // First call is always logged: both grab flags start true, so an unchanged
+    // init would otherwise leave the normal launch with no observable at all.
+    static TbBool grabLogged = false;
+    TbBool previousGrabState = lbMouseGrabbed;
     if (game_control_enabled()) {
         lbMouseGrabbed = false;
         ws->SetCursorGrab(false);
+        if (!grabLogged || (previousGrabState != lbMouseGrabbed))
+        {
+            grabLogged = true;
+            SYNCLOG("Mouse grab %d (intent %d, control %d)", (int)lbMouseGrabbed, (int)lbMouseGrab, 1);
+        }
         return;
     }
-    TbBool previousGrabState = lbMouseGrabbed;
     lbMouseGrabbed = grab_mouse;
+    if (!grabLogged || (previousGrabState != lbMouseGrabbed))
+    {
+        grabLogged = true;
+        SYNCLOG("Mouse grab %d (intent %d, control %d)", (int)lbMouseGrabbed, (int)lbMouseGrab, 0);
+    }
     ws->SetUseRelativeMouse(use_relative_mouse_mode());
     if (lbMouseGrabbed)
     {
@@ -724,7 +737,7 @@ void LbGrabMouseCheck(long grab_event)
                 }
                 break;
             case MG_InitMouse:
-                    grab_cursor = true;
+                    grab_cursor = lbMouseGrab;
                 break;
             case MG_OnFocusGained:
                 grab_cursor = lbMouseGrab;

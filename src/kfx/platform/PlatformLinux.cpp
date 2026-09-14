@@ -3,6 +3,7 @@
 #include "kfx/platform/FileFind.h"
 #include "platform.h" // kfxmain
 #include "bflib_fileio.h"
+#include "game_control.h"
 #include <SDL3/SDL.h>
 #include <cstdlib>
 #include <cctype>
@@ -84,6 +85,13 @@ TbFileFind* PlatformLinux::FileFindFirst(const char* filespec, TbFileEntry* entr
 
 bool PlatformLinux::VideoInit()
 {
+    if (game_control_enabled())
+    {
+        // Agent mode: the window must never steal focus from the desktop.
+        SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
+        SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+        SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");
+    }
     if (!SDL_Init(SDL_INIT_VIDEO))
         return false;
     atexit(SDL_Quit);

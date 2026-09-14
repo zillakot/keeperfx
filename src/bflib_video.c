@@ -573,7 +573,7 @@ TbResult LbScreenSetup(TbScreenMode mode, TbScreenCoord width, TbScreenCoord hei
         {
           LbMouseChangeSpriteAndHotspot(msspr, hot_x, hot_y);
         }
-        if (!IsMouseInsideWindow())
+        if (lbMouseGrab && !IsMouseInsideWindow())
         {
             PlatformManager_WarpCursor(mdinfo->Width / 2, mdinfo->Height / 2);
         }
