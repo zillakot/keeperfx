@@ -104,14 +104,17 @@ runner so builds and other measurements never overlap a timing window.
 the three named guards with `--max-load` and `--ignore-guards`, and the `flock` timing
 lock in both runners. See
 [offscreen measurement mode](../performance-baselines.md#offscreen-measurement-mode).
-An agent verified three capped 1080p offscreen GPU-drawing runs (per-pass spread about
-1%), an uncapped offscreen run that held 20.007 turns/s, a CPU-drawing offscreen run,
-the `background_load` and `occluded` refusals end to end, and a second invocation that
-blocked on the lock and recorded its wait. **Two acceptance clauses are unverified.**
-No swapchain run could acquire a drawable in that session — every one was refused as
-`occluded` — so there is no matched windowed comparison; and the locked-console clause
-needs a human to lock the console and confirm that the offscreen run completes while
-the swapchain run is refused.
+Verified across two agents: eight matched busy 1080p GPU-drawing runs, windowed versus
+offscreen, all accepted by the guards; an uncapped offscreen run that held 20.007
+turns/s; a CPU-drawing offscreen run; the `background_load` and `occluded` refusals end
+to end; and a second invocation that blocked on the lock and recorded its wait. Volume
+counters match between the two presentation modes once the scene's two workload modes
+are separated. **Two clauses remain open.** Per-pass GPU times agree within the run
+spread in the 46-dispatch workload mode but read 8-9% higher offscreen in the
+59-dispatch mode in two independent collections, each with only one windowed run there,
+so that difference is unresolved; and the locked-console clause needs a human to lock
+the console and confirm that the offscreen run completes while the swapchain run is
+refused.
 
 **Acceptance.** A busy 1080p timing run completes with the console locked and
 produces the same per-pass counters as an unlocked run within the usual run
