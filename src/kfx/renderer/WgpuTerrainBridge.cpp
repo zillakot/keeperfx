@@ -493,6 +493,50 @@ uint64_t WgpuTerrainBridge::ResourceFor(std::vector<Resource>& cache, const void
     return cache.back().handle;
 }
 
+/* Interns a lookup table by the caller's buffer identity, concatenating an
+ * optional second segment once instead of on every command. */
+uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, size_t limit)
+{
+    const size_t length = table.length + table.tail_length;
+    const void* key = StableKey(table.bytes, table.length);
+    const void* tail_key = table.tail == nullptr ? nullptr
+                                                 : StableKey(table.tail, table.tail_length);
+    const bool interned = key != nullptr && (table.tail == nullptr || tail_key != nullptr);
+    for (const auto& resource : m_native_tables) {
+        if (resource.width != table.width || resource.height != table.height ||
+            resource.pitch != table.pitch || resource.bytes.size() != length) continue;
+        if (interned) {
+            if (resource.key == key && resource.tail_key == tail_key &&
+                resource.generation == kfx_render_asset_generation) return resource.handle;
+            continue;
+        }
+        if (resource.key != nullptr) continue;
+        if (std::memcmp(resource.bytes.data(), table.bytes, table.length) != 0) continue;
+        if (table.tail_length != 0 && std::memcmp(resource.bytes.data() + table.length,
+                table.tail, table.tail_length) != 0) continue;
+        return resource.handle;
+    }
+    if (m_native_tables.size() >= limit) {
+        Flush();
+        if (m_failed) return 0;
+        if (kfx_wgpu_draw_resource_release(m_context, m_native_tables.front().handle,
+                m_error.data(), m_error.size()) != 1) return 0;
+        m_native_tables.erase(m_native_tables.begin());
+    }
+    Resource resource = {0, {}, table.width, table.height, table.pitch,
+        interned ? key : nullptr, kfx_render_asset_generation, interned ? tail_key : nullptr};
+    resource.bytes.reserve(length);
+    resource.bytes.insert(resource.bytes.end(), table.bytes, table.bytes + table.length);
+    if (table.tail_length != 0)
+        resource.bytes.insert(resource.bytes.end(), table.tail, table.tail + table.tail_length);
+    resource.handle = kfx_wgpu_draw_resource_create(m_context, resource.bytes.data(), length,
+        table.width, table.height, table.pitch, m_error.data(), m_error.size());
+    if (resource.handle == 0) return 0;
+    m_counts.resource_snapshot_bytes += length;
+    m_native_tables.push_back(std::move(resource));
+    return m_native_tables.back().handle;
+}
+
 int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& span,
     const uint8_t* texture, const uint8_t* fade)
 {
@@ -864,17 +908,23 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
         uint32_t view_x, view_y;
         if (m_frame_active && !FrameView(target, view_x, view_y) && !EndFrame(true)) return Fail(nullptr);
         m_native_target = target;
-        auto aliases_target = [&](const KfxWgpuNativeResource* resource) {
-            if (!resource || !resource->bytes || !resource->length || !m_gpu_dirty) return false;
-            const uintptr_t first = reinterpret_cast<uintptr_t>(resource->bytes);
+        auto aliases_range = [&](const uint8_t* bytes, size_t bytes_length) {
+            if (!bytes || !bytes_length || !m_gpu_dirty) return false;
+            const uintptr_t first = reinterpret_cast<uintptr_t>(bytes);
             const uintptr_t screen = reinterpret_cast<uintptr_t>(m_gpu_native_target.pixels);
             const size_t length = static_cast<size_t>(m_gpu_native_target.pitch) * (m_gpu_native_target.height - 1) + m_gpu_native_target.width;
-            return first <= screen ? screen - first < resource->length : first - screen < length;
+            return first <= screen ? screen - first < bytes_length : first - screen < length;
+        };
+        auto aliases_target = [&](const KfxWgpuNativeResource* resource) {
+            return resource && (aliases_range(resource->bytes, resource->length) ||
+                aliases_range(resource->tail, resource->tail_length));
         };
         if (aliases_target(source) || aliases_target(table)) {
             ++m_counts.target_alias_barriers;
             if ((source && !ReadBarrier(source->bytes, source->length)) ||
-                (table && !ReadBarrier(table->bytes, table->length))) return Fail(nullptr);
+                (table && !ReadBarrier(table->bytes, table->length)) ||
+                (table && table->tail && !ReadBarrier(table->tail, table->tail_length)))
+                return Fail(nullptr);
         }
         KfxWgpuDrawCommand owned = command;
         if (source != nullptr) {
@@ -884,8 +934,7 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
             m_counts.resource_snapshot_bytes += source->length;
         }
         if (table != nullptr) {
-            table_handle = ResourceFor(m_native_tables, nullptr, 0, table->bytes,
-                table->length, table->width, table->height, table->pitch, 16);
+            table_handle = TableResource(*table, 16);
         }
         const bool resources_ready = table == nullptr || table_handle != 0;
         owned.source = command.kind == KFX_WGPU_DRAW_TRANSITION ? command.source : source_handle;

@@ -22,7 +22,7 @@ static int submit(uint8_t *dst, int pitch, int width, int height,
 {
     if (!oracle) return 0;
     struct KfxGpolyTarget target = {dst, width, height, pitch};
-    struct KfxWgpuNativeResource source = {bytes, length, 1, 1, 1};
+    struct KfxWgpuNativeResource source = {bytes, length, 1, 1, 1, NULL, 0};
     c->abi_version = KFX_WGPU_DRAW_ABI_VERSION;
     c->kind = KFX_WGPU_DRAW_MAP_VIEW;
     c->clip_width = width;

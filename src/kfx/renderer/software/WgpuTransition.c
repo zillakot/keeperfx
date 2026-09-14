@@ -31,7 +31,7 @@ int kfx_wgpu_map_fade(uint8_t* dst, int pitch, int width, int height,
         uint8_t tables[33*256+65536];
         memcpy(tables,fade,33*256);
         memcpy(tables+33*256,ghost,65536);
-        struct KfxWgpuNativeResource table={tables,sizeof(tables),1,1,1};
+        struct KfxWgpuNativeResource table={tables,sizeof(tables),1,1,1, NULL, 0};
         struct KfxWgpuDrawCommand c={0};
         c.abi_version=KFX_WGPU_DRAW_ABI_VERSION; c.kind=KFX_WGPU_DRAW_TRANSITION;
         c.width=c.clip_width=c.source_width=width;
@@ -54,7 +54,7 @@ int kfx_wgpu_smooth(uint8_t* dst, int pitch, int height, int x, int y, int right
     struct KfxGpolyTarget target={dst,pitch,height,pitch};
     uint64_t snapshot=kfx_wgpu_native_snapshot(&target,pitch,height,pitch,NULL);
     if (!snapshot) return 0;
-    struct KfxWgpuNativeResource table={ghost,65536,256,256,256};
+    struct KfxWgpuNativeResource table={ghost,65536,256,256,256, NULL, 0};
     struct KfxWgpuDrawCommand c={0};
     c.abi_version=KFX_WGPU_DRAW_ABI_VERSION; c.kind=KFX_WGPU_DRAW_TRANSITION;
     c.x=x; c.y=y; c.width=right-x-1; c.height=bottom-y-1;

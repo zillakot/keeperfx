@@ -150,7 +150,7 @@ static int wgpu_primitive(struct WgpuPrimitive primitive, uint32_t kind,
         command.blend = KFX_WGPU_DRAW_DESTINATION_SOURCE;
     }
     struct KfxGpolyTarget target = {SwTargetWScreen(), pitch, screen_height, pitch};
-    struct KfxWgpuNativeResource table = {lbDisplay.GlassMap, 65536, 256, 256, 256};
+    struct KfxWgpuNativeResource table = {lbDisplay.GlassMap, 65536, 256, 256, 256, NULL, 0};
     return kfx_wgpu_native_draw(&target, &command, NULL,
         command.blend ? &table : NULL, wgpu_primitive_oracle, &primitive);
 }

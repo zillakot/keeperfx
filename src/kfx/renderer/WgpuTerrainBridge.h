@@ -14,10 +14,14 @@ void kfx_wgpu_native_flush(void);
 void* kfx_wgpu_native_context(void);
 void kfx_wgpu_native_context_cleanup(void (*cleanup)(void*));
 uint64_t kfx_wgpu_native_target(const struct KfxGpolyTarget* target);
+/* tail is an optional second immutable segment appended to bytes, so an emitter
+ * can name two stable buffers instead of copying them into one. */
 struct KfxWgpuNativeResource {
     const uint8_t* bytes;
     size_t length;
     uint32_t width, height, pitch;
+    const uint8_t* tail;
+    size_t tail_length;
 };
 typedef void (*KfxWgpuNativeOracle)(uint8_t* pixels, uint32_t pitch, void* context);
 uint64_t kfx_wgpu_native_snapshot(const struct KfxGpolyTarget* target,
@@ -102,6 +106,7 @@ private:
         uint32_t width, height, pitch;
         const void* key = nullptr;
         uint64_t generation = 0;
+        const void* tail_key = nullptr;
     };
     static int Sink(void* context, const KfxGpolyTarget* target,
         const KfxGpolySpan* span, const uint8_t* texture, const uint8_t* fade);
@@ -115,6 +120,7 @@ private:
     uint64_t ResourceFor(std::vector<Resource>& cache, const void* key, uint64_t generation,
         const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
         size_t limit);
+    uint64_t TableResource(const KfxWgpuNativeResource& table, size_t limit);
     void PurgeResources();
     int Fail(const char* reason);
     void ReplayPending();

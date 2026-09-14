@@ -115,7 +115,7 @@ int kfx_wgpu_cursor_direct(const KfxGpolyTarget& target, const TbSprite* sprite,
     auto c = command(KFX_WGPU_DRAW_SPRITE, target.width, target.height);
     c.source_width = sprite->SWidth;
     c.source_height = sprite->SHeight;
-    const KfxWgpuNativeResource source = {asset.data(), asset.size(), 1, 1, 1};
+    const KfxWgpuNativeResource source = {asset.data(), asset.size(), 1, 1, 1, nullptr, 0};
     Oracle o = {sprite, xs, ys, target.height};
     const int result = kfx_wgpu_native_draw(&target, &c, &source, nullptr, oracle, &o);
     totals.sprite_draws += result != 0;

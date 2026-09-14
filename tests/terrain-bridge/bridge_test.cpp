@@ -220,7 +220,7 @@ int main()
         kfx_wgpu_terrain_boundary(1);
         assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &a, texture.data(), fade.data()) == 1);
         std::vector<uint8_t> image(200, 19);
-        KfxWgpuNativeResource source = {image.data(), image.size(), 20, 10, 20};
+        KfxWgpuNativeResource source = {image.data(), image.size(), 20, 10, 20, nullptr, 0};
         KfxWgpuDrawCommand command = {};
         command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         command.kind = KFX_WGPU_DRAW_IMAGE;
@@ -236,7 +236,7 @@ int main()
     for (bool resident : {false, true}) {
         WgpuTerrainBridge bridge(0, false, true, resident);
         std::vector<uint8_t> image(200, 37);
-        KfxWgpuNativeResource source = {image.data(), image.size(), 20, 10, 20};
+        KfxWgpuNativeResource source = {image.data(), image.size(), 20, 10, 20, nullptr, 0};
         KfxWgpuDrawCommand command = {};
         command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         command.kind = KFX_WGPU_DRAW_IMAGE;
@@ -273,7 +273,7 @@ int main()
         assert(before.bridge_readbacks == (verify ? 5 : 0));
         assert(before.verification_readbacks == (verify ? 5 : 0));
         std::vector<uint8_t> source_pixels(200, 17);
-        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 20, 10, 20};
+        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 20, 10, 20, nullptr, 0};
         KfxWgpuDrawCommand image = {};
         image.abi_version = 1;
         image.kind = KFX_WGPU_DRAW_IMAGE;
@@ -310,7 +310,7 @@ int main()
         WgpuTerrainBridge bridge(0, false, verify, true);
         assert(bridge.BeginFrame(frame));
         std::vector<uint8_t> source_pixels(12 * 6, 17);
-        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 12, 6, 12};
+        KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 12, 6, 12, nullptr, 0};
         KfxWgpuDrawCommand image = {};
         image.abi_version = 1;
         image.kind = KFX_WGPU_DRAW_IMAGE;
@@ -339,7 +339,7 @@ int main()
         assert(bridge.GetCounters().native_copy_bytes == 200);
         assert(bridge.BeginFrame(frame, true));
         std::vector<uint8_t> clear_pixels(200, 144);
-        KfxWgpuNativeResource clear_reference = {clear_pixels.data(), clear_pixels.size(), 20, 10, 20};
+        KfxWgpuNativeResource clear_reference = {clear_pixels.data(), clear_pixels.size(), 20, 10, 20, nullptr, 0};
         KfxWgpuDrawCommand clear = {};
         clear.abi_version = 1;
         clear.kind = KFX_WGPU_DRAW_CLEAR;
@@ -410,7 +410,7 @@ int main()
         assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &resident, &a, texture.data(), fade.data()) == 1);
         oracle(independent, resident.pitch, a, texture, fade);
         bridge.Flush();
-        KfxWgpuNativeResource alias_source = {resident_pixels.data(), 236, 20, 10, 24};
+        KfxWgpuNativeResource alias_source = {resident_pixels.data(), 236, 20, 10, 24, nullptr, 0};
         KfxWgpuDrawCommand image = {};
         image.abi_version = 1;
         image.kind = KFX_WGPU_DRAW_IMAGE;

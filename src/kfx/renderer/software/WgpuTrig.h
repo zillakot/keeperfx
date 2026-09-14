@@ -61,8 +61,7 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
         !kfx_wgpu_native_read_barrier(pixmap.fade_tables, 16384) ||
         !kfx_wgpu_native_read_barrier(pixmap.ghost, 65536)) return 0;
     uint8_t *source = malloc(60 + texture_length);
-    uint8_t *tables = malloc(81920);
-    if (source == NULL || tables == NULL) { free(source); free(tables); return 0; }
+    if (source == NULL) return 0;
     for (unsigned i = 0; i < 3; i++) {
         const uint32_t fields[] = {vertices[i].X, vertices[i].Y,
             textured ? vertices[i].U : 0, textured ? vertices[i].V : 0, shaded ? vertices[i].S : 0};
@@ -70,10 +69,10 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
             source[i * 20 + j * 4 + k] = fields[j] >> (k * 8);
     }
     if (textured) memcpy(source + 60, vec_map, texture_length);
-    memcpy(tables, pixmap.fade_tables, 16384);
-    memcpy(tables + 16384, pixmap.ghost, 65536);
-    const struct KfxWgpuNativeResource source_resource = {source, 60 + texture_length, 1, 1, 1};
-    const struct KfxWgpuNativeResource table_resource = {tables, 81920, 256, 320, 256};
+    const struct KfxWgpuNativeResource source_resource = {source, 60 + texture_length, 1, 1, 1,
+        NULL, 0};
+    const struct KfxWgpuNativeResource table_resource = {pixmap.fade_tables, 16384, 256, 320, 256,
+        pixmap.ghost, 65536};
     const struct KfxGpolyTarget target = {poly_screen + vec_screen_width,
         vec_window_width, vec_window_height, vec_screen_width};
     struct KfxWgpuDrawCommand command = {0};
@@ -88,6 +87,6 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
     command.transparent = KFX_WGPU_DRAW_OPAQUE;
     int result = kfx_wgpu_native_draw(&target, &command, &source_resource, &table_resource,
         wgpu_trig_oracle, vertices);
-    free(source); free(tables);
+    free(source);
     return result == 1;
 }
