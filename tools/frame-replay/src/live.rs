@@ -92,8 +92,6 @@ struct Presenter {
     failed: bool,
     verify: bool,
     verified_frames: u64,
-    presented_frames: u64,
-    acquisition_skips: u64,
 }
 
 #[cfg(target_os = "macos")]
@@ -171,8 +169,6 @@ impl Presenter {
             failed: false,
             verify,
             verified_frames: 0,
-            presented_frames: 0,
-            acquisition_skips: 0,
         })
     }
 
@@ -207,8 +203,6 @@ impl Presenter {
             failed: false,
             verify: std::env::var("KFX_WGPU_VERIFY").is_ok_and(|value| value == "1"),
             verified_frames: 0,
-            presented_frames: 0,
-            acquisition_skips: 0,
         })
     }
 
@@ -240,7 +234,6 @@ impl Presenter {
         self.renderer.device().poll(wgpu::PollType::Poll)?;
         self.renderer.check_status()?;
         if width == 0 || height == 0 {
-            self.acquisition_skips += 1;
             return Ok(false);
         }
         crate::frame::dimensions(width, height)?;
@@ -250,7 +243,6 @@ impl Presenter {
             instance,
             pending_view,
             format,
-            acquisition_skips,
             ..
         } = self;
         let device = renderer.device();
@@ -324,10 +316,7 @@ impl Presenter {
                             return Ok(true);
                         }
                         wgpu::CurrentSurfaceTexture::Timeout
-                        | wgpu::CurrentSurfaceTexture::Occluded => {
-                            *acquisition_skips += 1;
-                            return Ok(false);
-                        }
+                        | wgpu::CurrentSurfaceTexture::Occluded => return Ok(false),
                         wgpu::CurrentSurfaceTexture::Outdated => surface.configure(device, config),
                         wgpu::CurrentSurfaceTexture::Lost => {
                             renderer.check_status()?;
@@ -520,6 +509,13 @@ pub unsafe extern "C" fn kfx_wgpu_present(
                 presenter.renderer.check_status()?;
                 return Ok(Some(0));
             }
+            // The frame's own submission, taken from whichever renderer made it, so the
+            // ring adds no submit of its own and `submits` stays one per frame.
+            let submission = presenter
+                .drawing
+                .as_mut()
+                .and_then(|drawing| drawing.take_submission())
+                .or_else(|| presenter.renderer.take_submission());
             let Presenter {
                 target, renderer, ..
             } = presenter;
@@ -529,17 +525,17 @@ pub unsafe extern "C" fn kfx_wgpu_present(
                     renderer.queue().present(frame);
                 }
                 Target::Offscreen { slots, next, .. } => {
-                    // The empty submit names the frame's place in the queue; the ring
-                    // waits on it before this slot's texture is rendered into again.
-                    slots[*next].last = Some(
+                    // The ring waits on this before rendering into the slot again; an
+                    // empty submit only names a place in the queue when nothing was
+                    // recorded, which a frame that reached here normally did.
+                    slots[*next].last = Some(submission.unwrap_or_else(|| {
                         renderer
                             .queue()
-                            .submit(std::iter::empty::<wgpu::CommandBuffer>()),
-                    );
+                            .submit(std::iter::empty::<wgpu::CommandBuffer>())
+                    }));
                     *next = (*next + 1) % slots.len();
                 }
             }
-            presenter.presented_frames += 1;
             presenter.renderer.check_status()?;
             Ok(Some(1))
         })
@@ -569,12 +565,12 @@ pub unsafe extern "C" fn kfx_wgpu_details(
         boundary(text, capacity, || {
             ensure!(!handle.is_null(), "null presenter");
             let presenter = &*handle.cast::<Presenter>();
+            // Every value here must be constant for the life of the presenter: the
+            // performance capture aborts a run whose renderer identity changes.
             let mut details = serde_json::json!({
                 "adapter": presenter.adapter, "backend": "Metal",
                 "format": format!("{:?}", presenter.format),
                 "verified_frames": presenter.verified_frames,
-                "presented_frames": presenter.presented_frames,
-                "acquisition_skips": presenter.acquisition_skips,
             });
             match &presenter.target {
                 Target::Swapchain { config, .. } => {
@@ -883,8 +879,6 @@ mod tests {
                 unsafe { std::ffi::CStr::from_ptr(error.as_ptr()) }.to_string_lossy()
             );
         }
-        assert_eq!(presenter.presented_frames, 3);
-        assert_eq!(presenter.acquisition_skips, 0);
         let Target::Offscreen { slots, next, .. } = &presenter.target else {
             unreachable!()
         };

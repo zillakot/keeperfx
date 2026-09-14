@@ -50,6 +50,7 @@ private:
     SDL_Window* m_rust_window = nullptr;
     bool m_rust_attempted = false;
     unsigned long m_rust_frames = 0;
+    unsigned long m_rust_skips = 0;
     char m_rust_details[1024] = {};
 #endif
 

@@ -51,7 +51,7 @@ SETTINGS = {
     "CURSOR_EDGE_CAMERA_PANNING": "OFF", "LOCK_CURSOR_IN_POSSESSION": "OFF",
 }
 TIMING_LOCK_PATH = "/private/tmp/keeperfx-timing.lock"
-DEFAULT_MAX_LOAD = 0.35
+DEFAULT_MAX_LOAD = 0.5
 CAPPED_FPS_LIMIT = 60
 UNCAPPED_FPS_LIMIT = 0
 CAPPED_LIMITATION = "The 60 FPS cap limits observed frame rate; lower presentation duration is not an uncapped gameplay FPS speedup."
@@ -154,34 +154,26 @@ def evaluate_guards(args, locked, load):
     return findings
 
 
-def occlusion_reason(stderr, details, presentations):
-    """Post-run: the engine skipped acquisitions, or presented nothing at all."""
+def occlusion_reason(stderr, presentations):
+    """Post-run, measured window only. A skip inside the window makes the engine call
+    performance_failed, which writes the marker; a startup skip before the window is
+    not a finding, and renderer_details only ever carries the startup snapshot."""
     if "Rust surface acquisition skipped" in (stderr or ""):
         return {"reason": "occluded", "detail": "the engine reported a skipped surface acquisition"}
-    skips = (details or {}).get("acquisition_skips")
-    if isinstance(skips, int) and not isinstance(skips, bool) and skips > 0:
-        return {"reason": "occluded", "detail": f"the presenter skipped {skips} acquisitions"}
     if not presentations:
         return {"reason": "occluded", "detail": "no frame was presented inside the measured window"}
     return None
 
 
 def post_run_occlusion(output, stderr):
-    details, presentations = {}, 0
-    sidecar = output / "raw.csv.json"
-    if sidecar.is_file():
-        try:
-            parsed = json.loads(json.loads(sidecar.read_text()).get("renderer_details") or "{}")
-            details = parsed if isinstance(parsed, dict) else {}
-        except (OSError, ValueError, TypeError, AttributeError):
-            details = {}
+    presentations = 0
     raw = output / "raw.csv"
     if raw.is_file():
         try:
             presentations = sum(1 for line in raw.read_text().splitlines() if line.startswith("presentation,"))
         except OSError:
             presentations = 0
-    return occlusion_reason(stderr, details, presentations)
+    return occlusion_reason(stderr, presentations)
 
 
 class Refusal(RuntimeError):
@@ -608,7 +600,8 @@ def main():
             if guards["findings"] and not args.ignore_guards:
                 raise Refusal(guards["findings"][0]["reason"], guards["findings"][0]["detail"])
             run_engine(output, engine, game, work_root, args, report, guards)
-        write_report(output, report)
+            write_report(output, report)
+            write_json(output / "report.json", report)
     except Refusal as error:
         report.update(status="refused", refusal={"reason": error.reason, "detail": error.detail})
         write_json(output / "report.json", report)
@@ -617,7 +610,6 @@ def main():
         report.update(status="failed", error=str(error))
         write_json(output / "report.json", report)
         raise RuntimeError(f"profiling failed: {error}; diagnostics preserved in {output}") from error
-    write_json(output / "report.json", report)
     print(f"Profiled {args.turns} {args.scene} simulation turns ({report['frame_cap']['label']}): {output / 'report.md'}")
 
 

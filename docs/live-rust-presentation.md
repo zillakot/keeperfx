@@ -35,7 +35,10 @@ renders into a two-slot texture ring, takes its output size from the logical
 framebuffer rather than the window, and hides the window it still needs for events.
 Nothing reaches the screen, so this is a measurement mode and not a player feature; the
 [profiling runner](performance-baselines.md#offscreen-measurement-mode) selects it with
-`--offscreen`.
+`--offscreen`. One dependence on visibility survives: `SDL_HideWindow` drops focus, and
+`FREEZE_GAME_ON_FOCUS_LOST` would then park the loop
+([`game_loop.c`](../src/game_loop.c)), so that setting must be off. The runner forces it
+off in its isolated configuration; a hand-run offscreen session must do the same.
 
 Use a separate asset installation with empty `save/` and `scrshots/` directories
 for gameplay validation. The [profiling runner](performance-baselines.md) creates

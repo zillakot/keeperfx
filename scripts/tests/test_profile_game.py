@@ -526,12 +526,29 @@ class GuardTests(unittest.TestCase):
                          ["background_load"])
         self.assertEqual(profile.evaluate_guards(args, False, None), [])
 
-    def test_occlusion_fires_on_marker_skips_or_no_presentation(self):
-        self.assertEqual(profile.occlusion_reason("Rust surface acquisition skipped", {}, 10)["reason"], "occluded")
-        self.assertEqual(profile.occlusion_reason("", {"acquisition_skips": 3}, 10)["reason"], "occluded")
-        self.assertEqual(profile.occlusion_reason("", {}, 0)["reason"], "occluded")
-        self.assertIsNone(profile.occlusion_reason("", {"acquisition_skips": 0}, 10))
-        self.assertIsNone(profile.occlusion_reason(None, None, 10))
+    def test_occlusion_fires_on_the_marker_or_on_no_presentation_only(self):
+        self.assertEqual(profile.occlusion_reason("Rust surface acquisition skipped", 10)["reason"], "occluded")
+        self.assertEqual(profile.occlusion_reason("", 0)["reason"], "occluded")
+        self.assertIsNone(profile.occlusion_reason("", 10))
+        self.assertIsNone(profile.occlusion_reason(None, 10))
+
+    def test_a_startup_acquisition_skip_does_not_refuse_a_healthy_window(self):
+        """renderer_details is the first-frame snapshot, so its skip count says nothing
+        about the measured window; four healthy windowed runs were refused over it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def run(command, **kwargs):
+                output = Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent
+                metadata = engine_output(output)
+                metadata["renderer_details"] = json.dumps(
+                    {"adapter": "Apple M5 (Metal)", "backend": "Metal", "format": "Bgra8Unorm",
+                     "present_mode": "Immediate", "acquisition_skips": 1, "presented_frames": 0})
+                (output / "raw.csv.json").write_text(json.dumps(metadata))
+                return subprocess.CompletedProcess(command, 0, "", "")
+            report = json.loads((run_runner(root, run) / "report.json").read_text())
+            self.assertEqual(report["status"], "complete")
+            self.assertIsNone(report["environment_guards"]["occlusion"])
 
     def test_environment_selects_the_offscreen_backend_only_when_requested(self):
         with mock.patch.dict(os.environ, {"PATH": "/bin"}, clear=True), \

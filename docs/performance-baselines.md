@@ -408,7 +408,9 @@ Pacing is unchanged for capped runs: the frame limiter is engine-side and unrela
 presentation. Uncapped runs are throttled by the ring instead of by `nextDrawable` —
 before a slot is rendered into again the host waits for that slot's last submission, so
 it stays at most two frames ahead of the GPU, the same depth as the swapchain's
-`desired_maximum_frame_latency`.
+`desired_maximum_frame_latency`. The ring waits on the frame's own submission, taken
+from whichever renderer made it, and issues no submission of its own, so `submits` is
+one per frame on both paths and remains comparable.
 
 **Comparable with a windowed run:** `simulation`, `draw` and the whole
 `--draw-breakdown` series; every drawing volume counter (`submits`, `dispatches`,
@@ -437,12 +439,19 @@ Both runners sample the environment and refuse a run they cannot measure. A refu
   under `--offscreen`, which is the point of that mode. A probe that fails records
   `null`, which is not a refusal.
 - `background_load` — the one-minute load average per core above `--max-load`
-  (default `0.35`). It is a cheap guard, not a scheduler: the average lags a job that
-  just started, so it is sampled again at the end and a late breach annotates the
+  (default `0.5`). It is a cheap guard, not a scheduler: a one-minute average both lags
+  a job that just started and trails one that just finished by about a minute, so a
+  build that ended moments ago still shows in it. Wait for it to fall rather than
+  raising the threshold. It is sampled again at the end, and a late breach annotates the
   limitations rather than discarding a completed run.
-- `occluded` — checked after the engine exits: the `Rust surface acquisition skipped`
-  marker in stderr, a nonzero `acquisition_skips` in `renderer_details`, or zero
-  presentation samples.
+- `occluded` — checked after the engine exits, over the measured window only: the
+  `Rust surface acquisition skipped` marker in stderr, or zero presentation samples. A
+  skipped acquisition inside the window calls `performance_failed`, which writes that
+  marker, so the two cover the window between them. The presenter's own counts are not
+  consulted: `renderer_details` is captured once on the first frame and must stay
+  constant for the run, so it only ever carries a startup snapshot. End-of-run counts
+  appear in the `Rust presenter shutdown after N frames, M acquisition skips` line in
+  `keeperfx.log`.
 
 `--ignore-guards` records `"ignored": true` and the findings, adds a limitation line,
 and runs anyway. It never applies to the lock.

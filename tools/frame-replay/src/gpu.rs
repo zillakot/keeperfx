@@ -22,6 +22,7 @@ pub struct Renderer {
     parameters: wgpu::Buffer,
     inputs: Option<Inputs>,
     target: Option<Target>,
+    last_submission: Option<wgpu::SubmissionIndex>,
     pub(crate) failure: Arc<Mutex<Option<String>>>,
 }
 
@@ -103,6 +104,7 @@ impl Renderer {
             parameters,
             inputs: None,
             target: None,
+            last_submission: None,
             failure,
         };
         renderer.check_status()?;
@@ -271,8 +273,13 @@ impl Renderer {
             pass.set_bind_group(0, &inputs.binding, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.last_submission = Some(self.queue.submit([encoder.finish()]));
         self.check_status()
+    }
+
+    /// The most recent submission this renderer made, for a caller that has to wait on it.
+    pub fn take_submission(&mut self) -> Option<wgpu::SubmissionIndex> {
+        self.last_submission.take()
     }
 }
 

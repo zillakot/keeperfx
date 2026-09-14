@@ -232,6 +232,7 @@ pub struct Counters {
 pub struct DrawRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    last_submission: Option<wgpu::SubmissionIndex>,
     compute: wgpu::ComputePipeline,
     compute_sprite_ordered: wgpu::ComputePipeline,
     /// `[0, 1, 2, ...]`, the record index table every layer that holds the run's first
@@ -421,6 +422,7 @@ impl DrawRenderer {
             stream_tiles: PersistentBuffer::default(),
             prepared_rows: PersistentBuffer::default(),
             asset_generation: 1,
+            last_submission: None,
             encoder: None,
             encoder_passes: 0,
             timing_slot: None,
@@ -613,6 +615,11 @@ impl DrawRenderer {
 
     /// Drops a half-recorded frame. Dropping a `CommandEncoder` without finishing it
     /// discards its recording, which is what an abort or a terminal failure wants.
+    /// The most recent submission this context made, for a caller that has to wait on it.
+    pub fn take_submission(&mut self) -> Option<wgpu::SubmissionIndex> {
+        self.last_submission.take()
+    }
+
     pub fn frame_discard(&mut self) {
         if self.encoder.take().is_none() {
             return;
@@ -635,7 +642,7 @@ impl DrawRenderer {
             .zip(self.timing_slot.take())
             .and_then(|(timings, slot)| timings.close(slot, &mut encoder));
         self.counters.submits += 1;
-        self.queue.submit([encoder.finish()]);
+        self.last_submission = Some(self.queue.submit([encoder.finish()]));
         self.end_encoder_scope();
         if let Some(slot) = closed {
             self.timings.as_mut().unwrap().map(slot);

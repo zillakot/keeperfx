@@ -411,7 +411,10 @@ void RendererSoftware::destroy_rust_presenter()
     if (m_rust != nullptr) {
         if (m_drawing != nullptr) m_drawing->DetachPresenter();
         kfx_wgpu_details(m_rust, m_rust_details, sizeof(m_rust_details));
-        SYNCLOG("Rust presenter shutdown after %lu frames: %s", m_rust_frames, m_rust_details);
+        // The presenter's identity string is deliberately constant, so the run's
+        // counts are reported here rather than through it.
+        SYNCLOG("Rust presenter shutdown after %lu frames, %lu acquisition skips: %s",
+            m_rust_frames, m_rust_skips, m_rust_details);
         kfx_wgpu_destroy(m_rust);
         m_rust = nullptr;
     }
@@ -419,7 +422,11 @@ void RendererSoftware::destroy_rust_presenter()
         SDL_Metal_DestroyView(m_metal_view);
         m_metal_view = nullptr;
     }
+    // The SDL fallback presents into the window this mode hid, so it must come back.
+    if (m_offscreen && lbWindow != nullptr)
+        SDL_ShowWindow(lbWindow);
     m_offscreen = false;
+    m_rust_skips = 0;
     m_rust_window = nullptr;
     m_vsync = -1;
 }
@@ -472,12 +479,12 @@ bool RendererSoftware::present_rust_frame()
 {
     int width = 0, height = 0;
     if (m_offscreen) {
-        width = lbDrawSurface->w;
-        height = lbDrawSurface->h;
-        if (width <= 0 || height <= 0) {
+        if (lbDrawSurface == nullptr || lbDrawSurface->w <= 0 || lbDrawSurface->h <= 0) {
             performance_failed("no logical framebuffer for offscreen presentation");
             return true;
         }
+        width = lbDrawSurface->w;
+        height = lbDrawSurface->h;
     } else {
         SDL_GetWindowSizeInPixels(lbWindow, &width, &height);
         if (width <= 0 || height <= 0 || (SDL_GetWindowFlags(lbWindow) & SDL_WINDOW_MINIMIZED)) {
@@ -550,6 +557,7 @@ bool RendererSoftware::present_rust_frame()
         kfx_wgpu_details(m_rust, m_rust_details, sizeof(m_rust_details));
     }
     if (result == 0) {
+        ++m_rust_skips;
         performance_failed("Rust surface acquisition skipped");
         return true;
     }
