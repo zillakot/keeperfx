@@ -373,12 +373,15 @@ fixed-point triangle setup); `trig_sample` and its 27 modes; all sampler arithme
 
 New fixtures required for parity:
 
-1. **Frame order** (the central one). One frame with every family interleaved in a seeded pseudo-random
-   order with deliberate overlap, rendered through the current per-batch API and through the
-   single-stream path, asserting byte-equal `readback`. Headless in CI beside
-   [`draw_limits_gpu.rs`](../../tools/frame-replay/tests/draw_limits_gpu.rs).
-2. **View rebasing.** Nested views at nonzero offsets with a root pitch wider than the root width; one
-   command of each family per view; root-space compared against view-space rendering.
+1. **Frame order** (the central one). Landed as
+   [`draw_frame_order_gpu.rs`](../../tools/frame-replay/tests/draw_frame_order_gpu.rs): 48 seeded
+   interleaved steps across three views covering every family, per-batch versus single-stream,
+   byte-equal `readback` plus one raster pass per non-empty raster run.
+2. **View rebasing.** Landed as
+   [`draw_views_gpu.rs`](../../tools/frame-replay/tests/draw_views_gpu.rs). A root pitch wider than
+   the root width is unconstructible — `create_target` always sets `pitch = width` — so the fixture
+   uses nested views at nonzero offsets in a wide root, one command of each family per view, with
+   root-space compared against view-space rendering.
 3. **Ordered-sprite layering.** Asserts layering never reorders an overlapping pair and that a
    fully-overlapping set degenerates to one sprite per layer, extending
    `tests/sprites/copy_fixture.c`'s 576 alignment cases into a multi-sprite frame.
