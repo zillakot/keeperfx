@@ -395,29 +395,6 @@ impl DrawRenderer {
             self.frame = Some(frame);
             return self.check_status();
         }
-        let target = self
-            .targets
-            .get(&frame.root)
-            .context("missing frame root")?
-            .clone();
-        let size = u64::from(target.width) * u64::from(target.height) * 4;
-        let scratch = self.tracked_buffer(&wgpu::BufferDescriptor {
-            label: Some("transactional queued frame"),
-            size,
-            mapped_at_creation: false,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-        });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(&target.indices, 0, &scratch, 0, size);
-        self.submit_encoder(encoder);
-        for view in self.targets.values_mut().filter(|t| t.root == frame.root) {
-            view.indices = scratch.clone();
-        }
-        let prior_background = self.minimap.as_ref().and_then(|m| m.background);
-        let prior_snapshots: std::collections::HashSet<_> =
-            self.target_snapshots.keys().copied().collect();
         self.replaying = true;
         let mut result = (|| {
             for batch in frame.batches.drain(..) {
@@ -434,32 +411,18 @@ impl DrawRenderer {
             Ok(())
         })();
         self.replaying = false;
-        for view in self.targets.values_mut().filter(|t| t.root == frame.root) {
-            view.indices = target.indices.clone();
-        }
         if result.is_ok() {
-            let mut encoder = self.device.create_command_encoder(&Default::default());
-            encoder.copy_buffer_to_buffer(&scratch, 0, &target.indices, 0, size);
-            self.submit_encoder(encoder);
             result = self.check_status();
         }
         self.frame_counters.checkpoints += 1;
-        self.frame_counters.checkpoint_copy_bytes += size * if result.is_ok() { 2 } else { 1 };
         self.status_publish();
         if result.is_err() {
             self.frame_counters.rejected_checkpoints += 1;
-            if let Some(minimap) = &mut self.minimap {
-                minimap.background = prior_background;
-            }
-            self.target_snapshots
-                .retain(|id, _| prior_snapshots.contains(id));
-        }
-        if result.is_ok() {
+            self.deferred_snapshot_releases.clear();
+        } else {
             for id in self.deferred_snapshot_releases.drain(..) {
                 self.target_snapshots.remove(&id);
             }
-        } else {
-            self.deferred_snapshot_releases.clear();
         }
         frame.invalid = result.is_err();
         frame.batches.clear();
@@ -522,18 +485,30 @@ mod tests {
         assert_eq!(draw.counters().submits, 0);
         draw.frame_end().unwrap();
         let after = draw.counters();
-        assert!(
-            after.submits >= 3,
-            "checkpoint copies and the batch must submit"
+        assert_eq!(
+            after.submits, 2,
+            "one batch submit and the status publish, and nothing else"
         );
         assert_eq!(after.dispatches, 1);
         assert_eq!(draw.staged_asset_bytes(), 64);
-        assert_eq!(after.waits, 0);
-        assert_eq!(after.wait_ns, 0);
+        assert_eq!(
+            (after.waits, after.wait_ns),
+            (0, 0),
+            "a production frame must not block"
+        );
         assert!(after.buffers > baseline.buffers);
-        assert!(after.buffer_bytes >= baseline.buffer_bytes + 16 * 16 * 4);
-        assert_eq!(draw.frame_counters().checkpoints, 1);
-        assert_eq!(draw.frame_counters().checkpoint_copy_bytes, 2 * 16 * 16 * 4);
+        let frame = draw.frame_counters();
+        assert_eq!(frame.checkpoints, 1);
+        assert_eq!(
+            (
+                frame.checkpoint_copy_bytes,
+                frame.validation_waits,
+                frame.validation_bytes,
+                frame.status_stalls,
+                frame.rejected_checkpoints
+            ),
+            (0, 0, 0, 0, 0)
+        );
         let before_readback = draw.counters().submits;
         draw.readback(root).unwrap();
         let read = draw.counters();
@@ -760,6 +735,17 @@ mod tests {
         .unwrap();
         assert!(draw.frame_end().is_err());
         draw.frame_abort().unwrap();
+        assert_eq!(
+            draw.readback(root).unwrap(),
+            vec![5; 12 * 11],
+            "batches accepted before a host rejection stay in the root"
+        );
+        draw.frame_begin(root).unwrap();
+        draw.submit(root, &[clear]).unwrap();
+        draw.submit_triangles(view, &[valid]).unwrap();
+        draw.submit(view, &[overlay]).unwrap();
+        draw.submit_triangles(root, &[valid]).unwrap();
+        draw.frame_end().unwrap();
         assert_eq!(draw.readback(root).unwrap(), expected);
     }
     #[test]
