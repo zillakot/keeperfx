@@ -308,12 +308,13 @@ is queried continuously rather than once per vertical interval.
 
 ### Recorded uncapped matrix
 
-Source `e00fcd322`, Apple M5, Metal, `Bgra8Unorm`, present mode `Immediate`, one
+Source `56a5eee8b`, Apple M5, Metal, `Bgra8Unorm`, present mode `Immediate`, one
 engine and asset set across every run, 200 measured turns each, collected serially
 under the timing lock with audio, control/API and readback disabled. One run per
-cell: descriptive, not a repeated experiment.
+cell plus four repeats: descriptive, not a repeated experiment.
 
-First, the cap semantics themselves, busy 640×480 on the SDL presenter:
+First, the cap semantics themselves, busy 640×480 on the SDL presenter, measured
+on the earlier `e00fcd322` source:
 
 | Frame cap | Frame interval mean / p95 ms | Observed FPS | Turns/s | Presentations |
 | --- | ---: | ---: | ---: | ---: |
@@ -325,50 +326,57 @@ interval to 2.9 ms and leaves the simulation at exactly 20.00 turns per second.
 
 | Presenter | Drawing | Scene | Logical | Frame interval mean / p95 ms | FPS | Turns/s | Draw mean | Presentation mean |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| SDL | software | busy | 640×480 | 3.085 / 11.131 | 324.17 | 20.02 | 2.083 | 0.954 |
-| SDL | software | quiet | 640×480 | 5.404 / 13.758 | 185.06 | 20.00 | 2.348 | 3.021 |
-| SDL | software | busy | 1920×1080 | 10.139 / 12.772 | 98.63 | 19.99 | 8.737 | 1.289 |
-| SDL | software | quiet | 1920×1080 | 13.346 / 18.537 | 74.93 | 20.00 | 9.190 | 4.104 |
-| wgpu | software | busy | 640×480 | 4.629 / 12.987 | 216.01 | 20.01 | 2.268 | 2.305 |
-| wgpu | software | quiet | 640×480 | 4.475 / 12.643 | 223.45 | 19.99 | 2.372 | 2.084 |
-| wgpu | software | busy | 1920×1080 | 13.353 / 18.281 | 74.89 | 19.99 | 8.514 | 4.713 |
-| wgpu | software | quiet | 1920×1080 | 10.755 / 16.461 | 92.98 | 20.02 | 9.236 | 1.474 |
-| wgpu | wgpu | busy | 640×480 | 12.994 / 17.574 | 76.96 | 19.99 | 1.520 | 11.307 |
-| wgpu | wgpu | quiet | 640×480 | 10.649 / 13.643 | 93.91 | 20.00 | 1.476 | 9.107 |
-| wgpu | wgpu | busy | 1920×1080 | 85.258 / 100.505 | 11.73 | **11.73** | 1.609 | 83.163 |
-| wgpu | wgpu | quiet | 1920×1080 | 67.449 / 70.853 | 14.83 | **14.83** | 1.366 | 65.923 |
+| wgpu | wgpu | busy | 640×480 | 7.011 / 14.012 | 142.64 | 20.01 | 0.643 | 6.288 |
+| wgpu | wgpu | quiet | 640×480 | 4.925 / 8.166 | 203.05 | 20.00 | 0.605 | 4.280 |
+| wgpu | wgpu | busy | 1920×1080 | 5.272 / 6.868 | 189.69 | 20.00 | 0.618 | 4.593 |
+| wgpu | wgpu | quiet | 1920×1080 | 4.967 / 7.844 | 201.32 | 20.00 | 0.569 | 4.361 |
+| wgpu | software | busy | 640×480 | 5.126 / 15.874 | 195.08 \* | 20.00 | 0.887 | 4.153 |
+| wgpu | software | quiet | 640×480 | 4.845 / 15.541 | 206.41 \* | 20.00 | 0.814 | 3.989 |
+| wgpu | software | busy | 1920×1080 | 4.438 / 12.575 | 225.34 | 20.01 | 1.970 | 2.412 |
+| wgpu | software | quiet | 1920×1080 | 4.957 / 13.641 | 201.73 | 20.00 | 1.942 | 2.982 |
+| SDL | software | busy | 640×480 | 3.462 / 12.784 | 288.85 \* | 20.00 | 0.695 | 2.712 |
+| SDL | software | quiet | 640×480 | 3.445 / 12.275 | 290.29 \* | 20.00 | 0.706 | 2.707 |
+| SDL | software | busy | 1920×1080 | 3.201 / 7.594 | 312.42 | 20.00 | 1.762 | 1.406 |
+| SDL | software | quiet | 1920×1080 | 3.142 / 3.057 | 318.28 | 20.00 | 1.863 | 1.258 |
 
-Per-frame GPU pass means for the GPU-drawing rows, summed over pass kinds:
+**Every cell measures a ceiling.** Observed turns per second is 19.995 to 20.011
+throughout and FPS exceeds it by a factor of 7 to 16, so no row carries the
+degraded-loop signature that made the two 1080p GPU-drawing rows of the earlier
+`e00fcd322` matrix unusable.
 
-| Scene | Logical | raster | minimap | target_trig | ordered_sprite | shadow_mask | Sum | Submits | Blocking waits |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| busy | 640×480 | 4.450 | 2.169 | 1.833 | 0.582 | 0.272 | 9.571 | 45.5 | 0 |
-| quiet | 640×480 | 3.472 | 1.469 | 1.636 | 0.213 | 0.201 | 7.287 | 31.5 | 0 |
-| busy | 1920×1080 | 57.644 | 18.604 | 8.489 | 6.589 | 0.194 | 91.649 | 38.4 | 0 |
-| quiet | 1920×1080 | 35.188 | 10.909 | 10.678 | 1.444 | 0.220 | 58.478 | 31.4 | 0 |
-
-`gpu_untimed_passes` was zero in all four, so no pass went unstamped. Passes can
-overlap on the device, so the sum is an upper bound on attributed GPU time per
-frame, not a serial total; the busy 1080p sum exceeds that row's frame interval
-for exactly that reason.
-
-**The two 1080p GPU-drawing rows do not measure a ceiling.** Their turns per second
-is 11.73 and 14.83, below the requested 20, and equals their FPS exactly: the frame
-is longer than a turn, so the loop presents once per turn and the simulation falls
-behind. Those figures describe a degraded loop.
+**\* Contention-affected lower bounds.** The simulation scope is
+resolution-independent, so matched scenes must agree; in these four cells it reads
+1.7–2.0x its 1080p partner (0.325–0.383 ms against 0.191–0.212 ms busy), which is
+host contention landing on them rather than a resolution effect. The four
+GPU-drawing cells agree to 0.002 ms and all four 1080p software cells are clean.
+Repeats of the 1080p SDL cell reproduce to 0.5%; repeats of the three 640×480
+cells vary by 6.6–10.5%.
 
 What bounds each measured ceiling:
 
-- **Software drawing** is bound by CPU drawing. `draw` is 2.1–2.4 ms at 640×480 and
-  8.5–9.2 ms at 1080p, and the frame interval tracks it.
-- **The wgpu presenter costs about 2.3 ms per frame at 640×480** with `present_wait`
-  at 0.005 ms. Surface acquisition, the index and palette uploads and the palette
-  pass — not the present call — are what hold the wgpu software path at 216 FPS
-  where SDL reaches 324 FPS. Capped at 60 that cost is invisible.
-- **GPU drawing is bound by GPU execution.** `draw` falls to ~1.5 ms because the CPU
-  only encodes, and the host then blocks in `presentation` (9–11 ms at 640×480,
-  66–83 ms at 1080p) for the frame's GPU work to complete. The per-pass totals
-  match, and raster is 60% of them at 1080p.
+- **GPU drawing is not bound by GPU execution.** A serialized capped run
+  (`KFX_WGPU_GPU_TIMING=2`) puts exclusive GPU work at 1.60 ms busy at 640×480 and
+  3.68 ms busy at 1920×1080, against frame intervals of 7.01 and 5.27 ms here, and
+  1080p — with 2.3x the GPU work — reaches the higher ceiling. `draw` is
+  0.57–0.64 ms, blocking device polls are zero, and the host spends 4.28–6.29 ms in
+  `presentation`: surface acquisition, the per-frame uploads, the frame replay
+  itself and the palette pass, not device execution and not the present call.
+- **Software drawing on the wgpu presenter is bound by the presenter**, not by CPU
+  drawing: at 1080p `draw` is 1.94–1.97 ms while `presentation` adds 2.41–2.98 ms,
+  and at 640×480 `draw` falls to 0.81–0.89 ms with presentation still at
+  3.99–4.15 ms.
+- **Software drawing on the SDL presenter is the cheapest host-side path** in every
+  cell (presentation 1.26–2.71 ms) and gives the highest ceilings here.
+
+The resolution ordering inverted relative to the `e00fcd322` matrix, where 640×480
+was far faster than 1080p. The 1080p side of that change reproduces to 0.5%; the
+640×480 side carries both the contention canary and the repeat spread. **No cause
+is claimed**: the merged drawing work and a changed display configuration (two
+displays rather than one) are both candidates and were not separated.
+
+PR #35 (one encoder and one submit per frame) landed after these runs and
+supersedes them wherever its own body gives a figure, notably the 640×480
+GPU-drawing ceiling.
 
 Every figure here is uncapped host wall-clock timing on this host.
 
