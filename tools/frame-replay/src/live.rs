@@ -54,6 +54,7 @@ fn count_allocation(size: usize) {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct PresentCounters {
