@@ -178,6 +178,9 @@ pub struct DrawRenderer {
     queue: wgpu::Queue,
     compute: wgpu::ComputePipeline,
     compute_sprite_ordered: wgpu::ComputePipeline,
+    /// `[0, 1, 2, ...]`, the record index table every layer that holds the run's first
+    /// records in order binds instead of uploading one of its own.
+    sprite_layer_identity: Option<wgpu::Buffer>,
     effects: Option<wgpu::ComputePipeline>,
     shadow: Option<wgpu::ComputePipeline>,
     shadow_scratch: Option<wgpu::Buffer>,
@@ -305,6 +308,7 @@ impl DrawRenderer {
             queue,
             compute,
             compute_sprite_ordered,
+            sprite_layer_identity: None,
             effects: None,
             shadow: None,
             shadow_scratch: None,

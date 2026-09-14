@@ -176,6 +176,24 @@ pub(super) fn layers(rects: &[[i64; 4]]) -> Result<Vec<Vec<u32>>> {
 }
 
 impl DrawRenderer {
+    fn identity_layer(&mut self, length: usize) -> wgpu::Buffer {
+        let capacity = self
+            .sprite_layer_identity
+            .as_ref()
+            .map_or(0, |identity| identity.size() as usize / 4);
+        if capacity < length {
+            let values: Vec<u32> = (0..length.next_power_of_two().max(16) as u32).collect();
+            self.sprite_layer_identity = Some(buffer(
+                &self.device,
+                &mut self.counters,
+                "ordered sprite identity layer",
+                &values,
+                wgpu::BufferUsages::STORAGE,
+            ));
+        }
+        self.sprite_layer_identity.clone().unwrap()
+    }
+
     pub(super) fn submit_ordered_sprites(
         &mut self,
         target_id: u64,
@@ -302,13 +320,18 @@ impl DrawRenderer {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let mut layer_buffers = Vec::with_capacity(layers.len());
         for layer in &layers {
-            let indices = buffer(
-                &self.device,
-                &mut self.counters,
-                "ordered sprite layer",
-                layer,
-                wgpu::BufferUsages::STORAGE,
-            );
+            let indices = if layer.iter().enumerate().all(|(i, at)| *at as usize == i) {
+                self.identity_layer(layer.len())
+            } else {
+                self.counters.command_upload_bytes += layer.len() as u64 * 4;
+                buffer(
+                    &self.device,
+                    &mut self.counters,
+                    "ordered sprite layer",
+                    layer,
+                    wgpu::BufferUsages::STORAGE,
+                )
+            };
             let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("ordered sprite layer"),
                 layout: &self.compute_sprite_ordered.get_bind_group_layout(0),
@@ -331,7 +354,6 @@ impl DrawRenderer {
             }
             self.counters.dispatches += 1;
             self.counters.ordered_sprite_passes += 1;
-            self.counters.command_upload_bytes += layer.len() as u64 * 4;
             layer_buffers.push((indices, binding));
         }
         self.counters.ordered_sprite_layers += layers.len() as u64;
