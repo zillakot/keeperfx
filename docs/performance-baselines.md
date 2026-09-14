@@ -237,6 +237,45 @@ the previous presentation boundary. Drawing counters retain `upload_bytes` as
 `asset_upload_bytes + command_upload_bytes`; existing gauges and GPU timestamps
 keep their meanings. Counters are buffered and written only at capture completion.
 
+### Presenter cost, PR A: measured 2026-09-14
+
+Runtime `65e3ff9c2`, Apple M5/Metal, two 2560×1440 Acer displays at 75 Hz,
+AC power, 200 turns/cell, guards enabled, load/core 0.169–0.325. Matched busy
+1920×1080 capped pairs, all approximately 46 dispatches/frame; means in ms:
+
+| Pair | Master presentation | Branch presentation | Branch replay | Buffers master → branch |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 3.859 | 0.657 | 3.186 | 90.40 → 88.39 |
+| 2 | 3.871 | 0.656 | 3.051 | 90.41 → 88.39 |
+
+Presentation + replay reconstructs the old boundary: this is chiefly attribution.
+All capped matrix cells sustain 60 FPS and 20 turns/s; `presentation_cpu` is
+0.013–0.025 ms. Mean attribution residual is 0.35–0.85% across branch timing
+cells (worst individual frame 3.11%, below the 10% gate). Comparable pre-P4 HD
+runs reduce scoped allocation calls 643 → 612/frame and present record
+14.917 → 6.734–7.125 µs; requested allocation bytes do not uniformly fall.
+
+Uncapped busy 1080p remains a separate comparison:
+
+| Pair | Master FPS | Branch FPS |
+| --- | ---: | ---: |
+| 1 | 198.94 | 197.98 |
+| 2 | 173.15 | 195.08 |
+
+All sustain 20 turns/s; no ceiling increase is established from these two pairs.
+Replay and submission remain: about 11 MB/frame asset uploads (94% of HD upload
+bytes, P3) and `submit_ns` of 0.58–0.78 ms dominate the capped presenter work.
+Drawable blocking is about 15 µs capped versus 0.33 ms mean / 1.47–1.79 ms p95
+uncapped. These are host timings, not GPU execution costs.
+
+Surface parity passes GPU/software at both resolutions: 715/710/717/716 frames
+each equally verified, no mismatch or fallback. The corrected drawing oracle
+verifies 171,918 batches and 202,743 triangles through camera input, pause/resume
+and parchment return, with all required errors/rejections zero and one non-failing
+shadow-prior divergence diagnostic. The first oracle attempt stopped on a helper
+response-envelope bug at turn 5 and is excluded. Full tables, identities, tails,
+load and both attempts are recorded in [PR #39](https://github.com/zillakot/keeperfx/pull/39).
+
 ## Collection bounds and outputs
 
 The hook is inactive unless `KFX_PERF_OUTPUT` names a new CSV file whose parent
