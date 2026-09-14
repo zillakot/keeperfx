@@ -546,6 +546,23 @@ def summarize_resources(resources, turns, presentations):
     return result
 
 
+def annotate_presentation_pacing(report):
+    if not report["frame_cap"]["uncapped"] or report["presentation_mode"] != "swapchain":
+        return
+    counters = (report.get("presenter") or {}).get("per_frame", {})
+    acquisition = counters.get("acquire_block_ns")
+    if acquisition is None:
+        return
+    ratio = acquisition["mean"] / (report["wall_ms"]["frame_interval"]["mean"] * 1_000_000)
+    report["presentation_paced"] = ratio > 0.5
+    report["presentation_pacing"] = {"acquire_block_fraction": ratio, "threshold": 0.5}
+    if report["presentation_paced"]:
+        report["limitations"].append(
+            f"This uncapped cell is compositor-paced: surface acquisition blocks for {ratio:.1%} "
+            "of the mean frame interval (threshold: >50%). It is not a drawing or engine ceiling; "
+            "it remains a valid matched comparison of host work. Use --offscreen for ceiling comparisons.")
+
+
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
@@ -682,6 +699,7 @@ def main():
             if guards["findings"] and not args.ignore_guards:
                 raise Refusal(guards["findings"][0]["reason"], guards["findings"][0]["detail"])
             run_engine(output, engine, game, work_root, args, report, guards)
+            annotate_presentation_pacing(report)
             write_report(output, report)
             write_json(output / "report.json", report)
     except Refusal as error:

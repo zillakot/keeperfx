@@ -439,6 +439,24 @@ its title, beside the engine frame limit, and after every frame-rate figure, and
 reports observed turns per second beside observed FPS. The uncapped limitation
 list replaces the capped-FPS caveat with its own.
 
+For uncapped swapchain runs with presenter counters, `presentation_paced` is true
+when mean `acquire_block_ns` exceeds 50% of the mean `frame_interval` (converted
+from milliseconds to nanoseconds). `presentation_pacing.acquire_block_fraction`
+records the ratio and `presentation_pacing.threshold` records `0.5`. This threshold
+separates the 2026-09-15 compositor-paced evidence (7.3–10.0 ms acquisition in a
+13.35 ms frame, about 55–75%) from the faster 195–199 FPS evidence (0.33 ms,
+about 6.5%). It is a diagnostic heuristic; a false value does not prove an engine
+ceiling, and `Immediate` present mode does not prevent compositor pacing.
+
+A flagged cell remains `status: "complete"`. Its Markdown limitations explicitly
+say it is compositor-paced and is not a ceiling; it remains useful for matched
+host-work comparisons. Capped and offscreen reports, and reports without presenter
+counters, omit these fields. A capped run already makes no ceiling claim.
+For ceiling comparisons, use `--uncapped --backend rust --offscreen` on both sides
+to remove drawable acquisition. Keep this a separate experiment: offscreen frame
+intervals, presentation costs and FPS are not interchangeable with swapchain
+results; see [offscreen measurement mode](#offscreen-measurement-mode).
+
 `benchmark-presenters.py` accepts the same `--uncapped` and applies it to every
 run in the experiment. `compare` refuses a set of reports that mixes capped and
 uncapped runs, and the cap is part of each scene's recorded identity, so an
