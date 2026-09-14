@@ -33,7 +33,7 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "gpu_raster_ns", "gpu_terrain_prepare_ns",
                     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
                     "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
-                    "gpu_timed_passes", "gpu_untimed_passes",
+                    "gpu_timed_passes", "gpu_untimed_passes", "gpu_frame_ns",
                     "host_staged_asset_bytes", "arena_bytes_resident")
 DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident")
 SETTINGS = {

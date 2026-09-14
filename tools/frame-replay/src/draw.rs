@@ -203,9 +203,16 @@ pub struct Counters {
     pub prepared_row_words: u64,
     pub prepared_row_allocations: u64,
     /// GPU time per pass kind, in `timing::PASS_NAMES` order; zero unless timing is on.
+    /// A pass window runs from its own begin stamp to its own end stamp, so it includes
+    /// any time the pass spent stalled on a dependency and the windows may overlap.
+    /// Their sum is not an exclusive decomposition of the frame; `gpu_frame_ns` is.
     pub pass_ns: [u64; PASS_KINDS],
     pub timed_passes: u64,
     pub untimed_passes: u64,
+    /// First pass begin to last pass end over the frame's submissions; zero unless
+    /// timing is on. `KFX_WGPU_GPU_TIMING=2` drains the queue after every timed
+    /// submission, which makes the per-pass windows exclusive at a throughput cost.
+    pub gpu_frame_ns: u64,
 }
 
 pub struct DrawRenderer {
@@ -254,6 +261,7 @@ pub struct DrawRenderer {
     tail: Option<wgpu::CommandEncoder>,
     timing_slot: Option<usize>,
     tail_timing: Option<usize>,
+    serialize_passes: bool,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -347,6 +355,7 @@ impl DrawRenderer {
         });
         let limits = device.limits();
         let timings = PassTimings::new(&device, &queue);
+        let serialize_passes = timings.is_some() && timing::serialized();
         Ok(Self {
             device,
             queue,
@@ -395,6 +404,7 @@ impl DrawRenderer {
             tail: None,
             timing_slot: None,
             tail_timing: None,
+            serialize_passes,
             failure: renderer.failure.clone(),
         })
     }
@@ -434,6 +444,7 @@ impl DrawRenderer {
             counters.pass_ns = timings.ns;
             counters.timed_passes = timings.passes;
             counters.untimed_passes = timings.dropped;
+            counters.gpu_frame_ns = timings.frame_ns;
         }
         counters
     }
@@ -456,11 +467,12 @@ impl DrawRenderer {
 
     /// Opens an encoder and, when GPU timing is on, the ring slot its passes stamp into.
     pub(super) fn begin_encoder(&mut self) -> wgpu::CommandEncoder {
+        let frame = self.frame_index;
         if let Some(timings) = &mut self.timings {
             if let Some(slot) = self.timing_slot.take() {
                 timings.release(slot);
             }
-            self.timing_slot = timings.open(&self.device);
+            self.timing_slot = timings.open(&self.device, frame);
         }
         self.device.create_command_encoder(&Default::default())
     }
@@ -516,10 +528,11 @@ impl DrawRenderer {
     /// ring slot rather than the one the current encoder holds.
     pub(super) fn tail_stamp(&mut self, kind: usize) -> Stamp {
         self.tail_encoder();
+        let frame = self.frame_index;
         if self.tail_timing.is_none()
             && let Some(timings) = &mut self.timings
         {
-            self.tail_timing = timings.open(&self.device);
+            self.tail_timing = timings.open(&self.device, frame);
         }
         let slot = self.tail_timing;
         Stamp(
@@ -542,6 +555,15 @@ impl DrawRenderer {
         self.submit_one(encoder);
         if let Some(slot) = closed {
             self.timings.as_mut().unwrap().map(slot);
+            self.serialize_timed_submission();
+        }
+    }
+
+    /// `KFX_WGPU_GPU_TIMING=2` only: draining between timed submissions removes the
+    /// overlap that makes per-pass windows inclusive of one another.
+    fn serialize_timed_submission(&mut self) {
+        if self.serialize_passes {
+            let _ = self.wait_for_queue();
         }
     }
 
@@ -572,6 +594,7 @@ impl DrawRenderer {
             self.submit_one(encoder);
             if let Some(slot) = closed {
                 self.timings.as_mut().unwrap().map(slot);
+                self.serialize_timed_submission();
             }
         }
     }

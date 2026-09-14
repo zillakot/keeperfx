@@ -90,7 +90,7 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "gpu_raster_ns", "gpu_terrain_prepare_ns",
     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
     "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
-    "gpu_timed_passes", "gpu_untimed_passes",
+    "gpu_timed_passes", "gpu_untimed_passes", "gpu_frame_ns",
     "host_staged_asset_bytes", "arena_bytes_resident"};
 static_assert(sizeof(PerformanceDrawingCounters) == DrawingCounterCount * sizeof(unsigned long long),
     "drawing counters must be a packed array of unsigned long long");

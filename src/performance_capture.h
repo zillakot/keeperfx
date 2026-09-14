@@ -32,6 +32,9 @@ struct PerformanceDrawingCounters {
     unsigned long long gpu_shadow_mask_ns, gpu_target_trig_ns, gpu_ordered_sprite_ns;
     unsigned long long gpu_minimap_ns, gpu_lens_ns, gpu_present_ns;
     unsigned long long gpu_timed_passes, gpu_untimed_passes;
+    /* First pass begin to last pass end in the frame; pass windows include stalls and
+     * may overlap, so only this is an exclusive GPU window. */
+    unsigned long long gpu_frame_ns;
     /* Trailing gauges are stored as observed, not differenced. */
     unsigned long long host_staged_asset_bytes, arena_bytes_resident;
 };

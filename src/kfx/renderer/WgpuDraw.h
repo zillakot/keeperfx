@@ -81,9 +81,15 @@ struct KfxWgpuDrawCounters {
     /* Words the compressed prepared-terrain row arena carried, and its growths. */
     uint64_t prepared_row_words, prepared_row_allocations;
     /* Opt-in per-pass GPU execution time, in KFX_WGPU_DRAW_PASS_KINDS order; zero
-     * unless KFX_WGPU_GPU_TIMING=1 and the adapter supports timestamp queries. */
+     * unless KFX_WGPU_GPU_TIMING is 1 or 2 and the adapter supports timestamp queries.
+     * A pass window includes time the pass spent stalled on its dependencies, so the
+     * windows may overlap and their sum is not an exclusive decomposition. */
     uint64_t pass_ns[KFX_WGPU_DRAW_PASS_KINDS];
     uint64_t timed_passes, untimed_passes;
+    /* First pass begin to last pass end within a frame; a real GPU window, so it never
+     * exceeds the frame's wall clock. KFX_WGPU_GPU_TIMING=2 drains the queue after every
+     * timed submission, which makes the per-pass windows exclusive and costs throughput. */
+    uint64_t gpu_frame_ns;
 };
 #pragma pack(pop)
 
