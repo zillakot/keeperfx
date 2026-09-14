@@ -16,7 +16,7 @@ M (a session) and L (more than one session).
 
 | # | Item | Size | Depends on |
 | --- | --- | --- | --- |
-| 1 | [GPU time attribution](#1-gpu-time-attribution) | M | 2 for reliable capture |
+| 1 | [GPU time attribution](#1-gpu-time-attribution) | M | 2 for reliable capture; counters and serialised mode delivered, trace profiler open |
 | 2 | [Offscreen measurement mode](#2-offscreen-measurement-mode) | M | None |
 | 3 | [Deterministic scene mode](#3-deterministic-scene-mode) | M | None |
 | 4 | [Command-stream capture and offline replay](#4-command-stream-capture-and-offline-replay) | L | 1 for per-pass timing, 3 for a stable capture |
@@ -32,19 +32,51 @@ and appeared to triple, although none of the binning commits touch the minimap.
 The per-pass windows are not exclusive: a pass that waits on a predecessor charges
 the stall to itself, so the measurement redistributed a roughly constant total.
 
-**Deliverable.** A frame-wide timestamp pair, `gpu_frame_ns`, spanning the whole
-encoder (in progress with the tight-bin-boxes PR); a statement in the renderer
-design and in [performance baselines](../performance-baselines.md) that per-pass
-windows include dependency stalls and are not an exclusive decomposition; and a
-profiling script that launches an isolated game session under
+**Deliverable.** Counter and statement parts delivered with the tight-bin-boxes PR;
+the trace profiler is open.
+
+The frame-wide timestamp pair this plan named does not exist, and the reason is the
+plan's own finding measured properly. Two designs were built and both are recorded
+here because the negative result is the deliverable.
+
+A first-begin-to-last-end span per frame was implemented first and discarded: it
+reported about a second per frame natively, because grouping absolute stamps by frame
+lets one stale timestamp swallow the whole window, and an encoder span also counts the
+host gaps between submissions as GPU time. What shipped instead is
+`gpu_pass_union_ns`, the union of the frame's timed pass intervals closed once per
+frame, which a single bad interval can only inflate by its own length.
+
+**The union collapses nothing on this adapter.** Measured on a busy 1080p frame it is
+8.006 ms against an 8.006 ms window sum, and at 640x480 3.910 against 3.910 — the pass
+windows are disjoint in GPU time. The overlap the incident inferred is therefore not
+concurrency between passes: each window *contains* its own stall. The same run
+serialised (`KFX_WGPU_GPU_TIMING=2`, `profile-game.py --serial-gpu-timing`) reports
+**3.549 ms**, so 56 % of the unserialised window total is waiting inside the windows.
+`gpu_pass_union_ns` is published as an upper bound on GPU occupancy and nothing more;
+the serialised sum is the exclusive number, and it is what the acceptance tables cite.
+
+The statement that per-pass windows include dependency stalls is in the renderer
+design, the [live guide](../live-rust-presentation.md), the profiler's own limitations
+and [performance baselines](../performance-baselines.md).
+
+Still open: a profiling script that launches an isolated game session under
 `xctrace record --template "Metal System Trace"` and summarizes per-pass GPU time
 from the trace.
 
-**Acceptance.** `gpu_frame_ns` is present and satisfies
-`gpu_frame_ns >= max(gpu_*_ns)` and `gpu_frame_ns <= presentation`; the script
-produces a per-pass summary for a busy 1080p run whose totals agree with
-`gpu_frame_ns`; every published pass attribution cites the profiler rather than
-the counter windows.
+**Acceptance.** Two earlier criteria are withdrawn because neither discriminates.
+`gpu_frame_ns <= presentation` is wrong: `presentation` is a host scope that ends at
+hand-off while the GPU runs past it, and the capped 1080p run measures 8.006 against
+4.765 ms. `frame_interval >= gpu_frame_ns >= max(gpu_*_ns)` is satisfied by the window
+sum itself, so it cannot tell an overlap-free counter from the counter it replaces, and
+it is not an invariant either — a GPU-bound frame breaks it.
+
+What is left is a property only a serialised run can establish: **the frame interval
+must exceed the serialised GPU sum**, and **the serialised sum is the figure an
+acceptance table cites for GPU cost**. Met on a busy 1080p pair: 17.284 ms interval
+against 3.549 ms of serialised GPU work. Remaining acceptance for the trace profiler: a
+per-pass summary for a busy 1080p run whose totals agree with that serialised sum, after
+which every published pass attribution cites the profiler rather than the counter
+windows.
 
 **Size.** M. **Dependencies.** Item 2 for a capture that does not depend on a
 visible window.
@@ -126,6 +158,16 @@ run's actual targets. Plus AddressSanitizer enabled on every C fixture in CI.
 on a deliberately widened or narrowed box; each of the four known defects is
 reproduced by the test against the pre-fix code; the C fixture jobs run under ASan
 with no suppressions beyond documented third-party ones.
+
+A partial down payment landed with the tight-bin-boxes PR:
+[`draw_record_binning_gpu.rs`](../../tools/frame-replay/tests/draw_record_binning_gpu.rs)
+renders each sprite, triangle and bitmap case twice — once through the tight box and
+once through the emitter's whole-target bounds with binning off — and asserts the
+readbacks are identical, with a mutation check (`an_undersized_box_is_caught`) that
+shrinks every derived box by one pixel and requires the comparison to fail. It is
+enumerated rather than randomised and does not cover every kind, so the property test
+above still stands; the two fixture hooks it uses, `tight_record_boxes` and
+`erode_record_boxes`, are what a randomised version would build on.
 
 **Size.** M. **Dependencies.** None; shares the fixture matrix with item 6.
 

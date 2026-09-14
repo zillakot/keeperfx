@@ -172,6 +172,12 @@ impl DrawRenderer {
     pub fn frame_begin(&mut self, root: u64) -> Result<()> {
         self.check_status()?;
         self.status_drain();
+        // One GPU-occupancy union per frame: passes that were in flight together are
+        // counted once, which the per-drain close could not do because a drain usually
+        // harvests a single submission.
+        if let Some(timings) = &mut self.timings {
+            timings.settle();
+        }
         self.frame_index += 1;
         ensure!(self.frame.is_none(), "frame already active");
         let target = self.targets.get(&root).context("unknown frame target")?;
@@ -575,6 +581,7 @@ impl DrawRenderer {
                 &self.resources,
                 &layout,
                 limit,
+                self.box_policy,
             )?;
             let assets = packer.finish();
             if !geometry.is_empty() {

@@ -187,6 +187,20 @@ here is host-side and none of them may be read as a GPU timing. `gpu_untimed_pas
 is nonzero when the resolve ring was saturated, and the per-pass totals then
 under-report.
 
+**A pass window is not exclusive.** It runs from that pass's own begin stamp to its
+own end stamp, so it includes whatever the pass waited through; a `gpu_*_ns` figure
+attributes cost rather than measuring it, and the sum of the windows decomposes
+nothing. `gpu_pass_union_ns` is the union of the frame's timed pass intervals,
+closed once per frame, so windows overlapping in time count once. It is an upper
+bound on the frame's GPU occupancy and, measured, equals the window sum on this
+Metal adapter: the windows are disjoint and each holds its own stall. Neither is
+bounded by the `presentation` scope, which is host-side and ends at hand-off while
+the GPU runs past it; the frame interval is the bound that holds.
+`KFX_WGPU_GPU_TIMING=2` (`profile-game.py --serial-gpu-timing`) drains the queue
+after every timed submission, so each window then holds its pass alone — the only
+exclusive measurement here, and it serialises the frame, so it is a diagnostic and
+not a performance baseline.
+
 Counters cover the drawing context the bridge owns. Surface acquisition,
 presentation by the Rust presenter, and a cursor that owns its own drawing context
 rather than borrowing the bridge's are not counted, so the counters explain the

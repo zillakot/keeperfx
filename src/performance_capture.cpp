@@ -88,10 +88,15 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "arena_evictions", "arena_overflows", "arena_bytes_uploaded",
     "tile_allocations", "tile_entries", "bridge_target_flushes", "bridge_target_runs",
     "terrain_tile_entries", "prepared_row_words", "prepared_row_allocations",
+    "tile_entries_clear", "tile_entries_rect", "tile_entries_image", "tile_entries_gpoly_span",
+    "tile_entries_circle_filled", "tile_entries_circle_outline", "tile_entries_sprite", "tile_entries_raw_image",
+    "tile_entries_tiled_image", "tile_entries_trig", "tile_entries_lens", "tile_entries_shadow",
+    "tile_entries_reserved12", "tile_entries_movie", "tile_entries_map_view", "tile_entries_bitmap",
+    "tile_entries_transition", "tile_entries_terrain_tri",
     "gpu_raster_ns", "gpu_terrain_prepare_ns",
     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
     "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
-    "gpu_timed_passes", "gpu_untimed_passes",
+    "gpu_timed_passes", "gpu_untimed_passes", "gpu_pass_union_ns",
     "host_staged_asset_bytes", "arena_bytes_resident"};
 static_assert(sizeof(PerformanceDrawingCounters) == DrawingCounterCount * sizeof(unsigned long long),
     "drawing counters must be a packed array of unsigned long long");

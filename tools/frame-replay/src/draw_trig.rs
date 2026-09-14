@@ -1,6 +1,16 @@
 use super::*;
 
-pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) -> Result<()> {
+/// Validates the triangle and returns the destination box it can write inside,
+/// half-open and in view space: the vertex bounding box. `trig_sample` returns the
+/// destination unchanged for a row outside `[top.y, bottom.y)`, and inside a row the
+/// left and right edges are truncated interpolations between two vertex x values, so
+/// the span it accepts never leaves the vertex x range either.
+pub(super) fn validate(
+    c: &Command,
+    source: &Resource,
+    width: u32,
+    height: u32,
+) -> Result<[i64; 4]> {
     ensure!(
         matches!(c.source_x, 0..=26),
         "unsupported general triangle mode"
@@ -58,7 +68,12 @@ pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) 
         (0..2).all(|i| max[i] - min[i] <= 32767),
         "triangle extent exceeds native domain"
     );
-    Ok(())
+    Ok([
+        i64::from(min[0]),
+        i64::from(min[1]),
+        i64::from(max[0]),
+        i64::from(max[1]),
+    ])
 }
 
 impl DrawRenderer {
@@ -90,9 +105,13 @@ impl DrawRenderer {
             &self.resources,
             ViewSpace::whole(width, height),
             limit,
+            self.box_policy,
         )?;
         packer.finish();
-        let entries = self.counters.tile_entries;
+        let entries = (
+            self.counters.tile_entries,
+            self.counters.tile_entries_by_kind,
+        );
         self.tile_index.build(
             &mut self.counters,
             &words,
@@ -102,7 +121,10 @@ impl DrawRenderer {
             limit,
         )?;
         // The preflight only proves the limits; its index is never uploaded.
-        self.counters.tile_entries = entries;
+        (
+            self.counters.tile_entries,
+            self.counters.tile_entries_by_kind,
+        ) = entries;
         Ok(())
     }
 }

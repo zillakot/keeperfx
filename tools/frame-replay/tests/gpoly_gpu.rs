@@ -185,12 +185,22 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     let mut outside = 0;
     for (triangle, entry) in layout.iter().enumerate() {
         let rows = (triangle * height as usize * 8)..((triangle + 1) * height as usize * 8);
+        // The raster bins a terrain record by the clamped vertex box in both axes, so a
+        // covered row's span must also stay inside the clamped vertex x range.
+        let xs = triangles[triangle]
+            .vertices
+            .map(|vertex| i64::from(vertex.x).clamp(0, i64::from(width)) as u32);
+        let x_lo = xs.iter().copied().min().unwrap();
+        let x_hi = xs.iter().copied().max().unwrap();
         for y in 0..height as usize {
             let expected = &expected_spans[rows.start + y * 8..rows.start + y * 8 + 8];
             if y < entry.y_lo as usize || y >= (entry.y_lo + entry.rows) as usize {
                 outside += usize::from(expected.iter().any(|word| *word != 0));
                 continue;
             }
+            outside += usize::from(
+                expected[2] != 0 && (expected[0] < x_lo || expected[0] + expected[2] > x_hi),
+            );
             let at = (entry.base as usize + y - entry.y_lo as usize) * 8;
             actual_spans[rows.start + y * 8..rows.start + y * 8 + 8]
                 .copy_from_slice(&compressed[at..at + 8]);
@@ -198,7 +208,7 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     }
     ensure!(
         outside == 0,
-        "{outside} native rows fall outside the layout extent"
+        "{outside} native rows fall outside the layout or vertex box"
     );
     let mut mismatches = 0;
     for (i, (actual, expected)) in actual_spans.iter().zip(&expected_spans).enumerate() {

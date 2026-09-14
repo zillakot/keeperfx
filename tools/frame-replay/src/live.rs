@@ -1013,11 +1013,13 @@ pub struct DrawCounters {
     ordered_sprite_layers: u64,
     ordered_sprite_passes: u64,
     terrain_tile_entries: u64,
+    tile_entries_by_kind: [u64; crate::draw::BIN_KINDS],
     prepared_row_words: u64,
     prepared_row_allocations: u64,
     pass_ns: [u64; crate::draw::timing::PASS_KINDS],
     timed_passes: u64,
     untimed_passes: u64,
+    gpu_pass_union_ns: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1058,11 +1060,13 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 ordered_sprite_layers: counters.ordered_sprite_layers,
                 ordered_sprite_passes: counters.ordered_sprite_passes,
                 terrain_tile_entries: counters.terrain_tile_entries,
+                tile_entries_by_kind: counters.tile_entries_by_kind,
                 prepared_row_words: counters.prepared_row_words,
                 prepared_row_allocations: counters.prepared_row_allocations,
                 pass_ns: counters.pass_ns,
                 timed_passes: counters.timed_passes,
                 untimed_passes: counters.untimed_passes,
+                gpu_pass_union_ns: counters.gpu_pass_union_ns,
             });
             Ok(Some(1))
         });

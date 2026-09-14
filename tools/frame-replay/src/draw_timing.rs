@@ -27,8 +27,22 @@ const SLOT_PAIRS: u32 = 8;
 const SLOTS: usize = 256;
 const PAIRS: u32 = SLOT_PAIRS * SLOTS as u32;
 
+/// `KFX_WGPU_GPU_TIMING`: 1 resolves per-pass windows, 2 additionally drains the queue
+/// after every timed submission so the windows cannot overlap.
+pub fn level() -> u32 {
+    match std::env::var("KFX_WGPU_GPU_TIMING").as_deref() {
+        Ok("1") => 1,
+        Ok("2") => 2,
+        _ => 0,
+    }
+}
+
 pub fn requested() -> bool {
-    std::env::var("KFX_WGPU_GPU_TIMING").is_ok_and(|value| value == "1")
+    level() >= 1
+}
+
+pub fn serialized() -> bool {
+    level() == 2
 }
 
 /// Adds `TIMESTAMP_QUERY` when the run asked for GPU timing and the adapter has it.
@@ -61,6 +75,9 @@ pub(super) struct PassTimings {
     pub(super) ns: [u64; PASS_KINDS],
     pub(super) passes: u64,
     pub(super) dropped: u64,
+    /// Scratch for the union below, kept to avoid a per-drain allocation.
+    spans: Vec<(u64, u64)>,
+    pub(super) union_ns: u64,
 }
 
 impl PassTimings {
@@ -102,6 +119,8 @@ impl PassTimings {
             ns: [0; PASS_KINDS],
             passes: 0,
             dropped: 0,
+            spans: Vec::new(),
+            union_ns: 0,
         })
     }
 
@@ -173,6 +192,38 @@ impl PassTimings {
         self.slots[index].pending = Some(receiver);
     }
 
+    /// Adds the length of the union of the pass intervals collected since the last call
+    /// to `union_ns`, so passes that were in flight together are counted once. The caller
+    /// closes one accumulation per frame, and a readback lag of a frame or two only moves
+    /// a pass between adjacent frames. Two passes that overlap but land either side of a
+    /// close are still counted twice, so this is an upper bound on the frame's GPU
+    /// occupancy. On an adapter whose pass windows never overlap it is exactly the sum of
+    /// them, which is what a Metal adapter measures here; the overlap the per-pass windows
+    /// hide is stall inside each window, and only `serialized()` removes that.
+    pub(super) fn settle(&mut self) {
+        if self.spans.is_empty() {
+            return;
+        }
+        self.spans.sort_unstable();
+        let mut union = 0;
+        let mut open = self.spans[0];
+        for &(begin, end) in &self.spans[1..] {
+            if begin <= open.1 {
+                open.1 = open.1.max(end);
+                continue;
+            }
+            union += open.1 - open.0;
+            open = (begin, end);
+        }
+        union += open.1 - open.0;
+        self.spans.clear();
+        self.union_ns += (union as f64 * self.period) as u64;
+    }
+
+    /// Spans held between two closes. A caller that never closes still bounds its memory
+    /// and keeps reporting, at the cost of merging across more of the timeline.
+    const SPAN_LIMIT: usize = 4096;
+
     pub(super) fn drain(&mut self, device: &wgpu::Device) {
         if self.slots.iter().all(|slot| slot.pending.is_none()) {
             return;
@@ -195,6 +246,7 @@ impl PassTimings {
                                 self.ns[usize::from(*kind)] +=
                                     ((end - begin) as f64 * self.period) as u64;
                                 self.passes += 1;
+                                self.spans.push((begin, end));
                             }
                         }
                     }
@@ -204,6 +256,9 @@ impl PassTimings {
             }
             self.slots[index].reserved = false;
             self.slots[index].pending = None;
+        }
+        if self.spans.len() >= Self::SPAN_LIMIT {
+            self.settle();
         }
     }
 }

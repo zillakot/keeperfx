@@ -4,7 +4,12 @@ pub(super) fn ordered(command: &Command) -> bool {
     command.kind == SPRITE && command.source_x & 8 != 0
 }
 
-pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
+/// Validates the sprite asset and returns the half-open destination box a *raster*
+/// sprite can write inside, in view space: the union of the per-call axis ranges, which
+/// this function proves contiguous. Outside it `sprite_axis` returns `count`,
+/// `sprite_sample` returns the transparent index and `draw.wgsl` skips the pixel. An
+/// ordered sprite writes through its own kernel and takes `write_rect` instead.
+pub(super) fn validate(command: &Command, source: &Resource) -> Result<[i64; 4]> {
     let w = command.source_width as usize;
     let h = command.source_height as usize;
     ensure!(
@@ -37,7 +42,8 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
         }
         ensure!(!in_run, "unterminated sprite row");
     }
-    for (offset, count) in [(axis, w), (axis + 8 * w, h)] {
+    let mut span = [0i64; 4];
+    for (slot, (offset, count)) in [(axis, w), (axis + 8 * w, h)].into_iter().enumerate() {
         let mut previous = None;
         for i in 0..count {
             let index = offset + 8 * i;
@@ -52,9 +58,13 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
                 "noncontiguous sprite scaling ranges"
             );
             previous = Some(start + length);
+            if i == 0 {
+                span[slot] = i64::from(start);
+            }
+            span[slot + 2] = i64::from(start + length);
         }
     }
-    Ok(())
+    Ok(span)
 }
 
 fn range(source: &Resource, offset: usize) -> (i64, i64) {
@@ -231,6 +241,7 @@ impl DrawRenderer {
             &self.resources,
             ViewSpace::whole(width, height),
             limit,
+            self.box_policy,
         )?;
         packer.finish();
         for c in commands.iter().filter(|c| ordered(c)) {
@@ -279,6 +290,7 @@ impl DrawRenderer {
             &self.resources,
             ViewSpace::whole(target.width, target.height),
             limit,
+            self.box_policy,
         )?;
         let assets = packer.finish();
         let rects: Vec<_> = run

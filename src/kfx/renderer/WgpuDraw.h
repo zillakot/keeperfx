@@ -64,6 +64,7 @@ struct KfxWgpuDrawCommand {
 };
 
 #define KFX_WGPU_DRAW_PASS_KINDS 8
+#define KFX_WGPU_DRAW_BIN_KINDS 18
 
 struct KfxWgpuDrawCounters {
     uint64_t batches, commands, asset_upload_bytes, command_upload_bytes, readback_bytes;
@@ -81,12 +82,22 @@ struct KfxWgpuDrawCounters {
     uint64_t ordered_sprite_layers, ordered_sprite_passes;
     /* The terrain share of tile_entries; terrain inner-loop iterations are 256 times it. */
     uint64_t terrain_tile_entries;
+    /* tile_entries split by record kind, indexed by the KFX_WGPU_DRAW_* kind value. */
+    uint64_t tile_entries_by_kind[KFX_WGPU_DRAW_BIN_KINDS];
     /* Words the compressed prepared-terrain row arena carried, and its growths. */
     uint64_t prepared_row_words, prepared_row_allocations;
     /* Opt-in per-pass GPU execution time, in KFX_WGPU_DRAW_PASS_KINDS order; zero
-     * unless KFX_WGPU_GPU_TIMING=1 and the adapter supports timestamp queries. */
+     * unless KFX_WGPU_GPU_TIMING is 1 or 2 and the adapter supports timestamp queries.
+     * A pass window includes time the pass spent stalled on its dependencies, so it
+     * attributes cost rather than measuring it, and their sum decomposes nothing. */
     uint64_t pass_ns[KFX_WGPU_DRAW_PASS_KINDS];
     uint64_t timed_passes, untimed_passes;
+    /* Union of the frame's timed pass intervals: overlapping windows count once, so this
+     * is an upper bound on GPU occupancy and, up to rounding, the sum of pass_ns whenever
+     * the windows do not overlap. It does not remove the stall inside a window.
+     * KFX_WGPU_GPU_TIMING=2 drains the queue after every timed submission, which does,
+     * by serialising the frame. */
+    uint64_t gpu_pass_union_ns;
 };
 #pragma pack(pop)
 

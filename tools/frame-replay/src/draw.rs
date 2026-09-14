@@ -62,6 +62,8 @@ pub const TRANSITION: u32 = 16;
 /// Internal only: one terrain triangle, produced from `submit_triangles`. The C ABI
 /// cannot name it, so `packable` does not accept it.
 pub(crate) const TERRAIN_TRI: u32 = 17;
+/// Record kinds a tile entry can carry, indexing `Counters::tile_entries_by_kind`.
+pub const BIN_KINDS: usize = 18;
 pub const OPAQUE: u32 = 256;
 const DRAW_SHADER: &str = concat!(
     include_str!("draw.wgsl"),
@@ -203,13 +205,26 @@ pub struct Counters {
     pub ordered_sprite_passes: u64,
     /// The terrain share of `tile_entries`; terrain inner-loop iterations are 256 times it.
     pub terrain_tile_entries: u64,
+    /// `tile_entries` split by record kind; the entries sum to `tile_entries`.
+    pub tile_entries_by_kind: [u64; BIN_KINDS],
     /// Rows the compressed prepared-terrain arena carried, and how often it grew.
     pub prepared_row_words: u64,
     pub prepared_row_allocations: u64,
     /// GPU time per pass kind, in `timing::PASS_NAMES` order; zero unless timing is on.
+    /// A pass window runs from its own begin stamp to its own end stamp, so it includes
+    /// any time the pass spent stalled on a dependency. Their sum attributes cost; it
+    /// does not decompose the frame, and no counter here makes it exclusive —
+    /// `KFX_WGPU_GPU_TIMING=2` does, by serialising the frame.
     pub pass_ns: [u64; PASS_KINDS],
     pub timed_passes: u64,
     pub untimed_passes: u64,
+    /// The union of the frame's timed pass intervals: overlapping windows count once,
+    /// so this is an upper bound on the frame's GPU occupancy, up to rounding equal to
+    /// the sum of `pass_ns` whenever the windows do not overlap. Zero unless timing is
+    /// on. It does not remove the stall inside a window; only `KFX_WGPU_GPU_TIMING=2`,
+    /// which drains the queue after every timed submission, measures pass cost
+    /// exclusively, and it serialises the frame to do so.
+    pub gpu_pass_union_ns: u64,
 }
 
 pub struct DrawRenderer {
@@ -252,6 +267,7 @@ pub struct DrawRenderer {
     deferred_snapshot_releases: Vec<u64>,
     arena: arena::Arena,
     tile_index: TileIndex,
+    box_policy: BoxPolicy,
     stream_commands: PersistentBuffer,
     stream_tiles: PersistentBuffer,
     prepared_rows: PersistentBuffer,
@@ -261,6 +277,7 @@ pub struct DrawRenderer {
     tail: Option<wgpu::CommandEncoder>,
     timing_slot: Option<usize>,
     tail_timing: Option<usize>,
+    serialize_passes: bool,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -354,6 +371,7 @@ impl DrawRenderer {
         });
         let limits = device.limits();
         let timings = PassTimings::new(&device, &queue);
+        let serialize_passes = timings.is_some() && timing::serialized();
         Ok(Self {
             device,
             queue,
@@ -396,6 +414,7 @@ impl DrawRenderer {
                     .min(limits.max_buffer_size),
             ),
             tile_index: TileIndex::default(),
+            box_policy: BoxPolicy::default(),
             stream_commands: PersistentBuffer::default(),
             stream_tiles: PersistentBuffer::default(),
             prepared_rows: PersistentBuffer::default(),
@@ -403,6 +422,7 @@ impl DrawRenderer {
             tail: None,
             timing_slot: None,
             tail_timing: None,
+            serialize_passes,
             failure: renderer.failure.clone(),
         })
     }
@@ -436,12 +456,25 @@ impl DrawRenderer {
         self.tile_index.set_binning(binning);
     }
 
+    /// Fixture hook: off, a record keeps the emitter's whole-target bounds, which is the
+    /// reference the tight destination boxes must reproduce pixel for pixel.
+    pub fn tight_record_boxes(&mut self, tight: bool) {
+        self.box_policy.tight = tight;
+    }
+
+    /// Fixture hook: shrinks every derived box by `pixels` on each side, so a fixture can
+    /// show it fails on a box that is not a superset.
+    pub fn erode_record_boxes(&mut self, pixels: u32) {
+        self.box_policy.erode = i64::from(pixels);
+    }
+
     pub fn counters(&self) -> Counters {
         let mut counters = self.counters;
         if let Some(timings) = &self.timings {
             counters.pass_ns = timings.ns;
             counters.timed_passes = timings.passes;
             counters.untimed_passes = timings.dropped;
+            counters.gpu_pass_union_ns = timings.union_ns;
         }
         counters
     }
@@ -550,6 +583,15 @@ impl DrawRenderer {
         self.submit_one(encoder);
         if let Some(slot) = closed {
             self.timings.as_mut().unwrap().map(slot);
+            self.serialize_timed_submission();
+        }
+    }
+
+    /// `KFX_WGPU_GPU_TIMING=2` only: draining between timed submissions removes the
+    /// overlap that makes per-pass windows inclusive of one another.
+    fn serialize_timed_submission(&mut self) {
+        if self.serialize_passes {
+            let _ = self.wait_for_queue();
         }
     }
 
@@ -580,6 +622,7 @@ impl DrawRenderer {
             self.submit_one(encoder);
             if let Some(slot) = closed {
                 self.timings.as_mut().unwrap().map(slot);
+                self.serialize_timed_submission();
             }
         }
     }
@@ -721,6 +764,7 @@ impl DrawRenderer {
             &self.resources,
             ViewSpace::whole(target_width, target_height),
             limit,
+            self.box_policy,
         )?;
         let assets = packer.finish();
         let target = self.targets.get(&target).context("unknown target")?.clone();
@@ -773,7 +817,12 @@ impl DrawRenderer {
         self.counters.command_upload_bytes +=
             (words.len() + self.tile_index.data().len()) as u64 * 4;
         let pass = self.tile_index.passes()[0];
+        // Tight boxes let a whole batch bin to nothing. It still counts as a batch and
+        // still reads the status word, so the reports do not silently lose frames.
         let Some((parameters, span_x, span_y)) = self.pass_parameters(&target, &pass) else {
+            self.check_status()?;
+            self.counters.batches += 1;
+            self.counters.commands += commands.len() as u64;
             return Ok(());
         };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1080,6 +1129,47 @@ pub(crate) fn validate_resource(length: usize, width: u32, height: u32, pitch: u
     Ok(())
 }
 
+/// How a record's bin box is derived. The default derives the tight destination box
+/// every validated kind can prove; the fixtures use the other two to compare against
+/// the whole-clip box and to check that an undersized box is caught.
+#[derive(Clone, Copy)]
+pub(super) struct BoxPolicy {
+    tight: bool,
+    erode: i64,
+}
+
+impl Default for BoxPolicy {
+    fn default() -> Self {
+        Self {
+            tight: true,
+            erode: 0,
+        }
+    }
+}
+
+impl BoxPolicy {
+    /// Intersects a proven destination box with the record's declared rectangle and the
+    /// view, then applies the fixture erosion. Clamping to the view is safe because
+    /// `tile_span` and the kernel both intersect with the clip as well.
+    fn resolve(&self, box_of: [i64; 4], width: u32, height: u32, declared: [u32; 4]) -> [u32; 4] {
+        let axis = |value: i64, extent: u32| value.clamp(0, i64::from(extent));
+        let near = |value: i64, edge: u32, extent: u32| axis(value.max(i64::from(edge)), extent);
+        let far = |value: i64, edge: u32, extent: u32| axis(value.min(i64::from(edge)), extent);
+        let clamped = [
+            near(box_of[0], declared[0], width),
+            near(box_of[1], declared[1], height),
+            far(box_of[2], declared[2], width),
+            far(box_of[3], declared[3], height),
+        ];
+        [
+            axis(clamped[0] + self.erode, width) as u32,
+            axis(clamped[1] + self.erode, height) as u32,
+            axis(clamped[2] - self.erode, width) as u32,
+            axis(clamped[3] - self.erode, height) as u32,
+        ]
+    }
+}
+
 fn bounds(x: i32, y: i32, width: u32, height: u32) -> Result<[u32; 4]> {
     ensure!(
         width <= 16384
@@ -1312,6 +1402,7 @@ fn pack_commands(
     resources: &HashMap<u64, Resource>,
     view: ViewSpace,
     limit: usize,
+    policy: BoxPolicy,
 ) -> Result<Vec<u32>> {
     pack_records(
         packer,
@@ -1320,6 +1411,7 @@ fn pack_commands(
         resources,
         &[],
         limit,
+        policy,
     )
 }
 
@@ -1396,6 +1488,7 @@ fn pack_records<'a>(
     resources: &HashMap<u64, Resource>,
     layout: &[gpoly::RowLayout],
     limit: usize,
+    policy: BoxPolicy,
 ) -> Result<Vec<u32>> {
     ensure!(
         count <= MAX_COMMANDS && count * RECORD_BYTES <= limit,
@@ -1422,11 +1515,14 @@ fn pack_records<'a>(
             packable(c.kind) && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
             "invalid drawing operation"
         );
-        let rectangle = if c.kind == CLEAR {
+        let mut rectangle = if c.kind == CLEAR {
             [0, 0, width, height]
         } else {
             bounds(c.x, c.y, c.width, c.height)?
         };
+        // The destination box a validated record proves it can never write outside,
+        // narrower than the emitter's whole-target bounds for the sampled kinds.
+        let mut tight = None;
         if c.kind == CIRCLE_FILLED || c.kind == CIRCLE_OUTLINE {
             ensure!(c.source_width <= 8191, "circle radius exceeds limit");
             ensure!(
@@ -1487,15 +1583,19 @@ fn pack_records<'a>(
                     );
                 }
             } else if c.kind == BITMAP {
-                bitmap::validate(c, source, width, height)?;
+                tight = Some(bitmap::validate(c, source, width, height)?);
             } else if c.kind == MAP_VIEW {
                 map_view::validate(c, source, width, height)?;
             } else if c.kind == MOVIE {
                 movie::validate(c, source, width, height)?;
             } else if c.kind == TRIG {
-                trig::validate(c, source, width, height)?;
+                tight = Some(trig::validate(c, source, width, height)?);
             } else if c.kind == SPRITE {
-                sprites::validate(c, source)?;
+                let box_of = sprites::validate(c, source)?;
+                tight = Some(match sprites::ordered(c) {
+                    true => sprites::write_rect(c, source, width),
+                    false => box_of,
+                });
             } else {
                 ensure!(
                     source.pitch == 256 && source.width >= 32 && source.height >= 32,
@@ -1530,6 +1630,12 @@ fn pack_records<'a>(
                 }
             }
             table_offset = packer.offset(c.table, &table.bytes)?;
+        }
+        // The derived box narrows the record's declared rectangle, never widens it: a
+        // caller may declare less than the whole target, and the kernel's own bounds test
+        // is what the unbinned reference compares against.
+        if let Some(box_of) = tight.filter(|_| policy.tight) {
+            rectangle = policy.resolve(box_of, width, height, rectangle);
         }
         words.extend([c.kind, c.blend, index, c.colour]);
         words.extend(view.rebase(rectangle));
@@ -1747,6 +1853,9 @@ impl TileIndex {
             if command[0] == TERRAIN_TRI {
                 terrain += covered;
             }
+            if let Some(kind) = counters.tile_entries_by_kind.get_mut(command[0] as usize) {
+                *kind += covered as u64;
+            }
             entries = entries
                 .checked_add(covered)
                 .context("tile list length overflow")?;
@@ -1916,7 +2025,8 @@ mod tests {
                     &[command],
                     &resources,
                     ViewSpace::whole(32, 32),
-                    1 << 20
+                    1 << 20,
+                    BoxPolicy::default()
                 )
                 .is_err()
             );
@@ -1957,6 +2067,7 @@ mod tests {
             &HashMap::new(),
             ViewSpace::whole(32, 32),
             1 << 20,
+            BoxPolicy::default(),
         )
         .unwrap();
         let mut index = TileIndex::default();

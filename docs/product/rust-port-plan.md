@@ -240,6 +240,55 @@ passes are unchanged by this work, so the shift is either scheduling or an effec
 halved submission count, and it is not explained here. Per-pass GPU windows include time a
 pass spends stalled on its dependencies, so they attribute cost rather than decompose it.
 
+#### Tight bin boxes, 2026-09-14
+
+Serial matched pairs on the wgpu presenter with `KFX_DRAW_BACKEND=wgpu`, busy scene,
+200 measured turns, VSync off, a 60 FPS cap and `--gpu-timing`, before (`dc31cabe0`) and
+after tight bin boxes, on the same host and assets. Simulation stayed at 0.343/0.347 ms
+and 0.315/0.337 ms across the pairs, so host contention did not move between runs. A
+`gpu_*_ns` window includes the stall the pass waited through, so the rows below attribute
+GPU cost rather than decomposing the frame; the serialised row is the exclusive figure.
+
+| | 640x480 before | 640x480 after | 1080p before | 1080p after |
+| --- | ---: | ---: | ---: | ---: |
+| `tile_entries` | 126,750 | 9,917 | 897,385 | 46,149 |
+| Pixel-command evaluations | 32.4 M | 2.5 M | 229.7 M | 11.8 M |
+| `tile_entries` sprite / trig / terrain / clear | — | 1,135 / 352 / 7,230 / 1,200 | — | 6,136 / 1,193 / 30,660 / 8,160 |
+| GPU raster | 5.223 ms | 1.184 ms | 46.124 ms | 2.859 ms |
+| GPU shadow triangles | 1.314 ms | 0.663 ms | 7.876 ms | 1.001 ms |
+| GPU minimap | 3.175 ms | 0.805 ms | 16.901 ms | 2.414 ms |
+| Sum of pass windows | 11.033 ms | 3.910 ms | 76.804 ms | 8.006 ms |
+| Serialised GPU sum | not collected | not collected | not collected | **3.549 ms** |
+| `gpu_pass_union_ns` | absent | 3.910 ms | absent | 8.006 ms |
+| Presentation mean | 4.748 ms | 5.604 ms | 76.369 ms | 4.765 ms |
+| Frame interval / FPS | 16.666 ms / 60.00 | 16.666 ms / 60.00 | 78.133 ms / 12.80 | 16.667 ms / 60.00 |
+| Turns/s over the window | 20.02 | 20.02 | 12.86 | 20.04 |
+
+A quiet 1080p pair on the same builds: `tile_entries` 755,382 → 48,938, raster
+30.874 → 2.861 ms, sum of pass windows 51.530 → 6.741 ms, presentation 60.340 → 4.476 ms,
+16.16 → 60.00 FPS and 10.78 → 20.03 turns/s.
+
+Both 1080p scenes now reach the 60 FPS cap and 20 turns/s, so the remaining GPU cost is no
+longer what bounds the frame; the cap is. The minimap window fell with everything else
+without any minimap change, which confirms that its earlier 16.9 ms was attribution rather
+than cost. A serialised repeat of the busy 1080p run (`--serial-gpu-timing`) puts the sum
+of pass windows at **3.549 ms against 8.006 ms** unserialised — 56 % of the per-pass
+window total is waiting inside the windows, not work — while presentation rises to
+15.444 ms because the host now blocks on the queue, so that mode measures cost, not
+throughput. `gpu_pass_union_ns` equals the unserialised window sum in every column, which
+is the same finding from the other side: the windows are disjoint in GPU time, so the
+stall is inside each one rather than between them.
+
+`RAW_IMAGE` is the residual. Its box is exact — it writes index 0 outside its destination
+rectangle, so it really does own the whole clip — but at 8,160 tiles per full-view record
+it is most of what remains after terrain's 30,660 at 1080p. Splitting it into the
+destination rectangle plus up to four index-0 fill rectangles would be exact and is the
+next binning item.
+
+Validation: 99,298 GPU batches verified against the CPU oracle with 0 failures under
+`KFX_WGPU_DRAW_VERIFY=1` on level 20, and a `KFX_WGPU_VERIFY=1` session presented and
+verified 546 of 546 acquired surfaces, which earlier sessions could not reach.
+
 #### HD measurement
 
 The same binary, presenter and settings, capped host-wall timing at a 1920×1080
@@ -382,12 +431,12 @@ ownership, synchronization, counters and failure behavior.
 
 | Gate | Status | Evidence and remaining work |
 | --- | --- | --- |
-| Inventory and measurement | Partial | Per-pass GPU execution time is now collected on request (`KFX_WGPU_GPU_TIMING=1`, `profile-game.py --gpu-timing`), so the terrain, raster, shadow, trig, sprite, minimap, lens and present shares are attributed rather than inferred. Clean 640×480 measurements exposed the synchronous prototype regression: software drawing about 1.3–1.5 ms versus GPU drawing about 129–131 ms, with verifiers disabled. Full-frame readback dominated the separate stack sample. Queued frames are now measured at 640×480 and 1920×1080 (see the status section); the front-view matrix remains open. |
+| Inventory and measurement | Partial | Per-pass GPU execution time is collected on request (`KFX_WGPU_GPU_TIMING=1`, `profile-game.py --gpu-timing`), and `tile_entries_<kind>` splits the binning index per record kind. A pass window includes the stall that pass waited through, so it attributes cost rather than measuring it and the window sum decomposes nothing. `gpu_pass_union_ns` is the union of the frame's pass intervals and bounds GPU occupancy from above; measured, it equals the window sum, so the windows are disjoint and the stall sits inside them. Only `KFX_WGPU_GPU_TIMING=2` (`--serial-gpu-timing`) is exclusive: a serialised busy 1080p run reports 3.549 ms of GPU work against an 8.006 ms window sum, and that serialised figure is what acceptance tables cite. Clean 640×480 measurements exposed the synchronous prototype regression: software drawing about 1.3–1.5 ms versus GPU drawing about 129–131 ms, with verifiers disabled. Full-frame readback dominated the separate stack sample. Queued frames are now measured at 640×480 and 1920×1080 (see the status section); the front-view matrix remains open. |
 | Extract commands | Partial | [Gpoly capture](../../src/kfx/renderer/GpolyCapture.h) owns span/resource snapshots; reviewed CPU oracle at `beec45800`: 615 fixtures and 20,389 spans matched native indices. Original-vertex native routing at `17e993a84` copies vertices before CPU setup and retains immutable texture/fade versions. Other families need immutable commands. |
 | Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h) cover the implemented families below. General triangles have all 27 kernels and deterministic thin-triangle setup. Queued frames, alias views, resource ownership and borrowed cursor integration are implemented; final combined runtime and performance evidence must match their exact source. |
 | Cover every drawing path | Open | Accepted original-vertex terrain bypasses CPU setup and rasterization; bounded 2D hooks suppress selected CPU pixel loops. The remaining families below and routine upload/readback bridges prevent complete GPU coverage. |
-| Native validation | Partial | The terrain-binning build passed an isolated native session on busy level 20 through `game-control.py` — camera movement, parchment open and return, pause and resume, two resizes and a clean quit, every state predicate reached, 2,424 GPU terrain batches and no failure, invalid frame or fallback — and a separate `KFX_WGPU_DRAW_VERIFY=1` run against the CPU oracle with 5,986 verified batches and 21,223 verified triangles at zero failures. Exact `e19ff26f7` sessions passed gameplay, parchment, save/reload and compound-lens possession, with 788 surface-verified presentations and no drawing failures. A real parchment oracle-recursion crash was fixed and retested. Later queued-frame source requires its own acceptance; complete views, languages, assets and failure coverage remain open. |
-| Performance and delivery | Open | Terrain binning is the first step that pays: on the wgpu presenter with GPU drawing, observed FPS rose 54.95 → 60.00 at busy 640x480, hitting the cap, and 9.52 → 12.65 at 1920x1080, with per-frame GPU time 14.00 → 9.29 ms and 88.07 → 87.81 ms. 1080p is still 4.7x off the target. The single command stream before it moved its structural counters without paying for itself: observed FPS fell about 2 at busy 640x480 while CPU drawing and presentation improved. The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
+| Native validation | Partial | The tight-bin-box build passed an isolated native session on busy level 20 through `game-control.py` — camera movement, parchment open and return, pause and resume, two resizes and a clean quit, every state predicate reached, 1,758 GPU batches and no failure, invalid frame or fallback — a `KFX_WGPU_DRAW_VERIFY=1` run with 99,298 verified batches at zero failures, and a `KFX_WGPU_VERIFY=1` session that presented and verified 546 of 546 acquired surfaces, which earlier sessions could not reach. The terrain-binning build before it passed an isolated native session on busy level 20 through `game-control.py` — camera movement, parchment open and return, pause and resume, two resizes and a clean quit, every state predicate reached, 2,424 GPU terrain batches and no failure, invalid frame or fallback — and a separate `KFX_WGPU_DRAW_VERIFY=1` run against the CPU oracle with 5,986 verified batches and 21,223 verified triangles at zero failures. Exact `e19ff26f7` sessions passed gameplay, parchment, save/reload and compound-lens possession, with 788 surface-verified presentations and no drawing failures. A real parchment oracle-recursion crash was fixed and retested. Later queued-frame source requires its own acceptance; complete views, languages, assets and failure coverage remain open. |
+| Performance and delivery | Open | Tight bin boxes are the step that closes the 1080p gap: on the wgpu presenter with GPU drawing, observed FPS rose 12.80 → 60.00 at busy 1920x1080 and 16.16 → 60.00 on a quiet 1080p pair, both reaching the cap at 20 turns/s, with `tile_entries` 897,385 → 46,196 and the raster pass 46.12 → 3.07 ms. 640x480 was already capped and stays there. The frame cap, not the GPU, now bounds both scenes, so no uncapped-throughput claim follows. Terrain binning before it was the first step that paid: on the wgpu presenter with GPU drawing, observed FPS rose 54.95 → 60.00 at busy 640x480, hitting the cap, and 9.52 → 12.65 at 1920x1080, with per-frame GPU time 14.00 → 9.29 ms and 88.07 → 87.81 ms. 1080p is still 4.7x off the target. The single command stream before it moved its structural counters without paying for itself: observed FPS fell about 2 at busy 640x480 while CPU drawing and presentation improved. The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
 
 | Drawing family and source boundary | Implemented coverage | Remaining GPU work / validation |
 | --- | --- | --- |
