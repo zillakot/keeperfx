@@ -52,3 +52,5 @@ debug.log
 .local/
 /keeperfx_vs2010
 /tools/frame-replay/target/
+__pycache__/
+*.pyc
