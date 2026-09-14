@@ -80,6 +80,7 @@ impl DrawRenderer {
             &self.resources,
             &layout,
             limit,
+            self.box_policy,
         )?;
         let assets = packer.finish();
         self.tile_index.build(

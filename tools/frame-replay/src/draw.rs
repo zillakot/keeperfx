@@ -62,6 +62,8 @@ pub const TRANSITION: u32 = 16;
 /// Internal only: one terrain triangle, produced from `submit_triangles`. The C ABI
 /// cannot name it, so `packable` does not accept it.
 pub(crate) const TERRAIN_TRI: u32 = 17;
+/// Record kinds a tile entry can carry, indexing `Counters::tile_entries_by_kind`.
+pub const BIN_KINDS: usize = 18;
 pub const OPAQUE: u32 = 256;
 const DRAW_SHADER: &str = concat!(
     include_str!("draw.wgsl"),
@@ -199,6 +201,8 @@ pub struct Counters {
     pub tile_entries: u64,
     /// The terrain share of `tile_entries`; terrain inner-loop iterations are 256 times it.
     pub terrain_tile_entries: u64,
+    /// `tile_entries` split by record kind; the entries sum to `tile_entries`.
+    pub tile_entries_by_kind: [u64; BIN_KINDS],
     /// Rows the compressed prepared-terrain arena carried, and how often it grew.
     pub prepared_row_words: u64,
     pub prepared_row_allocations: u64,
@@ -252,6 +256,7 @@ pub struct DrawRenderer {
     deferred_snapshot_releases: Vec<u64>,
     arena: arena::Arena,
     tile_index: TileIndex,
+    box_policy: BoxPolicy,
     stream_commands: PersistentBuffer,
     stream_tiles: PersistentBuffer,
     prepared_rows: PersistentBuffer,
@@ -397,6 +402,7 @@ impl DrawRenderer {
                     .min(limits.max_buffer_size),
             ),
             tile_index: TileIndex::default(),
+            box_policy: BoxPolicy::default(),
             stream_commands: PersistentBuffer::default(),
             stream_tiles: PersistentBuffer::default(),
             prepared_rows: PersistentBuffer::default(),
@@ -436,6 +442,18 @@ impl DrawRenderer {
     /// so the binned and unbinned rasters can be compared on the same geometry.
     pub fn bin_records(&mut self, binning: bool) {
         self.tile_index.set_binning(binning);
+    }
+
+    /// Fixture hook: off, a record keeps the emitter's whole-target bounds, which is the
+    /// reference the tight destination boxes must reproduce pixel for pixel.
+    pub fn tight_record_boxes(&mut self, tight: bool) {
+        self.box_policy.tight = tight;
+    }
+
+    /// Fixture hook: shrinks every derived box by `pixels` on each side, so a fixture can
+    /// show it fails on a box that is not a superset.
+    pub fn erode_record_boxes(&mut self, pixels: u32) {
+        self.box_policy.erode = i64::from(pixels);
     }
 
     pub fn counters(&self) -> Counters {
@@ -736,6 +754,7 @@ impl DrawRenderer {
             &self.resources,
             ViewSpace::whole(target_width, target_height),
             limit,
+            self.box_policy,
         )?;
         let assets = packer.finish();
         let target = self.targets.get(&target).context("unknown target")?.clone();
@@ -1095,6 +1114,44 @@ pub(crate) fn validate_resource(length: usize, width: u32, height: u32, pitch: u
     Ok(())
 }
 
+/// How a record's bin box is derived. The default derives the tight destination box
+/// every validated kind can prove; the fixtures use the other two to compare against
+/// the whole-clip box and to check that an undersized box is caught.
+#[derive(Clone, Copy)]
+pub(super) struct BoxPolicy {
+    tight: bool,
+    erode: i64,
+}
+
+impl Default for BoxPolicy {
+    fn default() -> Self {
+        Self {
+            tight: true,
+            erode: 0,
+        }
+    }
+}
+
+impl BoxPolicy {
+    /// Clamps a proven destination box to the view and applies the fixture erosion.
+    /// Clamping is safe because `tile_span` and the kernel both intersect with the clip.
+    fn resolve(&self, box_of: [i64; 4], width: u32, height: u32) -> [u32; 4] {
+        let axis = |value: i64, extent: u32| value.clamp(0, i64::from(extent));
+        let clamped = [
+            axis(box_of[0], width),
+            axis(box_of[1], height),
+            axis(box_of[2], width),
+            axis(box_of[3], height),
+        ];
+        [
+            axis(clamped[0] + self.erode, width) as u32,
+            axis(clamped[1] + self.erode, height) as u32,
+            axis(clamped[2] - self.erode, width) as u32,
+            axis(clamped[3] - self.erode, height) as u32,
+        ]
+    }
+}
+
 fn bounds(x: i32, y: i32, width: u32, height: u32) -> Result<[u32; 4]> {
     ensure!(
         width <= 16384
@@ -1327,6 +1384,7 @@ fn pack_commands(
     resources: &HashMap<u64, Resource>,
     view: ViewSpace,
     limit: usize,
+    policy: BoxPolicy,
 ) -> Result<Vec<u32>> {
     pack_records(
         packer,
@@ -1335,6 +1393,7 @@ fn pack_commands(
         resources,
         &[],
         limit,
+        policy,
     )
 }
 
@@ -1411,6 +1470,7 @@ fn pack_records<'a>(
     resources: &HashMap<u64, Resource>,
     layout: &[gpoly::RowLayout],
     limit: usize,
+    policy: BoxPolicy,
 ) -> Result<Vec<u32>> {
     ensure!(
         count <= MAX_COMMANDS && count * RECORD_BYTES <= limit,
@@ -1437,11 +1497,14 @@ fn pack_records<'a>(
             packable(c.kind) && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
             "invalid drawing operation"
         );
-        let rectangle = if c.kind == CLEAR {
+        let mut rectangle = if c.kind == CLEAR {
             [0, 0, width, height]
         } else {
             bounds(c.x, c.y, c.width, c.height)?
         };
+        // The destination box a validated record proves it can never write outside,
+        // narrower than the emitter's whole-target bounds for the sampled kinds.
+        let mut tight = None;
         if c.kind == CIRCLE_FILLED || c.kind == CIRCLE_OUTLINE {
             ensure!(c.source_width <= 8191, "circle radius exceeds limit");
             ensure!(
@@ -1502,15 +1565,15 @@ fn pack_records<'a>(
                     );
                 }
             } else if c.kind == BITMAP {
-                bitmap::validate(c, source, width, height)?;
+                tight = Some(bitmap::validate(c, source, width, height)?);
             } else if c.kind == MAP_VIEW {
                 map_view::validate(c, source, width, height)?;
             } else if c.kind == MOVIE {
                 movie::validate(c, source, width, height)?;
             } else if c.kind == TRIG {
-                trig::validate(c, source, width, height)?;
+                tight = Some(trig::validate(c, source, width, height)?);
             } else if c.kind == SPRITE {
-                sprites::validate(c, source)?;
+                tight = Some(sprites::validate(c, source)?);
             } else {
                 ensure!(
                     source.pitch == 256 && source.width >= 32 && source.height >= 32,
@@ -1545,6 +1608,9 @@ fn pack_records<'a>(
                 }
             }
             table_offset = packer.offset(c.table, &table.bytes)?;
+        }
+        if let Some(box_of) = tight.filter(|_| policy.tight) {
+            rectangle = policy.resolve(box_of, width, height);
         }
         words.extend([c.kind, c.blend, index, c.colour]);
         words.extend(view.rebase(rectangle));
@@ -1762,6 +1828,9 @@ impl TileIndex {
             if command[0] == TERRAIN_TRI {
                 terrain += covered;
             }
+            if let Some(kind) = counters.tile_entries_by_kind.get_mut(command[0] as usize) {
+                *kind += covered as u64;
+            }
             entries = entries
                 .checked_add(covered)
                 .context("tile list length overflow")?;
@@ -1931,7 +2000,8 @@ mod tests {
                     &[command],
                     &resources,
                     ViewSpace::whole(32, 32),
-                    1 << 20
+                    1 << 20,
+                    BoxPolicy::default()
                 )
                 .is_err()
             );
@@ -1972,6 +2042,7 @@ mod tests {
             &HashMap::new(),
             ViewSpace::whole(32, 32),
             1 << 20,
+            BoxPolicy::default(),
         )
         .unwrap();
         let mut index = TileIndex::default();

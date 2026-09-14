@@ -1,7 +1,13 @@
 use super::{Command, OPAQUE, Resource};
 use anyhow::{Result, ensure};
 
-pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) -> Result<()> {
+/// Validates the bitmap payload and returns the destination box it can write inside,
+/// half-open and in view space. A huge bitmap writes only where a row record covers the
+/// pixel, so the union of the row extents and of their pixel runs bounds it; outside
+/// that, both binary searches fall off their table and `bitmap_sample` returns the
+/// transparent index. A glyph writes only inside the scaled destination rectangle, plus
+/// one pixel right and down when the shadow layer is enabled.
+pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) -> Result<[i64; 4]> {
     ensure!(
         c.blend == 0
             && c.transparent == OPAQUE
@@ -21,14 +27,15 @@ pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) 
         );
         let mut end_y = 0;
         let mut offset = rows * 16;
+        let mut span = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
         for i in 0..rows {
             let y = word(i * 16) as u64;
-            let n = word(i * 16 + 4) as u64;
+            let n_y = word(i * 16 + 4) as u64;
             ensure!(
-                y >= end_y && y + n <= height as u64,
+                y >= end_y && y + n_y <= height as u64,
                 "invalid huge row coverage"
             );
-            end_y = y + n;
+            end_y = y + n_y;
             let start = word(i * 16 + 8) as usize;
             let count = word(i * 16 + 12) as usize;
             ensure!(
@@ -44,10 +51,18 @@ pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) 
                     "invalid huge pixel coverage"
                 );
                 end_x = x + n;
+                span[0] = span[0].min(x as i64);
+                span[2] = span[2].max(end_x as i64);
+                span[1] = span[1].min(y as i64);
+                span[3] = span[3].max((y + n_y) as i64);
             }
             offset += count * 12;
         }
         ensure!(offset == bytes.len(), "trailing huge records");
+        if span[0] > span[2] {
+            span = [0; 4];
+        }
+        return Ok(span);
     } else {
         ensure!(
             matches!(c.source_x, 1 | 2)
@@ -76,7 +91,14 @@ pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) 
             );
         }
     }
-    Ok(())
+    let origin = [i64::from(c.start_low as i32), i64::from(c.start_high as i32)];
+    let shadow = i64::from(c.source_y != 0);
+    Ok([
+        origin[0],
+        origin[1],
+        origin[0] + i64::from(c.step_low) + shadow,
+        origin[1] + i64::from(c.step_high) + shadow,
+    ])
 }
 
 #[cfg(test)]

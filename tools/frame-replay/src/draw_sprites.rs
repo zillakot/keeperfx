@@ -4,7 +4,15 @@ pub(super) fn ordered(command: &Command) -> bool {
     command.kind == SPRITE && command.source_x & 8 != 0
 }
 
-pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
+/// Validates the sprite asset and returns the destination box it can write inside,
+/// half-open and in view space. The per-call axis tables hold one contiguous
+/// `(start, length)` range per source column and row, so the union of the ranges is
+/// `[first.start, last.start + last.length)` on each axis; `sprite_axis` returns
+/// `count` outside it and `sprite_sample` then returns the transparent index, which
+/// `draw.wgsl` skips. The ordered kernel additionally copies a run from the column one
+/// left of the leftmost range, and does so even when every range is empty, so the
+/// ordered box carries that extra column.
+pub(super) fn validate(command: &Command, source: &Resource) -> Result<[i64; 4]> {
     let w = command.source_width as usize;
     let h = command.source_height as usize;
     ensure!(
@@ -37,7 +45,8 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
         }
         ensure!(!in_run, "unterminated sprite row");
     }
-    for (offset, count) in [(axis, w), (axis + 8 * w, h)] {
+    let mut span = [0i64; 4];
+    for (slot, (offset, count)) in [(axis, w), (axis + 8 * w, h)].into_iter().enumerate() {
         let mut previous = None;
         for i in 0..count {
             let index = offset + 8 * i;
@@ -52,9 +61,16 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<()> {
                 "noncontiguous sprite scaling ranges"
             );
             previous = Some(start + length);
+            if i == 0 {
+                span[slot] = i64::from(start);
+            }
+            span[slot + 2] = i64::from(start + length);
         }
     }
-    Ok(())
+    if ordered(command) {
+        span[0] -= 1;
+    }
+    Ok(span)
 }
 
 fn range(source: &Resource, offset: usize) -> (i64, i64) {
@@ -133,6 +149,7 @@ impl DrawRenderer {
             &self.resources,
             ViewSpace::whole(width, height),
             limit,
+            self.box_policy,
         )?;
         packer.finish();
         for c in commands.iter().filter(|c| ordered(c)) {
@@ -159,6 +176,7 @@ impl DrawRenderer {
                 &self.resources,
                 ViewSpace::whole(width, height),
                 limit,
+                self.box_policy,
             )?;
             let assets = packer.finish();
             let target = &self.targets[&target_id];

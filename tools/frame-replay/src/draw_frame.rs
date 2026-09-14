@@ -561,6 +561,7 @@ impl DrawRenderer {
                 &self.resources,
                 &layout,
                 limit,
+                self.box_policy,
             )?;
             let assets = packer.finish();
             if !geometry.is_empty() {

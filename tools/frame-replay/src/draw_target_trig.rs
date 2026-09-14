@@ -55,7 +55,7 @@ impl DrawRenderer {
                 bytes: geometry.bytes.clone(),
             };
             validation.bytes.resize(60 + 65536, 0);
-            trig::validate(c, &validation, width, height)?;
+            let box_of = trig::validate(c, &validation, width, height)?;
             let table = self
                 .resources
                 .get(&c.table)
@@ -83,7 +83,12 @@ impl DrawRenderer {
                 "triangle arena exceeds limit"
             );
             words.extend([TRIG, 0, 0, c.colour]);
-            words.extend(bounds(c.x, c.y, c.width, c.height)?);
+            let policy = self.box_policy;
+            words.extend(if policy.tight {
+                policy.resolve(box_of, width, height)
+            } else {
+                bounds(c.x, c.y, c.width, c.height)?
+            });
             words.extend(bounds(c.clip_x, c.clip_y, c.clip_width, c.clip_height)?);
             words.extend([source_offset as u32, table_offset as u32, 1, slot + 1]);
             words.extend([c.source_x, 65536, 64, 0]);
