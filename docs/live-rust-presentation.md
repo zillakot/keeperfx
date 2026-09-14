@@ -85,10 +85,11 @@ below does require synchronous readback. wgpu/driver submission and staging allo
 still occur; retained resources do not imply allocation-free presentation.
 
 `presentation` covers cursor composition, acquisition, polling/reconfiguration,
-input upload, drawing submission, present submission and cursor cleanup. The nested
-`present_wait` measures only the backend-specific present API; compare total
-presentation rather than treating the two APIs' nested durations as equivalent
-GPU work. [Performance baselines](performance-baselines.md) describe paired runs,
+input upload, drawing submission, present submission and cursor cleanup. On the GPU
+drawing path the frame's single submission happens inside the nested `present_wait`,
+so that scope now carries the whole frame's queue submission as well as the present
+API. Compare total presentation rather than treating the two APIs' nested durations
+as equivalent GPU work. [Performance baselines](performance-baselines.md) describe paired runs,
 process CPU counters, scoped Rust host allocations and reproducibility limits.
 
 ## Focused validation
@@ -237,10 +238,10 @@ The native destination changes only after successful execution/readback and any
 enabled comparison. A queued frame writes the canonical target as it is recorded;
 there is no per-flush scratch copy and no rollback. An out-of-range GPU lookup skips
 its own write, the frame presents as drawn, and the flag reaches the bridge through
-`kfx_wgpu_draw_frame_status` at the head of a later frame — typically within two, not
-guaranteed, because `checkpoint_target` publishes the status word several times per frame
-(readback, presentation, target snapshots and snapshot-sourced images each flush) and a ring
-slot whose map has not completed defers the publish to the next one. A deferral counts
+`kfx_wgpu_draw_frame_status` at the head of a later frame — one or two, because the word is
+copied and cleared once per frame in the encoder `frame_submit` closes, so the eight-slot
+ring now covers eight frames rather than eight flushes. A ring slot whose map has not
+completed still defers the publish to the next frame. A deferral counts
 `frame_status_stalls`; it never drops a flag, because the status word is only cleared in the
 encoder that copies it out. The bridge then counts the frame and takes the existing full
 redraw. **Retained GPU snapshots are the exception to that recovery.** Neither
@@ -292,7 +293,7 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `verified_triangles` / `verified_batches`: successfully compared triangles/batches; `verification_cpu_spans` and `verification_cpu_commands`: explicitly enabled CPU oracle work; `verification_flagged_shades`: batches the CPU oracle could not reproduce because a kernel flagged and skipped an out-of-range shade, counted rather than compared.
 - `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers.
 
-- `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations. Target snapshots, target images and the palette pass no longer submit: they record into a present tail that `kfx_wgpu_present` finishes, so one swap costs one submission instead of one per step. Opening an asset batch submits the tail first, because the batch recycles arena scratch the tail may still read and stages its uploads into the head of the next submission. With `lbPointerAdvancedDraw` unset the swap-time cursor is the direct scaled sprite inside the frame stream, so `gpu_submits` is unchanged in a default run.
+- `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations. **A presented frame is one command buffer.** Every pass of the frame — the terrain prepare, each raster segment, each shadow mask and its triangles, the ordered-sprite layers, the lens and minimap passes, the cursor backup, composition and restore and the palette render pass — records into a single encoder opened at the frame's first record, and `kfx_wgpu_present` finishes and submits it. A flush is no longer a submission boundary: `frame_flush` replays what the frame has queued into that open encoder, which is why `frame_checkpoints` is structurally zero. Serial dependencies stay pass boundaries inside the encoder, where wgpu inserts the usage-transition barriers, so the per-pixel value sequence is the one the per-batch path produced.
 - `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_host_staged_asset_bytes`: host-side staged asset bytes the drawing context holds, a gauge rather than a total, and not GPU memory.
 - `ordered_sprite_layers` and `ordered_sprite_passes`: layers of mutually disjoint ordered sprites and the compute passes serving them, one pass of *M* workgroups per layer. They are equal by construction, so a divergence is a bug. `ordered_sprite_layers` below `gpu_ordered_sprites` is the only way the layering pays: measured on a busy 640x480 pair it is 2.68 against 2.69 ordered sprites, because consecutive ordered sprites are rare in the stream — a raster record between two of them orders them and ends the run. Each sprite's bound is its own scaling ranges, not its clip rectangle, which is always the whole drawing window.
 - `arena_evictions`, `arena_overflows`, `arena_bytes_uploaded`: persistent asset arena LRU reclaims, exhausted allocations that reject a batch, and bytes actually written into the arena. `arena_bytes_resident` is a gauge: the arena extent suballocated so far in expanded bytes — one `u32` per source byte, free-listed slots and power-of-two class padding included — so it bounds the live working set rather than tracking it exactly. Assets the arena does not own yet — the per-shadow `submit_target_triangles` tables — stay in `gpu_asset_upload_bytes` without appearing in `arena_bytes_uploaded`.
@@ -300,7 +301,7 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `gpu_shadow_commands`: committed creature shadows. `shadow_scratch_upload_bytes` and `shadow_scratch_copy_bytes` are zero because the mask chain is GPU resident; `shadow_scratch_readback_bytes` is zero unless `KFX_WGPU_DRAW_VERIFY` is set, which adds one blocking 256 KiB scratch read per shadow.
 - `shadow_prior_divergence`: verification only. Counts *events*, not every shadow after the first: a shadow whose resident prior scratch no longer matched the `big_scratch` bytes the software path would have used is skipped for the mask and pixel comparison and kept out of `verified_batches`, and the CPU scratch is then re-seeded from the resident prior so verification resumes on the next shadow. `shadow_scratch_copy_bytes` counts those re-seeds and is zero without them. It measures how often the resident chain and the legacy shared scratch disagree; it is not a failure count.
 - `rejected_commands` / `rejected_spans`: pending generic commands and terrain spans the target never received because the run was dropped without a CPU replay; each such drop invalidates the frame.
-- `frame_checkpoints`, `frame_gpu_checkpoint_copy_bytes`, `frame_validation_waits` and `frame_validation_bytes`: queued-frame flushes and what they used to cost. The copy bytes and both validation figures are structurally zero: a flush records the batches straight into the root and publishes the status word instead of aggregating per-batch flags under a blocking poll. `frame_checkpoints` is 1.0 per presented frame and that one is the frame's own terminal flush from `ResidentTarget`, not a reader forcing an early one; the cursor swap adds none, because the backup, composition, palette pass and restore are recorded behind that flush into the present tail. Reaching 0 needs the single frame encoder, not this path.
+- `frame_checkpoints`, `frame_gpu_checkpoint_copy_bytes`, `frame_validation_waits` and `frame_validation_bytes`: flushes that had to cut the frame's submission, and what a flush used to cost. All four are structurally zero: a flush records the batches straight into the root and replays into the open encoder, and the status word is published once per frame from `frame_submit` instead of once per flush.
 - `frame_flagged_invalid`, `frame_status_reads` and `frame_status_stalls`: frames a kernel flagged as having an out-of-range lookup, completed status ring reads, and publishes skipped because every ring slot was still mapped. A stall only defers the flag to the next publish; it never loses it.
 - `tile_allocations` counts growths of the persistent binning scratch and is zero after warm-up; `tile_entries` is the per-frame size of the tile index the raster passes share. The ordered-sprite preflight builds an index it never uploads and is excluded from `tile_entries`.
 - `tile_entries_<kind>` splits `tile_entries` by record kind and sums to it. A record is binned by the destination box its validator proves it cannot write outside, not by its clip: the union of a sprite's per-call scaling ranges, a triangle's vertex bounding box, a huge bitmap's row and run extents, a glyph's scaled rectangle plus its shadow offset, and for an ordered sprite the same `write_rect` the layering uses. `RAW_IMAGE` keeps the whole target, because it writes index 0 outside its destination rectangle. The clip stays the pixel-level guard, so the sampler arithmetic is unchanged.

@@ -171,7 +171,10 @@ far, including free-listed slots and power-of-two class padding, so it bounds th
 live working set rather than tracking it exactly and its window total is
 meaningless. It counts expanded arena bytes — one `u32` per source byte, the GPU
 footprint — so dividing by four gives the real asset bytes that the arena's
-source-byte capacity is stated in. `upload_bytes` still counts every asset write, arena or not.
+source-byte capacity is stated in. `arena_scratch_bytes_peak` is a third gauge: the
+widest extent the arena's transient regions reached inside one pinning scope, which
+one submit per frame makes a whole frame rather than a batch. `upload_bytes` still
+counts every asset write, arena or not.
 
 The first presentation only establishes the counter baseline, so there is exactly
 one fewer counter frame than presentation sample. `wait_ns` is host time blocked

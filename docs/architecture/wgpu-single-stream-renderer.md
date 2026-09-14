@@ -43,15 +43,15 @@ command-list iterations must stay within 5% of the single-pass count.
 
 | Criterion | Now 640x480 | Now 1920x1080 | Target |
 | --- | ---: | ---: | --- |
-| `queue.submit` calls | ~125 *derived*; 83.9 → **45.2 measured** | ~125 *derived*; 76.1 → **39.1 measured** | **1**, hard cap 2 |
-| Blocking `device.poll(Wait)` | 25.7 | 18.9 | **0** |
-| Frame checkpoints | 11.8 | 9.6 | **0** |
+| `queue.submit` calls | ~125 *derived*; 83.9 → 45.2 → 37.2 → **1.00 measured** | ~125 *derived*; 76.1 → 39.1 → 38.3 → **1.00 measured** | **1**, hard cap 2 — **met** |
+| Blocking `device.poll(Wait)` | 25.7 → **0 measured** | 18.9 → **0 measured** | **0** — met |
+| Frame checkpoints | 11.8 → 1.0 → **0 measured** | 9.6 → 1.0 → **0 measured** | **0** — met |
 | GPU→GPU checkpoint copy bytes | 29.01 MB | 159.05 MB | **0** |
 | Asset upload bytes | 29.44 MB | 25.60 MB | **≤ 256 KB** steady state |
 | Command + tile-index upload bytes | 0.90 MB | 5.11 MB | ≤ 0.5 MB / ≤ 1.5 MB |
 | C-side resource copy bytes | 1.95 MB | 1.66 MB | **≤ 64 KB** |
 | Rust requested bytes per presentation | 98.2 MB | 120.1 MB | **≤ 512 KB** |
-| `create_buffer`, `create_buffer_init`, `create_bind_group` calls | ~500 each *derived* | ~500 each *derived* | **≤ 8** each |
+| `create_buffer`, `create_buffer_init`, `create_bind_group` calls | ~500 each *derived*; **87.3 measured**, unmoved by PR 13 | ~500 each *derived*; **90.4 measured**, unmoved by PR 13 | **≤ 8** each; needs the byte-packed arena and persistent uniforms |
 | Full-target compute dispatches | ~86 *derived*; total dispatches 128.7 → **59.1 measured** | ~86 *derived*; total dispatches 113.1 → **48.6 measured** | **≤ 4** typical, hard cap 16 |
 | Terrain inner-loop iterations | 308 M *derived* → **1.85 M measured** | 2,065 M *derived* → **7.85 M measured** | **≤ 10 M / ≤ 25 M** — met |
 | Terrain GPU time per frame | 5.24 ms → **0.04 ms** plus its share of the raster | 26.40 ms → **0.04 ms** plus its share of the raster | no separate pass |
@@ -241,28 +241,52 @@ row, and the rectangle widens to the whole row band one row higher.
 **Shadow residency (implemented, without hoisting).** The chain is `mask_i = f(scratch_{i-1}, artwork_i)`,
 then `scratch_i = mask_i`, then two `TRIG` commands sample `mask_i`. Because the mask never depends on the
 frame target, the chain lives in a persistent 256x256 scratch buffer and each mask is stamped into one of
-**two** resident slots. Mask *i* is submitted immediately ahead of `TRIG` *i* rather than hoisted to the
-head of the frame. The invariant that makes slot reuse safe is **submission order**, not the slot count:
-mask *i* and the triangles reading slot *i* are adjacent submissions on one queue, which executes them in
-order, so a later mask cannot overwrite a slot an earlier submission still reads. `SLOTS = 2` is headroom, and a future change that put two masks in
-one submission would need a real ring plus a slot-exhaustion path — which is what hoisting costs, on top
-of the subtlest correctness argument in this design, for only pass-setup overhead. That removes N checkpoints, N validation waits, N readbacks and 2N 256 KB copies.
-Revisit hoisting in PR 12 if the counters justify it.
+**two** resident slots. Mask *i* is recorded immediately ahead of `TRIG` *i* rather than hoisted to the
+head of the frame. The invariant that makes slot reuse safe is **order**, not the slot count: mask *i*
+and the triangles reading slot *i* are adjacent *passes of one encoder*, which wgpu separates with its
+own usage-transition barriers exactly as the queue separates two submissions. `SLOTS = 2` therefore
+survives one submit per frame, and the 192-case chain is pinned against a per-submit replay of the same
+chain. Hoisting would remove only pass-setup overhead and stays out of scope.
 
-**Cursor.** Backup, compose, palette pass and restore are recorded into the same encoder in the order
+**Cursor.** Backup, compose, palette pass and restore are recorded into the frame's encoder in the order
 `bflib_mspointer.cpp` already imposes through `LbMouseOnBeginSwap`/`LbMouseOnEndSwap`, so the semantics
-survive. The checkpoint inside `PerfPresentation` stays until PR 12: it is the frame's own
-`ResidentTarget` flush, which the cursor neither causes nor can avoid.
+survive. The checkpoint inside `PerfPresentation` was `ResidentTarget`'s own flush; a flush is no longer
+a submission boundary, so it costs a replay into the open encoder and `frame_checkpoints` is zero.
 
 ## Submission and validation
 
-**One submit per frame.** `queue.write_buffer` calls for arena deltas and for the command and tile
-buffers are staged into that same submission and add no submits, and `queue.present(frame)` is not a
-submit — `kfx_wgpu_present` only calls `queue().present(frame)`. The encoder is built first and the
-surface acquired last, because holding the swapchain image across the whole CPU frame serialises against
-the compositor and a `CommandEncoder` accepts passes until `finish()`. If acquisition returns
-`Timeout`/`Occluded` the palette pass is omitted, the encoder is still finished and submitted so the
-cursor background and the target stay consistent, and the frame is reported as skipped as today.
+**One submit per frame (implemented).** One `CommandEncoder` is opened at the frame's first record and
+`kfx_wgpu_present` finishes and submits it; `queue.present(frame)` is not a submit. The encoder is built
+first and the surface acquired last, because holding the swapchain image across the whole CPU frame
+serialises against the compositor and a `CommandEncoder` accepts passes until `finish()`. If acquisition
+returns `Timeout`/`Occluded` the palette pass is omitted, the encoder is still finished and submitted so
+the cursor background and the target stay consistent, and the frame is reported as skipped as today —
+`prepare_present` returns 0 without submitting and the caller still reaches `kfx_wgpu_present`. **The
+submit cannot live in `prepare_present`**: `LbMouseOnEndSwap` issues the cursor restore after it returns
+and that restore must be inside the encoder, so `kfx_wgpu_present` owns the submit.
+
+`queue.write_buffer` is staged and applied at the **start of the next submit, before every command in
+it**. Under one submit per frame every staged write of the frame therefore lands before every pass of
+the frame, which is safe only if no byte range is written twice in a frame with different contents.
+Four sites had to change for that to hold:
+
+- The stream command and tile buffers are a **ring bump-allocated inside the open encoder**: a frame
+  that flushes more than once appends a second region rather than rewriting the first, and each raster
+  pass binds its own sub-range. The ring is sized between frames from the previous frame's demand; a
+  region it cannot hold becomes its own `create_buffer_init` buffer.
+- **Arena pinning is scoped to the encoder**, not to the batch. `begin_batch` does not recycle transient
+  regions while an encoder is open, and a release retires its region instead of returning it to the free
+  list, so no region a recorded pass reads is rewritten by a later staged upload of the same frame.
+- The per-call **snapshot-triangle and snapshot-image arenas are built at creation** rather than written
+  after it, which removes the hazard instead of managing it.
+- **Arena growth is forbidden while the encoder is open**, because it changes the buffer identity under
+  bind groups the encoder already holds and its forward copy would be overtaken by the staged writes of
+  the same submission. `frame_begin` pre-grows to the demand the previous frames showed; a growth a
+  frame still has to refuse becomes an `OVERFLOW` host rejection into `FullRedraw`.
+
+Two paths stay outside the one submit by construction, both off the production path: `readback` records
+its copies into the frame's encoder and submits it before it blocks, and `KFX_WGPU_DRAW_VERIFY`'s
+per-shadow `shadow_scratch_read` does the same, so a verify run submits once per shadow as before.
 
 Palette expansion is unchanged in substance: `present_into` is one fullscreen render pass with a 1 KiB
 palette buffer, an 8-word parameter buffer and one bind group. Those buffers become persistent, the bind
@@ -447,7 +471,7 @@ Each step is one PR and keeps every existing fixture green.
 | 10 | **Ordered sprites into layers.** Delivered: consecutive ordered sprites whose write rectangles are disjoint share one dispatch of *M* workgroups, an overlapping sprite opens the next layer, and layers run in frame order. A sprite is bounded by its own scaling ranges, not by its clip rectangle, which the emitter always sets to the whole drawing window. **The acceptance counter did not move.** Measured on five matched busy 640x480 pairs: `ordered_sprite_layers` 2.68 against `ordered_sprites` 2.69, so layering merges about one sprite in 250. Consecutive ordered sprites are rare — a 20-turn trace found 4 runs of two against 559 runs of one — because a raster record between two of them ends the run. `submits` 76.9 → 74.9 and `buffers` 165.5 → 155.9, both inside a run-to-run spread wider than the effect. No FPS change is attributable. | per-sprite submits → 0; sized by PR 1's `ordered_sprites` |
 | 11 | **Cursor at the tail of one encoder.** Delivered: target snapshots, target images and the palette render pass record into a present tail that `kfx_wgpu_present` submits, the acquisition-skip path finishes, and every other submit is ordered behind. `LbMouseOnEndSwap` runs before the present call so the restore joins it. **The checkpoint inside `PerfPresentation` does not go here.** It is not the cursor: `lbPointerAdvancedDraw` is never set, so `OnBeginSwap` draws the direct scaled sprite into the frame stream and `OnEndSwap` does nothing, and the measured 1.0 is `ResidentTarget`'s own terminal `frame_flush`. Hoisting `ResidentTarget` above `LbMouseOnBeginSwap` would leave the direct cursor to reopen the queued frame and make `present_into` flush it a second time — 2.0 checkpoints per frame, not 0. Measured on a matched busy 640x480 triple: checkpoints 1.00 → 1.00, submits 77.4 → 77.2, buffers 168.5 → 166.1, all inside run-to-run spread. | the advanced-draw swap: six submissions → one |
 | 12 | **Fold lens and minimap.** Non-alias lens and minimap modes 1–3 become stream kinds. | two fewer pipelines and their per-call buffers |
-| 13 | **One encoder, one submit**, palette render pass included; `prepare_present` becomes acquire → record → finish → submit. Also has to take `Arena::reserve`'s bare growth `queue.submit`, the one submission that does not go through `submit_encoder` and so neither counts nor orders itself against the present tail. | `submits` → 1 |
+| 13 | **One encoder, one submit**, palette render pass included. Delivered: every pass of a frame records into one encoder that `kfx_wgpu_present` finishes and submits, a flush replays into it instead of ending anything, and the submit lives in the present call because the cursor restore is issued after `prepare_present` returns. The staged-write law forced four changes — a stream ring bump-allocated inside the encoder, encoder-scoped arena pinning with retired releases, per-call arenas built at creation, and arena growth taken before the encoder opens. Measured on serial matched busy pairs: **`submits` 37.2 → 1.00 at 640x480 and 38.3 → 1.00 at 1080p**, `checkpoints` 1.0 → 0, `waits` 0 → 0, `dispatches` unchanged (44.85 → 44.85, 46.18 → 46.19). Presentation 5.154 → 3.917 ms and 6.167 → 4.729 ms, both scenes staying at 60.00 FPS and 20 turns/s. Uncapped over three matched triples: 640x480 **141.1 → 189.6 FPS** with the frame interval 7.105 → 5.290 ms; 1080p 164.0 → 168.4 FPS, inside a run-to-run spread of ±30 FPS, so no 1080p gain is claimed. **`buffers` did not move** (87.3 → 87.3, 90.4 → 90.4): the per-call command, tile and parameter buffers are unchanged by this step and need PR 14. The unserialised pass-window union rose (3.825 → 4.390 ms and 7.809 → 9.569 ms) because a window now absorbs the barrier wait that used to sit between submissions; the serialised, exclusive figure did not (4.881 → 4.801 ms and 8.212 → 7.853 ms), and the two builds serialise at different granularity so that pair is indicative only. | `submits` → 1 — **met** |
 | 14 | **Byte-packed arena**, family by family behind the fixtures. | arena capacity ×4; upload bytes ÷4 |
 | 15 | **1080p acceptance.** Re-run clean matched pairs at 640x480 and 1920x1080 with PR 1's counters and GPU timestamps. | every row in the acceptance tables becomes measured |
 
@@ -511,4 +535,6 @@ should rise by roughly the framebuffer difference rather than change class.
 | Ordered-sprite layering degenerates to one pass per sprite, and the population is unknown | Bounded worst case equals today's behaviour minus the submits. `gpu_sprite_commands` counts all sprites, ordered or not, so PR 1's `ordered_sprites` must size this before PR 9. They need `mode < 4 && scale_up && !blend && (flip & 1)` and a y range with `count > 1`, so upscaled sprites at 1080p could make them the dominant serial boundary |
 | Compressed prepared-row extents disagree with `gpoly_prepare.wgsl` clipping | The extents must be a proven superset; `gpoly_gpu.rs` compares 597,800 setup words against native and is the guard |
 | `TIMESTAMP_QUERY` unavailable on a target device | The feature request is optional; timings fall back to host wall time |
-| Counter regressions creep back after the restructure | The structural counter fixture asserts `submits == 1`, `wait_count == 0`, `checkpoints == 0` in CI |
+| Counter regressions creep back after the restructure | `draw_one_submit_gpu.rs` asserts `submits == 1`, `wait_count == 0` and `checkpoints == 0` over a synthetic full frame in CI |
+| A staged `write_buffer` lands before a pass that should have seen the old bytes | The stream ring bumps inside the encoder, arena pinning is encoder-scoped and a release retires its region, the per-call arenas are built at creation, and growth is forbidden while the encoder is open. `draw_one_submit_gpu.rs` pins an asset uploaded mid-frame and a frame replayed twice against their per-submit replays |
+| One command buffer grows past a driver limit | A busy frame records about 114 passes; a debug assertion fails at 4,096 |
