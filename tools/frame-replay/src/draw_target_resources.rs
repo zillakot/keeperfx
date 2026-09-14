@@ -104,7 +104,7 @@ impl DrawRenderer {
     }
 
     pub fn release_target_snapshot(&mut self, snapshot: u64) -> Result<()> {
-        if self.deferred_status.is_some() {
+        if self.replaying {
             ensure!(
                 self.target_snapshots.contains_key(&snapshot)
                     && !self.deferred_snapshot_releases.contains(&snapshot),

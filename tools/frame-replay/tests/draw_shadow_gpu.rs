@@ -177,7 +177,7 @@ fn interleaved_frame_shadow_chain() {
         draw.frame_end().unwrap();
         checkpoints = draw.frame_counters().checkpoints;
         assert_eq!(checkpoints, frames);
-        assert_eq!(draw.frame_counters().validation_waits, frames);
+        assert_eq!(draw.frame_counters().validation_waits, 0);
         let last = chunk.last().unwrap();
         assert_eq!(draw.shadow_scratch_read().unwrap(), last.mask);
         assert_eq!(draw.readback(target).unwrap(), last.pixels);
@@ -314,7 +314,7 @@ fn target_triangle_validation_and_resident_slots() {
         after.asset_upload_bytes - before.asset_upload_bytes,
         (60 + 81920) * 4
     );
-    assert_eq!(after.readback_bytes - before.readback_bytes, 4);
+    assert_eq!(after.readback_bytes, before.readback_bytes);
     draw.release_resource(mask_source).unwrap();
     draw.release_resource(source).unwrap();
     draw.release_resource(table).unwrap();

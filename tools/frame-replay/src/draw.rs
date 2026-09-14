@@ -171,7 +171,6 @@ pub struct DrawRenderer {
     compute: wgpu::ComputePipeline,
     compute_sprite_ordered: wgpu::ComputePipeline,
     effects: Option<wgpu::ComputePipeline>,
-    trig_validate: Option<wgpu::ComputePipeline>,
     shadow: Option<wgpu::ComputePipeline>,
     shadow_scratch: Option<wgpu::Buffer>,
     shadow_slots: Option<wgpu::Buffer>,
@@ -196,7 +195,7 @@ pub struct DrawRenderer {
     counters: Counters,
     frame: Option<frame_queue::QueuedFrame>,
     frame_counters: FrameCounters,
-    deferred_status: Option<Vec<wgpu::Buffer>>,
+    replaying: bool,
     deferred_snapshot_releases: Vec<u64>,
     arena: arena::Arena,
     asset_generation: u64,
@@ -292,7 +291,6 @@ impl DrawRenderer {
             compute,
             compute_sprite_ordered,
             effects: None,
-            trig_validate: None,
             shadow: None,
             shadow_scratch: None,
             shadow_slots: None,
@@ -317,7 +315,7 @@ impl DrawRenderer {
             counters: Counters::default(),
             frame: None,
             frame_counters: FrameCounters::default(),
-            deferred_status: None,
+            replaying: false,
             deferred_snapshot_releases: Vec::new(),
             arena: arena::Arena::new(
                 limits
@@ -495,9 +493,6 @@ impl DrawRenderer {
             self.preflight_ordered_commands(target, commands)?;
             return self.submit_ordered_sprites(target, commands);
         }
-        if commands.iter().any(|c| c.kind == TRIG) {
-            self.prepare_trig();
-        }
         let (target_width, target_height) = self.target_dimensions(target)?;
         let limit = self.storage_limit() as usize;
         let mut packer = asset_packer(
@@ -579,21 +574,6 @@ impl DrawRenderer {
             self.counters.asset_upload_bytes += assets.len() as u64 * 4;
         }
         self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4;
-        if commands.iter().any(|c| c.kind == TRIG) {
-            let valid = self.validate_trig_batch(
-                &command_buffer,
-                &asset_buffer,
-                &parameters,
-                target.width,
-                target.height,
-                None,
-            )?;
-            if self.deferred_status.is_none() {
-                self.counters.readback_bytes += 4;
-            }
-            self.counters.command_upload_bytes += 4;
-            ensure!(valid, "triangle has an invalid lookup");
-        }
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered drawing batch"),
             layout: &self.compute.get_bind_group_layout(0),
@@ -644,6 +624,7 @@ impl DrawRenderer {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        let status = self.status_record(&mut encoder);
         for row in 0..target.height {
             encoder.copy_buffer_to_buffer(
                 &target.indices,
@@ -654,6 +635,9 @@ impl DrawRenderer {
             );
         }
         self.submit_encoder(encoder);
+        if let Some(slot) = status {
+            self.status_map(slot);
+        }
         let (sender, receiver) = std::sync::mpsc::channel();
         staging
             .slice(..)

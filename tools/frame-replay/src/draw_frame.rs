@@ -51,6 +51,9 @@ impl DrawRenderer {
     pub(super) fn status_record(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<usize> {
         let slot = (self.status_cursor % STATUS_RING as u64) as usize;
         if self.status_pending[slot].is_some() {
+            self.status_drain();
+        }
+        if self.status_pending[slot].is_some() {
             self.frame_counters.status_stalls += 1;
             return None;
         }
@@ -379,40 +382,6 @@ impl DrawRenderer {
         }
     }
 
-    fn validate_frame_status(&mut self, statuses: &[wgpu::Buffer]) -> Result<()> {
-        if statuses.is_empty() {
-            return self.check_status();
-        }
-        let size = statuses.len() as u64 * 4;
-        let staging = self.tracked_buffer(&wgpu::BufferDescriptor {
-            label: Some("aggregated frame validation"),
-            size,
-            mapped_at_creation: false,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        for (i, status) in statuses.iter().enumerate() {
-            encoder.copy_buffer_to_buffer(status, 0, &staging, i as u64 * 4, 4);
-        }
-        self.submit_encoder(encoder);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-            let _ = sender.send(r);
-        });
-        self.wait_for_queue()?;
-        receiver.recv()??;
-        let mapped = staging.slice(..).get_mapped_range()?;
-        let valid = mapped.iter().all(|&b| b == 0);
-        drop(mapped);
-        staging.unmap();
-        self.counters.readback_bytes += size;
-        self.frame_counters.validation_waits += 1;
-        self.frame_counters.validation_bytes += size;
-        self.check_status()?;
-        ensure!(valid, "queued frame has an invalid GPU lookup");
-        Ok(())
-    }
-
     pub fn frame_flush(&mut self) -> Result<()> {
         let Some(mut frame) = self.frame.take() else {
             return Ok(());
@@ -449,7 +418,7 @@ impl DrawRenderer {
         let prior_background = self.minimap.as_ref().and_then(|m| m.background);
         let prior_snapshots: std::collections::HashSet<_> =
             self.target_snapshots.keys().copied().collect();
-        self.deferred_status = Some(Vec::new());
+        self.replaying = true;
         let mut result = (|| {
             for batch in frame.batches.drain(..) {
                 match batch {
@@ -464,10 +433,7 @@ impl DrawRenderer {
             }
             Ok(())
         })();
-        let statuses = self.deferred_status.take().unwrap();
-        if result.is_ok() {
-            result = self.validate_frame_status(&statuses);
-        }
+        self.replaying = false;
         for view in self.targets.values_mut().filter(|t| t.root == frame.root) {
             view.indices = target.indices.clone();
         }
@@ -721,7 +687,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a Metal adapter"]
-    fn gpu_queued_mixed_triangles_aggregate_validation_and_rollback() {
+    fn gpu_queued_mixed_triangles_flag_and_present_invalid_frames() {
         let mut draw = DrawRenderer::headless().unwrap();
         let root = draw.create_target(12, 11).unwrap();
         let view = draw.create_target_view(root, 2, 2, 8, 8).unwrap();
@@ -751,9 +717,10 @@ mod tests {
         draw.submit_triangles(root, &[valid]).unwrap();
         assert_eq!(draw.counters().readback_bytes, before.readback_bytes);
         draw.frame_end().unwrap();
-        assert_eq!(draw.counters().readback_bytes - before.readback_bytes, 8);
-        assert_eq!(draw.frame_counters().validation_waits, 1);
+        assert_eq!(draw.counters().readback_bytes, before.readback_bytes);
+        assert_eq!(draw.frame_counters().validation_waits, 0);
         assert_eq!(draw.readback(root).unwrap(), expected);
+        assert_eq!(draw.frame_status(), (0, 0));
         draw.frame_begin(root).unwrap();
         draw.submit(
             root,
@@ -765,12 +732,22 @@ mod tests {
         .unwrap();
         draw.submit_triangles(view, &[triangle(source, table, 70 << 16)])
             .unwrap();
-        assert!(draw.frame_flush().is_err());
-        assert!(draw.frame_end().is_err());
-        assert!(draw.readback(root).is_err());
+        draw.frame_flush().unwrap();
+        draw.frame_end().unwrap();
+        assert_eq!(draw.readback(root).unwrap(), vec![201; 12 * 11]);
+        let (index, flags) = draw.frame_status();
+        assert_eq!((index, flags), (2, 1 | 1 << 2 | 1 << 3));
+        assert_eq!(draw.frame_counters().rejected_checkpoints, 0);
+        assert_eq!(draw.frame_counters().invalid_frames, 1);
         draw.frame_abort().unwrap();
+        draw.frame_begin(root).unwrap();
+        draw.submit(root, &[clear]).unwrap();
+        draw.submit_triangles(view, &[valid]).unwrap();
+        draw.submit(view, &[overlay]).unwrap();
+        draw.submit_triangles(root, &[valid]).unwrap();
+        draw.frame_end().unwrap();
         assert_eq!(draw.readback(root).unwrap(), expected);
-        assert_eq!(draw.frame_counters().rejected_checkpoints, 1);
+        assert_eq!(draw.frame_status().1, 0);
         draw.frame_begin(root).unwrap();
         draw.submit(root, &[clear]).unwrap();
         draw.submit(

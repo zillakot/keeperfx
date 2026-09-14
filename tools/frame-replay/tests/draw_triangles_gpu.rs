@@ -123,13 +123,23 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
     for v in &mut invalid.vertices {
         v.shade = 64 << 16;
     }
+    drawing.submit_triangles(target, &[valid])?;
+    let drawn = drawing.readback(target)?;
+    ensure!(drawn != expected, "the probe triangle must write pixels");
     ensure!(
-        drawing.submit_triangles(target, &[valid, invalid]).is_err(),
-        "late invalid shade accepted"
+        drawing.frame_status().1 == 0,
+        "a valid triangle raised a frame flag"
     );
+    drawing.submit_triangles(target, &[valid, invalid])?;
     ensure!(
-        drawing.readback(target)? == expected,
-        "shade rejection changed target"
+        drawing.readback(target)? == drawn,
+        "a flagged shade must leave the target as the valid triangle drew it"
+    );
+    let (_, flags) = drawing.frame_status();
+    ensure!(flags & 1 != 0, "an invalid shade raised no frame flag");
+    ensure!(
+        flags & (1 << 2 | 1 << 3) == (1 << 2 | 1 << 3),
+        "both the per-pixel and the per-span shade checks must report"
     );
     invalid = valid;
     invalid.source = u64::MAX;
@@ -144,7 +154,7 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
         "invalid vertex accepted"
     );
     ensure!(
-        drawing.readback(target)? == expected,
+        drawing.readback(target)? == drawn,
         "rejected batch changed target"
     );
     drawing.release_resource(source)?;
@@ -153,11 +163,15 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
         "released resource accepted"
     );
     ensure!(
-        drawing.readback(target)? == expected,
+        drawing.readback(target)? == drawn,
         "released resource rejection changed target"
     );
+    ensure!(
+        drawing.frame_status().1 == 0,
+        "host rejections must not raise the frame flag"
+    );
     eprintln!(
-        "PASS: {count} original native triangles through production DrawRenderer, ordered overlapping batches, immutable mutated assets, late invalid shade/resource/vertex atomic rejection"
+        "PASS: {count} original native triangles through production DrawRenderer, ordered overlapping batches, immutable mutated assets, flagged late shade, and host-rejected resource/vertex"
     );
     Ok(())
 }
