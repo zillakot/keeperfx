@@ -20,6 +20,9 @@ struct ImageBatch {
     snapshots: HashMap<u64, u32>,
     tables: HashMap<u64, u32>,
     asset_words: usize,
+    /// Word positions holding a sampling-arena offset, rebased once the region
+    /// is placed.
+    offsets: Vec<usize>,
 }
 
 fn snapshot_size(width: u32, height: u32, pitch: u32, limit: u64) -> Result<u64> {
@@ -136,7 +139,7 @@ impl DrawRenderer {
         for command in commands {
             self.check_queued_resource(command.table)?;
         }
-        let batch = self.pack_target_images(commands)?;
+        let mut batch = self.pack_target_images(commands)?;
         if commands.is_empty() {
             return Ok(());
         }
@@ -147,6 +150,32 @@ impl DrawRenderer {
         );
         let tiles = bin_commands(&batch.words, width, height, self.storage_limit() as usize)?;
         self.checkpoint_target(target)?;
+        let (assets, base) = if self.arena.enabled() {
+            self.arena.begin_batch();
+            let words =
+                u32::try_from(batch.asset_words).context("snapshot arena exceeds storage limit")?;
+            let base =
+                self.arena
+                    .reserve_scratch(&self.device, &self.queue, &mut self.counters, words)?;
+            (
+                self.arena
+                    .binding(&self.device, &self.queue, &mut self.counters),
+                base,
+            )
+        } else {
+            (
+                self.tracked_buffer(&wgpu::BufferDescriptor {
+                    label: Some("GPU snapshot sampling arena"),
+                    size: batch.asset_words as u64 * 4,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                0,
+            )
+        };
+        for &index in &batch.offsets {
+            batch.words[index] += base;
+        }
         let command_buffer = buffer(
             &self.device,
             &mut self.counters,
@@ -177,18 +206,18 @@ impl DrawRenderer {
             ],
             wgpu::BufferUsages::UNIFORM,
         );
-        let assets = self.tracked_buffer(&wgpu::BufferDescriptor {
-            label: Some("GPU snapshot sampling arena"),
-            size: batch.asset_words as u64 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let mut copied = 0;
         for (&id, &offset) in &batch.snapshots {
             let source = &self.target_snapshots[&id];
             let size = u64::from(source.pitch) * u64::from(source.height) * 4;
-            encoder.copy_buffer_to_buffer(&source.indices, 0, &assets, u64::from(offset) * 4, size);
+            encoder.copy_buffer_to_buffer(
+                &source.indices,
+                0,
+                &assets,
+                u64::from(base + offset) * 4,
+                size,
+            );
             copied += size;
         }
         let mut uploaded = 0;
@@ -199,7 +228,7 @@ impl DrawRenderer {
                 .flat_map(|&b| u32::from(b).to_le_bytes())
                 .collect();
             self.queue
-                .write_buffer(&assets, u64::from(offset) * 4, &bytes);
+                .write_buffer(&assets, u64::from(base + offset) * 4, &bytes);
             uploaded += bytes.len() as u64;
         }
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -244,6 +273,7 @@ impl DrawRenderer {
             snapshots: HashMap::new(),
             tables: HashMap::new(),
             asset_words: 0,
+            offsets: Vec::new(),
         };
         for c in commands {
             ensure!(
@@ -334,6 +364,11 @@ impl DrawRenderer {
                     }
                     _ => anyhow::bail!("unknown transition operation"),
                 }
+                let record = batch.words.len();
+                batch.offsets.extend([record + 12, record + 13]);
+                if c.source_x == 0 {
+                    batch.offsets.push(record + 20);
+                }
                 batch.words.extend([TRANSITION, 0, 0, 0]);
                 batch.words.extend(rectangle);
                 batch.words.extend(clip);
@@ -383,6 +418,11 @@ impl DrawRenderer {
                     &mut batch.asset_words,
                     limit,
                 )?;
+            }
+            let record = batch.words.len();
+            batch.offsets.push(record + 12);
+            if c.blend != 0 {
+                batch.offsets.push(record + 13);
             }
             batch.words.extend([IMAGE, c.blend, 0, c.colour]);
             batch.words.extend(rectangle);

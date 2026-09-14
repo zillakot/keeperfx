@@ -160,7 +160,6 @@ impl Arena {
     }
 
     /// Reserves a region for GPU-to-GPU copies, released at the next batch.
-    #[allow(dead_code)]
     pub(super) fn reserve_scratch(
         &mut self,
         device: &wgpu::Device,
