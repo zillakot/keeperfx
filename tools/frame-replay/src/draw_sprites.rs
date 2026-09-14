@@ -113,6 +113,11 @@ fn validate_target(c: &Command, source: &Resource, width: u32, height: u32) -> R
 /// exactly as the native right-to-left kernel does, so the rectangle grows a column to
 /// the left; where that column would cross the row start it lands on the tail of the
 /// previous row instead, and the rectangle widens to the whole row band one row higher.
+///
+/// A sprite scrolled fully off one side has every x range clamped to zero length. It
+/// still writes: with `xcount == 0` the run collapses onto `xstart - 1` and each row
+/// copy carries that one pixel down, so an empty x span keeps the left column and only
+/// an empty y span, which skips every row, makes the rectangle empty.
 pub(super) fn write_rect(c: &Command, source: &Resource, width: u32) -> [i64; 4] {
     let (w, h) = (c.source_width as usize, c.source_height as usize);
     let axis = 2 * w * h;
@@ -132,9 +137,10 @@ pub(super) fn write_rect(c: &Command, source: &Resource, width: u32) -> [i64; 4]
         x1.min(i64::from(c.clip_x) + i64::from(c.clip_width)),
         y1.min(i64::from(c.clip_y) + i64::from(c.clip_height)),
     ];
-    if rect[0] >= rect[2] || rect[1] >= rect[3] {
+    if rect[1] >= rect[3] {
         return [0; 4];
     }
+    rect[2] = rect[2].max(rect[0]);
     if rect[0] > 0 {
         rect[0] -= 1;
     } else {
@@ -150,7 +156,9 @@ fn disjoint(a: &[i64; 4], b: &[i64; 4]) -> bool {
 
 /// Groups consecutive ordered sprites whose write rectangles are pairwise disjoint into
 /// one layer. A sprite overlapping any member of the open layer closes it and opens the
-/// next, so layers run in frame order and the members of one layer commute.
+/// next, so layers run in frame order and the members of one layer commute. The returned
+/// layers are re-checked pairwise: the greedy loop already proves it, so the check is a
+/// tripwire for a future membership rule, not a live rejection path.
 pub(super) fn layers(rects: &[[i64; 4]]) -> Result<Vec<Vec<u32>>> {
     let mut layers: Vec<Vec<u32>> = Vec::new();
     for (index, rect) in rects.iter().enumerate() {
@@ -275,7 +283,8 @@ impl DrawRenderer {
             .collect();
         let layers = layers(&rects)?;
         ensure!(
-            run.len() as u32 <= self.device.limits().max_compute_workgroups_per_dimension,
+            layers.iter().map(Vec::len).max().unwrap_or(0) as u32
+                <= self.device.limits().max_compute_workgroups_per_dimension,
             "ordered sprite layer exceeds device limit"
         );
         let command_buffer = buffer(
@@ -504,6 +513,18 @@ mod tests {
         (command, resource)
     }
 
+    /// Every x range clamped to zero length, which is what the native clipper produces
+    /// for a sprite scrolled fully off one side of the drawing window.
+    fn scrolled_off(origin: i32, target: u32) -> (Command, Resource) {
+        let (command, mut resource) = layered(origin, 4, target);
+        for (offset, value) in [(4, origin as u32), (8, 0), (12, origin as u32), (16, 0)] {
+            resource.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        validate(&command, &resource).unwrap();
+        validate_target(&command, &resource, target, target).unwrap();
+        (command, resource)
+    }
+
     /// Every target address `sprite_ordered` can read or write, walked exactly as the
     /// kernel walks it, so the rectangle is checked against the kernel and not itself.
     fn touched(c: &Command, source: &Resource, width: i64) -> Vec<i64> {
@@ -551,24 +572,53 @@ mod tests {
         hits
     }
 
+    fn covers(command: &Command, resource: &Resource, width: i64) -> [i64; 4] {
+        let rect = write_rect(command, resource, width as u32);
+        for address in touched(command, resource, width) {
+            let (x, y) = (address % width, address / width);
+            assert!(
+                rect[0] <= x && x < rect[2] && rect[1] <= y && y < rect[3],
+                "address {address} at ({x},{y}) escapes {rect:?}"
+            );
+        }
+        rect
+    }
+
     #[test]
     fn write_rect_covers_every_address_the_kernel_can_touch() {
         for (flip, origin, extent) in [(0, 4, 6), (2, 4, 6), (0, 1, 3), (2, 1, 3)] {
             let (mut command, resource) = layered(origin, extent, 16);
             command.source_x |= flip;
-            let rect = write_rect(&command, &resource, 16);
-            for address in touched(&command, &resource, 16) {
-                let (x, y) = (address % 16, address / 16);
-                assert!(
-                    rect[0] <= x && x < rect[2] && rect[1] <= y && y < rect[3],
-                    "address {address} at ({x},{y}) escapes {rect:?}"
-                );
-            }
+            let rect = covers(&command, &resource, 16);
             assert!(
                 rect[0] < i64::from(origin),
                 "the row copy reaches the column left of the run"
             );
         }
+    }
+
+    /// A run starting at column zero copies to the tail of the previous row, so the
+    /// rectangle widens to the whole row band one row higher.
+    #[test]
+    fn write_rect_covers_a_row_copy_that_wraps_to_the_previous_row() {
+        for flip in [0, 2] {
+            let (mut command, resource) = layered(0, 6, 16);
+            command.source_x |= flip;
+            assert_eq!(covers(&command, &resource, 16), [0, 1, 16, 8]);
+        }
+    }
+
+    /// Scrolled fully off, every x range is zero length and the run collapses onto the
+    /// column left of it, which the kernel still copies down every replicated row.
+    #[test]
+    fn write_rect_covers_a_sprite_scrolled_off_the_window() {
+        for flip in [0, 2] {
+            let (mut command, resource) = scrolled_off(6, 16);
+            command.source_x |= flip;
+            assert_eq!(covers(&command, &resource, 16), [5, 2, 6, 8]);
+        }
+        let (command, resource) = scrolled_off(0, 16);
+        assert_eq!(covers(&command, &resource, 16), [0, 1, 16, 8]);
     }
 
     #[test]
@@ -607,12 +657,32 @@ mod tests {
     }
 
     #[test]
+    fn a_sprite_scrolled_off_the_window_never_joins_an_open_layer() {
+        let (touching, touching_asset) = layered(2, 3, 16);
+        let (gone, gone_asset) = scrolled_off(6, 16);
+        let rects = [
+            write_rect(&touching, &touching_asset, 16),
+            write_rect(&gone, &gone_asset, 16),
+        ];
+        assert_eq!(
+            rects,
+            [[1, 2, 5, 8], [5, 2, 6, 8]],
+            "edge contact, not overlap"
+        );
+        assert_eq!(layers(&rects).unwrap(), vec![vec![0, 1]]);
+        let (wide, wide_asset) = layered(2, 4, 16);
+        let overlapping = [
+            write_rect(&wide, &wide_asset, 16),
+            write_rect(&gone, &gone_asset, 16),
+        ];
+        assert_eq!(layers(&overlapping).unwrap(), vec![vec![0], vec![1]]);
+    }
+
+    #[test]
     fn empty_write_rectangles_never_hold_a_layer_open() {
         let (clipped, mut asset) = layered(4, 6, 16);
-        // Every scaling range clipped to nothing: contiguous, zero length, one origin.
-        for (offset, value) in [(8, 0u32), (12, 4), (16, 0)] {
-            asset.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-        }
+        // An empty row band is the only empty case: the kernel skips every row.
+        asset.bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(write_rect(&clipped, &asset, 16), [0; 4]);
         let (visible, visible_asset) = layered(4, 6, 16);
         assert_eq!(

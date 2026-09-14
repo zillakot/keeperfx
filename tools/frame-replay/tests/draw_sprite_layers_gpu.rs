@@ -11,7 +11,9 @@ fn words(values: &[u32]) -> Vec<u8> {
 /// scaling ranges bound the sprite. The artwork is a single run per source row, so the
 /// kernel writes the run right to left and replicates it down every row of the sprite.
 /// `gaps` leaves source columns uncovered, which makes the written pixels a strict
-/// subset of the write rectangle.
+/// subset of the write rectangle. A `width` of zero is a sprite scrolled fully off the
+/// window: every range is clamped to zero length and the run collapses onto column
+/// `x - 1`, which each replicated row still copies.
 fn sprite(
     drawing: &mut DrawRenderer,
     x: i32,
@@ -266,4 +268,27 @@ fn adjacent_sprite_extents_do_not_share_a_layer() {
     let left = sprite(&mut drawing, 8, 12, 4, 10, 51, false);
     let right = sprite(&mut drawing, 20, 12, 4, 10, 97, false);
     assert_eq!(parity(&mut drawing, &[left, right]), 2);
+}
+
+/// Scrolled fully off the window, the run collapses onto the column left of it and every
+/// replicated row copies that pixel, so the rectangle is one column wide, not empty.
+/// Treating it as empty would let the sprite join the open layer and race on that column.
+#[test]
+#[ignore = "requires a Metal adapter"]
+fn sprites_scrolled_off_the_window_still_claim_their_copy_column() {
+    let mut drawing = DrawRenderer::headless().unwrap();
+    let onscreen = sprite(&mut drawing, 8, 12, 5, 15, 51, false);
+    let gone = sprite(&mut drawing, 20, 0, 5, 15, 97, false);
+    assert_eq!(parity(&mut drawing, &[onscreen, gone]), 2);
+}
+
+/// A run starting at column zero copies to the tail of the previous row, so its rectangle
+/// widens to the whole row band one row higher and overlaps a sprite that ends there.
+#[test]
+#[ignore = "requires a Metal adapter"]
+fn a_row_copy_wrapping_to_the_previous_row_opens_a_layer() {
+    let mut drawing = DrawRenderer::headless().unwrap();
+    let low = sprite(&mut drawing, 0, 12, 8, 12, 61, false);
+    let tail = sprite(&mut drawing, 52, 12, 2, 6, 113, false);
+    assert_eq!(parity(&mut drawing, &[low, tail]), 2);
 }
