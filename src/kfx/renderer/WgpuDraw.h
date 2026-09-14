@@ -76,6 +76,8 @@ struct KfxWgpuDrawCounters {
     uint64_t host_staged_asset_bytes, arena_bytes_resident;
     /* tile_allocations counts growths of the persistent binning scratch; zero after warm-up. */
     uint64_t tile_allocations, tile_entries;
+    /* The terrain share of tile_entries; terrain inner-loop iterations are 256 times it. */
+    uint64_t terrain_tile_entries;
     /* Words the compressed prepared-terrain row arena carried, and its growths. */
     uint64_t prepared_row_words, prepared_row_allocations;
     /* Opt-in per-pass GPU execution time, in KFX_WGPU_DRAW_PASS_KINDS order; zero

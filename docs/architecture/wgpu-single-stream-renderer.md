@@ -109,7 +109,7 @@ existing kinds and run in the main raster. The families whose representation or 
 
 | Family | Producer | Stream representation | Pass |
 | --- | --- | --- | --- |
-| Terrain triangles | `WgpuTerrainBridge::DrawTriangle` via `kfx_gpoly_triangle_sink` | one `TERRAIN_TRI` per triangle, `aux_offset` its prepared-row base, bounds the CPU vertex box | prepare (head) + raster |
+| Terrain triangles | `WgpuTerrainBridge::DrawTriangle` via `kfx_gpoly_triangle_sink` | one `TERRAIN_TRI` per triangle: `source_offset`/`table_offset` its texture and fade arena offsets, `aux_offset` (word 15) its prepared-row base, bounds the clamped vertex box; words 16-24 unused | prepare, into the first raster segment's encoder, + raster |
 | Creature shadows | [`software/WgpuShadow.h`](../../src/kfx/renderer/software/WgpuShadow.h) | one mask record plus two `TRIG` records whose `aux_offset` is the shadow's mask slot | mask chain (head) + raster |
 | Ordered sprites (scaled solid horizontal flips) | `WgpuSprite.c`, `source_x` bit 3 | `SPRITE` with the serial flag | serial layer |
 | Minimap | [`frontmenu_ingame_map.c`](../../src/frontmenu_ingame_map.c) | modes 1–3 fold into `MINIMAP`; mode 0 reads the stored background from the arena; mode 4 records a copy | mode 4 = copy boundary, rest raster |
@@ -169,7 +169,7 @@ offset/pitch aliases sharing the root buffer.
 rectangle from pointer arithmetic against `m_frame_target.pixels` and `SubmissionTarget` caches the
 handle; keep that while C drawing exists, and pass view rectangles explicitly once it is retired. Other
 persistent buffers: command stream ring (8 MB), tile index (~1 MB at 1080p), prepared terrain rows
-(~0.8 MB at 1080p once compressed to covered rows), shadow scratch (256 KB), 16 mask slots of 256 KB,
+(~2 MB at 1080p once compressed to covered rows, at the measured triangle population), shadow scratch (256 KB), 16 mask slots of 256 KB,
 and a 4 × 256 B status and staging ring.
 
 ## Ordering semantics and pass boundaries
@@ -257,9 +257,10 @@ once per flush, on top of the per-batch flag readbacks outside a frame. What rep
    check that raised it. The tail copy clears it in the same encoder, so no clearing pass is needed.
 2. The general-triangle check moved *into* `draw.wgsl`: an out-of-range `trig_sample` skips the write
    for that command and raises the flag, and the dedicated `validate_trig` pass with its ~30 full-target
-   dispatches per frame is deleted. `draw_triangles.wgsl` `render` folds the same check per pixel; the
-   `validate` entry point stays, because it walks the whole prepared span and is therefore strictly
-   stricter than the per-pixel fold, and now writes the shared status word instead of a per-batch buffer.
+   dispatches per frame is deleted. The terrain check folds the same way. PR 8 deleted the
+   `validate` entry point and `draw_triangles.wgsl` with it: a per-span walk is only stricter than a
+   per-pixel fold if the raster visits fewer pixels than the span covers, and the conservative-box
+   proof below shows the two pixel sets are identical.
 3. `encoder.copy_buffer_to_buffer(status → staging_ring[cursor % 8])` at the tail, `map_async`, **no**
    blocking poll. A slot still mapped defers the publish and counts `status_stalls`; the flag stays in
    the status buffer until the next publish.
@@ -430,6 +431,15 @@ Each step is one PR and keeps every existing fixture green.
 
 ## Decisions
 
+- **Binning terrain by the conservative box is exact, and that is what lets the span-validation pass
+  go.** `gpoly_prepare.wgsl` sorts by y, starts at the lowest vertex, breaks at the highest or at the
+  view edge, and writes no row below zero, so every written row's `y` lies in the clamped vertex y
+  range. Its x accumulators are anchored at a vertex and advanced by a slope truncated toward zero
+  (`slope` at `gpoly_prepare.wgsl:70`), and the `clipped` branch only narrows the interval, so every
+  covered pixel's `x` lies in the clamped vertex x range. The box therefore contains every written row
+  and every covered pixel, the raster's own bounds test is the row guard, and the raster visits exactly
+  the set the per-span pass walked. The proof, not the assertion, is what the deletion rests on, and
+  `gpoly_gpu.rs` fails if any native row falls outside a triangle's extent.
 - **Resolution target.** The 60 FPS target applies to a **1920x1080 logical framebuffer**, not only a
   1920x1080 output of a 640x480 framebuffer. The 2026-09-14 measurement confirmed the engine honours a
   1920x1080 logical framebuffer with logical size equal to physical output, and that the software path

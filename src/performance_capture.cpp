@@ -86,7 +86,7 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "buffers", "buffer_bytes", "batches", "commands", "ordered_sprites",
     "arena_evictions", "arena_overflows", "arena_bytes_uploaded",
     "tile_allocations", "tile_entries", "bridge_target_flushes", "bridge_target_runs",
-    "prepared_row_words", "prepared_row_allocations",
+    "terrain_tile_entries", "prepared_row_words", "prepared_row_allocations",
     "gpu_raster_ns", "gpu_terrain_prepare_ns",
     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
     "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
