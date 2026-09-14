@@ -479,7 +479,9 @@ fn shadow_table_versions_survive_serial_release_and_recovery() {
     assert_eq!(actual, expected);
     for (view, colour) in [71, 93, 117].into_iter().enumerate() {
         let pixels: Vec<_> = actual
-            .chunks_exact(48)
+            .as_chunks::<48>()
+            .0
+            .iter()
             .flat_map(|row| row[view * 16..view * 16 + 16].iter().copied())
             .collect();
         assert!(pixels.contains(&colour));

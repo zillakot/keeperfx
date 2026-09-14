@@ -588,8 +588,8 @@ mod tests {
             .unwrap();
         rx.recv().unwrap().unwrap();
         let mapped = output.slice(..).get_mapped_range().unwrap();
-        for word in mapped.chunks_exact(4) {
-            assert_eq!(word, 117u32.to_le_bytes());
+        for word in mapped.as_chunks::<4>().0 {
+            assert_eq!(*word, 117u32.to_le_bytes());
         }
         drop(mapped);
         output.unmap();
