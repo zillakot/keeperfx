@@ -71,7 +71,7 @@ const DRAW_SHADER: &str = concat!(
     include_str!("draw_transition.wgsl")
 );
 const MAX_COMMANDS: usize = 262_144;
-pub(super) const RECORD_WORDS: usize = 32;
+pub(super) const RECORD_WORDS: usize = 28;
 pub(super) const RECORD_BYTES: usize = RECORD_WORDS * 4;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
@@ -534,9 +534,9 @@ impl DrawRenderer {
         self.tile_index.build(
             &mut self.counters,
             &words,
+            &ViewSpace::table(&[ViewSpace::whole(target.width, target.height)]),
             &[commands.len()],
-            target.width,
-            target.height,
+            (target.width, target.height),
             limit,
         )?;
         let tile_buffer = buffer(
@@ -966,8 +966,9 @@ pub(crate) fn packable(kind: u32) -> bool {
 
 /// The rectangle a command was issued against, and its origin in the space the
 /// dispatch addresses; a root-space stream carries one per view, a single-view
-/// batch the view itself at the origin.
-#[derive(Clone, Copy)]
+/// batch the view itself at the origin. Records name a view by index, so the
+/// packed record stays 112 bytes and the per-pixel fetch stays coalesced.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct ViewSpace {
     pub origin_x: u32,
     pub origin_y: u32,
@@ -976,6 +977,13 @@ pub(super) struct ViewSpace {
 }
 
 impl ViewSpace {
+    pub(super) fn table(views: &[Self]) -> Vec<u32> {
+        views
+            .iter()
+            .flat_map(|view| [view.origin_x, view.origin_y, view.width, 0])
+            .collect()
+    }
+
     pub(super) fn whole(width: u32, height: u32) -> Self {
         Self {
             origin_x: 0,
@@ -1057,7 +1065,7 @@ fn pack_commands(
 ) -> Result<Vec<u32>> {
     pack_records(
         packer,
-        commands.iter().map(|c| (c, view)),
+        commands.iter().map(|c| (c, view, 0)),
         commands.len(),
         resources,
         limit,
@@ -1066,7 +1074,7 @@ fn pack_commands(
 
 fn pack_records<'a>(
     packer: &mut AssetPacker,
-    records: impl Iterator<Item = (&'a Command, ViewSpace)>,
+    records: impl Iterator<Item = (&'a Command, ViewSpace, u32)>,
     count: usize,
     resources: &HashMap<u64, Resource>,
     limit: usize,
@@ -1076,7 +1084,7 @@ fn pack_records<'a>(
         "command batch exceeds limit"
     );
     let mut words = Vec::with_capacity(count * RECORD_WORDS);
-    for (c, view) in records {
+    for (c, view, index) in records {
         let (width, height) = (view.width, view.height);
         ensure!(
             c.abi_version == ABI_VERSION && c.reserved == [0; 3],
@@ -1195,14 +1203,13 @@ fn pack_records<'a>(
             }
             table_offset = packer.offset(c.table, &table.bytes)?;
         }
-        words.extend([c.kind, c.blend, 0, c.colour]);
+        words.extend([c.kind, c.blend, index, c.colour]);
         words.extend(view.rebase(rectangle));
         words.extend(view.clip(clip));
         words.extend([source_offset, table_offset, source_pitch, 0]);
         words.extend([c.source_x, c.source_y, c.source_width, c.source_height]);
         words.extend([c.start_low, c.start_high, c.step_low, c.step_high]);
         words.extend([c.transparent, 0, 0, 0]);
-        words.extend([view.origin_x, view.origin_y, view.width, 0]);
     }
     Ok(words)
 }
@@ -1330,11 +1337,12 @@ impl TileIndex {
         &mut self,
         counters: &mut Counters,
         words: &[u32],
+        views: &[u32],
         segments: &[usize],
-        width: u32,
-        height: u32,
+        extent: (u32, u32),
         limit: usize,
     ) -> Result<()> {
+        let (width, height) = extent;
         let records = words.as_chunks::<RECORD_WORDS>().0;
         let count = segments.len().max(1);
         self.passes.clear();
@@ -1360,7 +1368,7 @@ impl TileIndex {
             box_of[2] = box_of[2].max(x1);
             box_of[3] = box_of[3].max(y1);
         }
-        let mut header = 0usize;
+        let mut header = views.len();
         let mut cells = 0usize;
         for pass in self.passes.iter_mut() {
             pass.header = u32::try_from(header).context("tile header overflow")?;
@@ -1376,6 +1384,7 @@ impl TileIndex {
         grow(&mut self.cursors, cells.max(1), &mut self.allocations);
         grow(&mut self.packed, length.max(1), &mut self.allocations);
         self.counts[..cells].fill(0);
+        self.packed[..views.len()].copy_from_slice(views);
         self.length = length;
         self.header = header;
         at = 0;
@@ -1552,6 +1561,7 @@ mod tests {
         .unwrap();
         let mut index = TileIndex::default();
         let mut counters = Counters::default();
+        let table = ViewSpace::table(&[ViewSpace::whole(32, 32)]);
         let list = |index: &TileIndex, pass: usize, x: u32, y: u32| {
             let pass = index.passes()[pass];
             let tiles = index.data();
@@ -1560,7 +1570,14 @@ mod tests {
             tiles[begin..begin + tiles[cell + 1] as usize].to_vec()
         };
         index
-            .build(&mut counters, &words, &[commands.len()], 32, 32, 4096)
+            .build(
+                &mut counters,
+                &words,
+                &table,
+                &[commands.len()],
+                (32, 32),
+                4096,
+            )
             .unwrap();
         assert_eq!(list(&index, 0, 0, 0), [0, 1, 2]);
         for (x, y) in [(1, 0), (0, 1), (1, 1)] {
@@ -1569,7 +1586,14 @@ mod tests {
         assert_eq!(counters.tile_entries, 9);
         let allocations = counters.tile_allocations;
         index
-            .build(&mut counters, &words, &[commands.len()], 32, 32, 4096)
+            .build(
+                &mut counters,
+                &words,
+                &table,
+                &[commands.len()],
+                (32, 32),
+                4096,
+            )
             .unwrap();
         assert_eq!(
             counters.tile_allocations, allocations,
@@ -1577,7 +1601,14 @@ mod tests {
         );
         // Segment ends split the same lists without reordering or duplicating entries.
         index
-            .build(&mut counters, &words, &[1, commands.len()], 32, 32, 4096)
+            .build(
+                &mut counters,
+                &words,
+                &table,
+                &[1, commands.len()],
+                (32, 32),
+                4096,
+            )
             .unwrap();
         assert_eq!(list(&index, 0, 0, 0), [0]);
         assert_eq!(list(&index, 1, 0, 0), [1, 2]);
@@ -1589,7 +1620,14 @@ mod tests {
         );
         assert!(
             index
-                .build(&mut counters, &words, &[commands.len()], 32, 32, 8 * 4)
+                .build(
+                    &mut counters,
+                    &words,
+                    &table,
+                    &[commands.len()],
+                    (32, 32),
+                    8 * 4
+                )
                 .is_err()
         );
     }

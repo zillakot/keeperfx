@@ -6,7 +6,6 @@ struct Command {
     source: vec4<u32>,
     accumulator: vec4<u32>,
     options: vec4<u32>,
-    origin: vec4<u32>,
 }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<storage, read> commands: array<Command>;
@@ -23,10 +22,17 @@ const STATUS_FRAME: u32 = 0u;
 const STATUS_TRIG_LOOKUP: u32 = 1u;
 fn raise(cause: u32) { atomicStore(&status[STATUS_FRAME], 1u); atomicStore(&status[cause], 1u); }
 fn pixel_address(i: u32) -> u32 { return parameters.offset + (i / parameters.x) * parameters.pitch + i % parameters.x; }
+// The frame's views live at the head of the tile buffer, three words each: a record
+// names one in operation.z instead of carrying its origin, which keeps the record at
+// 112 bytes and the per-pixel command fetch coalesced.
+fn view_of(c: Command) -> vec3<u32> {
+    let base = c.operation.z * 4u;
+    return vec3(tiles[base], tiles[base + 1u], tiles[base + 2u]);
+}
 // Bounds and clip are stored in the dispatch's space; samplers work in the view the
-// command was issued against, which is that space shifted by the record's origin.
+// command was issued against, which is that space shifted by the view's origin.
 fn view_bounds(c: Command) -> vec4<i32> {
-    let o = vec2<i32>(c.origin.xy);
+    let o = vec2<i32>(view_of(c).xy);
     return c.bounds - vec4(o, o);
 }
 
@@ -101,6 +107,8 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
     let cell = (at.y / 16u - parameters.base_y / 16u) * parameters.w
         + (at.x / 16u - parameters.base_x / 16u);
     let tile = parameters.tile_base + cell * 2u;
+    // A tile no record in this pass reaches keeps its pixels, so it costs no traffic.
+    if tiles[tile + 1u] == 0u { return; }
     var destination = pixels[pixel_address(index)];
     let end = tiles[tile] + tiles[tile + 1u];
     for (var i = tiles[tile]; i < end; i++) {
@@ -123,7 +131,7 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
             let shade = low & 0xff00u;
             source = assets[c.assets.y + shade + assets[c.assets.x + uv]];
         }
-        let local_pixel = pixel - vec2<i32>(c.origin.xy);
+        let local_pixel = pixel - vec2<i32>(view_of(c).xy);
         let viewed = vec2<u32>(local_pixel);
         if c.operation.x == 9u {
             let sampled = trig_sample(c, local_pixel, destination);

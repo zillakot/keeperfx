@@ -89,7 +89,6 @@ impl DrawRenderer {
             words.extend([c.source_x, 65536, 64, 0]);
             words.extend([0; 4]);
             words.extend([OPAQUE, 0, 0, 0]);
-            words.extend([0, 0, width, 0]);
         }
         if commands.is_empty() {
             return Ok(());
@@ -97,9 +96,9 @@ impl DrawRenderer {
         self.tile_index.build(
             &mut self.counters,
             &words,
+            &ViewSpace::table(&[ViewSpace::whole(width, height)]),
             &[commands.len()],
-            width,
-            height,
+            (width, height),
             limit,
         )?;
         let cb = buffer(

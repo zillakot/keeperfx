@@ -32,9 +32,10 @@ pub(super) enum Serial {
 
 pub(super) struct QueuedFrame {
     root: u64,
-    /// Every rasterizable command of the frame in order, each with the origin of
-    /// the view it was issued against, so a target change is not a boundary.
-    stream: Vec<(ViewSpace, Command)>,
+    /// Every rasterizable command of the frame in order, each naming the view it was
+    /// issued against, so a target change is not a boundary.
+    stream: Vec<(u32, Command)>,
+    views: Vec<ViewSpace>,
     serials: Vec<(usize, Serial)>,
     count: usize,
     released_resources: std::collections::HashSet<u64>,
@@ -176,6 +177,7 @@ impl DrawRenderer {
         self.frame = Some(QueuedFrame {
             root,
             stream: Vec::new(),
+            views: Vec::new(),
             serials: Vec::new(),
             count: 0,
             released_resources: std::collections::HashSet::new(),
@@ -263,6 +265,13 @@ impl DrawRenderer {
         }
         let view = self.view_space(target)?;
         let frame = self.frame.as_mut().unwrap();
+        let index = match frame.views.iter().position(|known| *known == view) {
+            Some(index) => index as u32,
+            None => {
+                frame.views.push(view);
+                frame.views.len() as u32 - 1
+            }
+        };
         frame.count += commands.len();
         self.frame_counters.queued_commands += commands.len() as u64;
         for command in commands {
@@ -270,7 +279,7 @@ impl DrawRenderer {
                 let at = frame.stream.len();
                 frame.serials.push((at, Serial::Commands(target, *command)));
             } else {
-                frame.stream.push((view, *command));
+                frame.stream.push((index, *command));
             }
         }
         Ok(true)
@@ -433,8 +442,9 @@ impl DrawRenderer {
         self.replaying = true;
         let root = frame.root;
         let stream = std::mem::take(&mut frame.stream);
+        let views = std::mem::take(&mut frame.views);
         let serials = std::mem::take(&mut frame.serials);
-        let mut result = self.replay_stream(root, &stream, serials);
+        let mut result = self.replay_stream(root, &stream, &views, serials);
         self.arena.release_hold();
         self.replaying = false;
         if result.is_ok() {
@@ -462,7 +472,8 @@ impl DrawRenderer {
     fn replay_stream(
         &mut self,
         root: u64,
-        stream: &[(ViewSpace, Command)],
+        stream: &[(u32, Command)],
+        views: &[ViewSpace],
         serials: Vec<(usize, Serial)>,
     ) -> Result<()> {
         self.check_status()?;
@@ -502,7 +513,9 @@ impl DrawRenderer {
             );
             let words = pack_records(
                 &mut packer,
-                stream.iter().map(|(view, command)| (command, *view)),
+                stream
+                    .iter()
+                    .map(|(view, command)| (command, views[*view as usize], *view)),
                 stream.len(),
                 &self.resources,
                 limit,
@@ -511,9 +524,9 @@ impl DrawRenderer {
             self.tile_index.build(
                 &mut self.counters,
                 &words,
+                &ViewSpace::table(views),
                 &boundaries,
-                target.width,
-                target.height,
+                (target.width, target.height),
                 limit,
             )?;
             let commands = persist(

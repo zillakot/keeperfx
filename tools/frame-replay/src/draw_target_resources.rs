@@ -139,7 +139,7 @@ impl DrawRenderer {
         for command in commands {
             self.check_queued_resource(command.table)?;
         }
-        let mut batch = self.pack_target_images(commands, width)?;
+        let mut batch = self.pack_target_images(commands)?;
         if commands.is_empty() {
             return Ok(());
         }
@@ -152,9 +152,9 @@ impl DrawRenderer {
         self.tile_index.build(
             &mut self.counters,
             &batch.words,
+            &ViewSpace::table(&[ViewSpace::whole(width, height)]),
             &[commands.len()],
-            width,
-            height,
+            (width, height),
             limit,
         )?;
         self.checkpoint_target(target)?;
@@ -262,7 +262,7 @@ impl DrawRenderer {
         Ok(())
     }
 
-    fn pack_target_images(&self, commands: &[Command], width: u32) -> Result<ImageBatch> {
+    fn pack_target_images(&self, commands: &[Command]) -> Result<ImageBatch> {
         let limit = self.storage_limit() as usize;
         ensure!(
             commands.len() <= MAX_COMMANDS && commands.len() * RECORD_BYTES <= limit,
@@ -382,7 +382,6 @@ impl DrawRenderer {
                     .words
                     .extend([second_offset, second_pitch, c.step_low, 0]);
                 batch.words.extend([OPAQUE, 0, 0, 0]);
-                batch.words.extend([0, 0, width, 0]);
                 continue;
             }
             ensure!(
@@ -436,7 +435,6 @@ impl DrawRenderer {
                 .extend([c.source_x, c.source_y, c.source_width, c.source_height]);
             batch.words.extend([0; 4]);
             batch.words.extend([c.transparent, 0, 0, 0]);
-            batch.words.extend([0, 0, width, 0]);
         }
         Ok(batch)
     }

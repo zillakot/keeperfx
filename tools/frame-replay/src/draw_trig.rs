@@ -93,9 +93,9 @@ impl DrawRenderer {
         self.tile_index.build(
             &mut self.counters,
             &words,
+            &ViewSpace::table(&[ViewSpace::whole(width, height)]),
             &[commands.len()],
-            width,
-            height,
+            (width, height),
             limit,
         )?;
         Ok(())
