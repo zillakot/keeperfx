@@ -211,6 +211,37 @@ presentation by the Rust presenter, and a cursor that owns its own drawing conte
 rather than borrowing the bridge's are not counted, so the counters explain the
 drawing scopes rather than the whole frame.
 
+### Shadow asset reuse counters
+
+`target_trig_geometry_bytes` and `target_trig_table_bytes` count actual expanded
+uploads by the shadow target-triangle route. Their sum plus
+`other_asset_upload_bytes` equals `asset_upload_bytes`; geometry stays asset data.
+`target_trig_table_hits` / `target_trig_table_misses` count each table resolution,
+including the second triangle of a pair. `shadow_pairs` counts replayed mask/pair
+batches, including culled pairs. `target_trig_asset_buffers` counts only fallback
+asset creations: zero with the arena, one per nonempty fallback batch. A fresh
+pair uploads 480 geometry bytes; a resident table uploads zero. The disabled-arena
+fallback deduplicates the pair's table but uploads it again next batch.
+
+`arena_misses_{new_id,forget,size_class,generation,eviction}` and corresponding
+`arena_miss_<cause>_bytes` partition successful arena resolutions that upload;
+the bytes sum to `arena_bytes_uploaded`. Generation means the unchanged renderer
+recovery epoch. `arena_explicit_forgets` counts resident entries removed on release,
+separately from capacity-driven `arena_evictions`. A forgotten live ID can miss as
+`forget`; release permanently drops its history, so a recreated resource's new ID
+misses as `new_id`. Eviction history lasts only until reuse or resource release.
+
+`preparer_buffers` / `preparer_buffer_bytes` separately account the three gpoly
+setup buffers: vertices (96 bytes/triangle), row layout (20 bytes/triangle), and
+viewport (16 bytes/encode). They do not change `buffers`, `buffer_bytes`, or the
+legacy upload totals. Those totals still omit some uniform/staging traffic.
+
+The additional gauges are `arena_capacity_bytes` (allocated buffer),
+`arena_live_bytes` (resident size classes), `arena_retired_bytes` (released classes
+still protected by an encoder), and `arena_growth_peak_bytes` (largest old+new
+capacity during growth). They supplement the existing extent and scratch-peak
+gauges; they do not measure whole-process or driver/GPU peak memory.
+
 ## Presenter host attribution
 
 Rust-presenter runs include one `presenter.per_frame` sample per presentation;
@@ -275,6 +306,59 @@ and parchment return, with all required errors/rejections zero and one non-faili
 shadow-prior divergence diagnostic. The first oracle attempt stopped on a helper
 response-envelope bug at turn 5 and is excluded. Full tables, identities, tails,
 load and both attempts are recorded in [PR #39](https://github.com/zillakot/keeperfx/pull/39).
+
+### Presenter cost, P3 slice 1: measured 2026-09-15
+
+[PR #40](https://github.com/zillakot/keeperfx/pull/40), runtime `97402ca75`,
+Apple M5/Metal, two unchanged 75 Hz displays. All 22 timing cells have one submit,
+zero waits/checkpoints/invalid frames/arena evictions/overflows, and presentation_cpu
+below 1 ms. Every branch sample has zero shadow-table uploads/misses and private
+asset buffers; geometry is 480 bytes/pair. Remaining 3.9–4.5 MB/frame arena uploads
+are all new-ID misses. The byte ledger conserves per frame.
+
+Matched capped 1080p means; MB is decimal, replay in ms:
+
+| Scene / pair | Asset MB baseline → branch | Replay baseline → branch | Buffers baseline → branch |
+| --- | ---: | ---: | ---: |
+| Busy 1 | 11.067 → 4.493 | 2.999 → 2.224 | 87.242 → 78.185 |
+| Busy 2 | 11.080 → 4.482 | 2.757 → 1.958 | 87.242 → 77.228 |
+| Quiet 1 | 11.400 → 3.911 | 3.122 → 2.107 | 81.159 → 69.694 |
+| Quiet 2 | 11.400 → 3.911 | 3.108 → 2.033 | 81.127 → 69.716 |
+
+Busy buffer creation bytes fall about 6.59 MB→15.1–15.7 KB/frame. Against PR39's
+historical 640 cells, busy r1 changes 14.100→4.361 MB, replay 3.721→2.217 ms,
+113.825→99.003 buffers and 9.743 MB→8.954 KB buffer bytes, with 14.8414 measured
+shadow pairs/frame. Busy r2 emits fewer shadows (9.6194), so its 75.716 buffers
+are a different workload. Quiet repeats upload 4.008 MB, replay in 2.163/2.143 ms.
+
+Acceptance is partial: standalone busy HD and busy pair 1 slightly miss ≤78 buffers;
+capped rates are 59.99–60.01 FPS with small strict-range misses. Busy pair 2 ends at
+load/core 1.571 and 19.99435 turns/s. Guard interruptions and a manual session break
+whole-schedule continuity; orders remain alternated within pairs. Capacity is
+32 MiB with 48 MiB old+new growth overlap (16→32); transition-growth and driver/GPU
+peak-memory gates remain untested. Creation bytes do not establish peak-memory savings.
+
+Windowed uncapped is compositor/environment-paced this evening: three cells reach
+74.93 FPS, the first baseline 84.75, with 7.31–10.03 ms acquire blocking despite
+Immediate. These are not ceiling measurements; within-pair replay deltas are
+−1.151/−1.089 ms. Keep the later offscreen comparison separate:
+
+| Offscreen uncapped busy 1080p pair | FPS baseline → branch | Replay ms baseline → branch | Presentation ms baseline → branch |
+| --- | ---: | ---: | ---: |
+| 1 | 221.06 → 250.78 | 3.061 → 1.869 | 0.836 → 1.504 |
+| 2 | 219.99 → 250.75 | 3.083 → 1.835 | 0.834 → 1.545 |
+
+The faster branch waits more on the two-slot ring; these offscreen throughput gains
+prove no windowed ceiling increase. Four surface gates pass (606/605 GPU and
+610/605 software frames, each equally verified). Drawing attempt 1 ends in a
+control-API SIGPIPE after DESKTOP switching, with zero drawing failures; attempt 2
+verifies 135445 batches / 188535 triangles with zero errors and one non-failing
+shadow-prior diagnostic. Its settle wait times out with zero presented frames and
+247 acquisition skips (Fifo), then quit exits cleanly. Bridge readback verification
+remains valid; surface proof comes from the separate gates. Video-mode round trip,
+level reload and explicit table/palette mutation remain untested. Full target results,
+tails, both attempts and interrupted-run history are retained in PR #40's delivery
+record and the local `out/asset-reuse-report.md`.
 
 ## Collection bounds and outputs
 

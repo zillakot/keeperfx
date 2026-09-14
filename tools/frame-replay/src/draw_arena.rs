@@ -10,6 +10,21 @@ pub(super) const OVERFLOW: &str = "asset batch exceeds storage limit";
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct ArenaCounters {
+    pub misses_new_id: u64,
+    pub misses_forget: u64,
+    pub misses_size_class: u64,
+    pub misses_generation: u64,
+    pub misses_eviction: u64,
+    pub miss_new_id_bytes: u64,
+    pub miss_forget_bytes: u64,
+    pub miss_size_class_bytes: u64,
+    pub miss_generation_bytes: u64,
+    pub miss_eviction_bytes: u64,
+    pub explicit_forgets: u64,
+    pub capacity_bytes: u64,
+    pub live_bytes: u64,
+    pub retired_bytes: u64,
+    pub growth_peak_bytes: u64,
     pub evictions: u64,
     pub overflows: u64,
     pub bytes_resident: u64,
@@ -17,6 +32,15 @@ pub struct ArenaCounters {
     /// Widest extent transient regions reached inside one pinning scope. Frame-scoped
     /// pinning stops recycling them mid-frame, so this is what that costs.
     pub scratch_bytes_peak: u64,
+}
+
+#[derive(Clone, Copy)]
+enum MissReason {
+    NewId,
+    Forget,
+    SizeClass,
+    Generation,
+    Eviction,
 }
 
 struct Residency {
@@ -35,6 +59,7 @@ pub(crate) struct Arena {
     high_water: u32,
     free: Vec<Vec<u32>>,
     residency: HashMap<u64, Residency>,
+    missing: HashMap<u64, MissReason>,
     lru: BTreeSet<(u64, u64)>,
     pinned: HashSet<u64>,
     scratch: Vec<(usize, u32)>,
@@ -77,6 +102,7 @@ impl Arena {
             high_water: ALIGN_WORDS,
             free: (0..classes).map(|_| Vec::new()).collect(),
             residency: HashMap::new(),
+            missing: HashMap::new(),
             lru: BTreeSet::new(),
             pinned: HashSet::new(),
             scratch: Vec::new(),
@@ -101,6 +127,7 @@ impl Arena {
     pub(super) fn counters(&self) -> ArenaCounters {
         ArenaCounters {
             bytes_resident: u64::from(self.high_water) * 4,
+            capacity_bytes: u64::from(self.capacity) * 4,
             ..self.counters
         }
     }
@@ -138,6 +165,7 @@ impl Arena {
             self.free[class].push(offset);
         }
         self.scratch_words = 0;
+        self.counters.retired_bytes = 0;
     }
 
     /// Locks growth for the life of an encoder, and grows ahead of it to the demand
@@ -151,6 +179,22 @@ impl Arena {
     /// means growth is possible.
     pub(super) fn fits(&self, words: u64) -> bool {
         !self.enabled || u64::from(self.high_water) + words <= u64::from(self.capacity)
+    }
+
+    pub(super) fn allocation_words(&self, id: u64, length: usize) -> Result<u64> {
+        if !self.enabled {
+            return Ok(0);
+        }
+        let words = u32::try_from(length).map_err(|_| anyhow::anyhow!(OVERFLOW))?;
+        let class = size_class(words.max(ALIGN_WORDS));
+        if self
+            .residency
+            .get(&id)
+            .is_some_and(|entry| entry.class == class)
+        {
+            return Ok(0);
+        }
+        Ok(u64::from(class_words(class)))
     }
 
     /// Grows to hold `words` more past the high-water mark. The caller must have no
@@ -173,16 +217,37 @@ impl Arena {
         self.reserve(device, queue, counters, need);
     }
 
-    pub(super) fn forget(&mut self, id: u64) {
+    pub(super) fn release(&mut self, id: u64) {
+        self.forget(id, true);
+    }
+
+    fn forget(&mut self, id: u64, released: bool) {
+        if self.remove(id) {
+            if !released {
+                self.missing.insert(id, MissReason::Forget);
+            }
+            self.counters.explicit_forgets += 1;
+        }
+        if released {
+            self.missing.remove(&id);
+        }
+    }
+
+    fn remove(&mut self, id: u64) -> bool {
         if let Some(entry) = self.residency.remove(&id) {
+            let bytes = u64::from(class_words(entry.class)) * 4;
+            self.counters.live_bytes -= bytes;
             self.lru.remove(&(entry.last_used, id));
             self.pinned.remove(&id);
             if self.holds > 0 {
+                self.counters.retired_bytes += bytes;
                 self.retired.push((entry.class, entry.offset));
             } else {
                 self.free[entry.class].push(entry.offset);
             }
+            return true;
         }
+        false
     }
 
     pub(super) fn binding(
@@ -217,12 +282,20 @@ impl Arena {
             if !stale {
                 return Ok(offset);
             }
+            self.record_miss(MissReason::Generation, bytes.len());
             self.upload(queue, counters, offset, bytes);
             return Ok(offset);
         }
-        self.forget(id);
+        let reason = if self.remove(id) {
+            MissReason::SizeClass
+        } else {
+            self.missing.get(&id).copied().unwrap_or(MissReason::NewId)
+        };
         let offset = self.allocate(device, queue, counters, class)?;
+        self.missing.remove(&id);
+        self.record_miss(reason, bytes.len());
         self.upload(queue, counters, offset, bytes);
+        self.counters.live_bytes += u64::from(class_words(class)) * 4;
         self.residency.insert(
             id,
             Residency {
@@ -235,6 +308,19 @@ impl Arena {
         self.lru.insert((self.clock, id));
         self.pinned.insert(id);
         Ok(offset)
+    }
+
+    fn record_miss(&mut self, reason: MissReason, length: usize) {
+        let c = &mut self.counters;
+        let (count, bytes) = match reason {
+            MissReason::NewId => (&mut c.misses_new_id, &mut c.miss_new_id_bytes),
+            MissReason::Forget => (&mut c.misses_forget, &mut c.miss_forget_bytes),
+            MissReason::SizeClass => (&mut c.misses_size_class, &mut c.miss_size_class_bytes),
+            MissReason::Generation => (&mut c.misses_generation, &mut c.miss_generation_bytes),
+            MissReason::Eviction => (&mut c.misses_eviction, &mut c.miss_eviction_bytes),
+        };
+        *count += 1;
+        *bytes += length as u64 * 4;
     }
 
     /// Reserves a region for GPU-to-GPU copies, released at the next batch.
@@ -356,6 +442,10 @@ impl Arena {
         while capacity < wanted {
             capacity = capacity.saturating_mul(2).min(self.limit);
         }
+        self.counters.growth_peak_bytes = self
+            .counters
+            .growth_peak_bytes
+            .max((u64::from(self.capacity) + u64::from(capacity)) * 4);
         let grown = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("persistent asset arena"),
             size: u64::from(capacity) * 4,
@@ -386,7 +476,8 @@ impl Arena {
         let Some((_, id)) = victim else {
             return false;
         };
-        self.forget(id);
+        self.remove(id);
+        self.missing.insert(id, MissReason::Eviction);
         self.counters.evictions += 1;
         true
     }
@@ -406,5 +497,277 @@ impl Arena {
         }
         self.high_water = ALIGN_WORDS;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocation_demand_uses_classes_and_existing_residency() {
+        let mut arena = Arena::new(32 << 20);
+        assert_eq!(arena.allocation_words(1, 60).unwrap(), 256);
+        assert_eq!(arena.allocation_words(2, 81920).unwrap(), 131072);
+        assert_eq!(arena.allocation_words(3, 176).unwrap(), 256);
+        arena.residency.insert(
+            2,
+            Residency {
+                offset: 4,
+                class: size_class(81920),
+                generation: 1,
+                last_used: 0,
+            },
+        );
+        assert_eq!(arena.allocation_words(2, 81920).unwrap(), 0);
+        assert_eq!(arena.allocation_words(2, 65536).unwrap(), 65536);
+        assert_eq!(Arena::new(16 << 20).allocation_words(1, 81920).unwrap(), 0);
+        assert!(arena.allocation_words(1, usize::MAX).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn shadow_batch_grows_before_packing_rounded_slots_in_an_open_encoder() {
+        use super::super::{CLEAR, Command, DrawRenderer, TRIG};
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let renderer = crate::gpu::Renderer::new(device, queue).unwrap();
+        let mut draw = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        let target = draw.create_target(8, 8).unwrap();
+        draw.submit(
+            target,
+            &[Command {
+                kind: CLEAR,
+                colour: 71,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let vertices: [i32; 15] = [1, 1, 0, 0, 0, 7, 1, 0, 0, 0, 1, 7, 0, 0, 0];
+        let geometry: Vec<_> = vertices.into_iter().flat_map(i32::to_le_bytes).collect();
+        let table = draw
+            .create_resource(&vec![93; 81920], 256, 320, 256)
+            .unwrap();
+        let sources: Vec<_> = (0..2)
+            .map(|_| draw.create_resource(&geometry, 1, 1, 1).unwrap())
+            .collect();
+        let mut artwork: Vec<_> = [256u32, 256, 4, 4, 0, 0, 0, 24]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        artwork.extend(&geometry);
+        artwork.extend(&geometry);
+        artwork.extend((0..4).flat_map(|_| [4, 1, 1, 1, 1, 0]));
+        let mask = draw.create_resource(&artwork, 1, 1, 1).unwrap();
+        let commands: Vec<_> = sources
+            .iter()
+            .map(|&source| Command {
+                kind: TRIG,
+                source,
+                table,
+                source_x: 10,
+                source_y: 65536,
+                source_width: 64,
+                colour: 1,
+                width: 8,
+                height: 8,
+                clip_width: 8,
+                clip_height: 8,
+                ..Default::default()
+            })
+            .collect();
+        draw.submit_target_triangles(target, &commands, 0, Some(mask))
+            .unwrap();
+        let expected = draw.readback(target).unwrap();
+        assert!(expected.contains(&93));
+        assert!(expected.iter().all(|&pixel| pixel == 71 || pixel == 93));
+        draw.submit(
+            target,
+            &[Command {
+                kind: CLEAR,
+                colour: 71,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        draw.arena = Arena::new(draw.storage_limit());
+        let count = (INITIAL_WORDS - 100000 - ALIGN_WORDS) / MIN_CLASS_WORDS;
+        for id in 1_000_000..1_000_000 + u64::from(count) {
+            draw.arena
+                .offset_of(&draw.device, &draw.queue, &mut draw.counters, id, 1, &[0])
+                .unwrap();
+        }
+        for id in 1_000_000..1_000_000 + u64::from(count) {
+            draw.arena.release(id);
+        }
+        assert_eq!(draw.arena.capacity, INITIAL_WORDS);
+        assert_eq!(draw.arena.free[0].len(), count as usize);
+        assert!(draw.arena.free[size_class(81920)].is_empty());
+        assert!(draw.arena.fits(draw.resource_bytes as u64));
+        assert!(!draw.arena.fits(131072 + 3 * 256));
+        draw.frame_begin(target).unwrap();
+        draw.frame_encoder();
+        assert!(draw.arena.locked);
+        let before = draw.counters();
+        draw.submit_target_triangles(target, &commands, 0, Some(mask))
+            .unwrap();
+        assert_eq!(draw.arena.capacity, INITIAL_WORDS * 2);
+        assert_eq!(draw.arena.counters().overflows, 0);
+        assert_eq!(draw.arena.counters().evictions, 0);
+        assert_eq!(
+            draw.counters().target_trig_table_bytes - before.target_trig_table_bytes,
+            327680
+        );
+        assert_eq!(
+            draw.counters().target_trig_geometry_bytes - before.target_trig_geometry_bytes,
+            480
+        );
+        assert_eq!(
+            draw.counters().target_trig_table_hits - before.target_trig_table_hits,
+            1
+        );
+        draw.frame_end().unwrap();
+        assert_eq!(draw.counters().submits - before.submits, 3);
+        assert_eq!(draw.frame_status().1, 0);
+        assert_eq!(draw.readback(target).unwrap(), expected);
+    }
+
+    #[test]
+    fn releases_retire_pinned_regions_and_drop_miss_history() {
+        let mut arena = Arena::new(32 << 20);
+        arena.hold();
+        arena.residency.insert(
+            7,
+            Residency {
+                offset: 4,
+                class: 0,
+                generation: 1,
+                last_used: 0,
+            },
+        );
+        arena.lru.insert((0, 7));
+        arena.counters.live_bytes = 1024;
+        arena.pinned.insert(7);
+        arena.begin_batch();
+        assert!(arena.pinned.contains(&7));
+        assert!(!arena.evict());
+        arena.release(7);
+        assert!(arena.residency.is_empty());
+        assert!(arena.missing.is_empty());
+        assert!(arena.free[0].is_empty());
+        assert_eq!(arena.counters().retired_bytes, 1024);
+        arena.release_hold();
+        assert_eq!(arena.free[0], [4]);
+        assert_eq!(arena.counters().retired_bytes, 0);
+        assert_eq!(arena.counters().explicit_forgets, 1);
+        arena.missing.insert(9, MissReason::Eviction);
+        arena.release(9);
+        assert!(arena.missing.is_empty());
+        assert_eq!(arena.counters().explicit_forgets, 1);
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn offsets_miss_causes_and_cold_growth_preserve_uploaded_bytes() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let mut counters = super::super::Counters::default();
+        let mut arena = Arena::new(32 << 20);
+        let mut resolve = |arena: &mut Arena, id, generation, bytes: &[u8]| {
+            arena
+                .offset_of(&device, &queue, &mut counters, id, generation, bytes)
+                .unwrap()
+        };
+        let offset = resolve(&mut arena, 1, 1, &[71; 60]);
+        assert_eq!(resolve(&mut arena, 1, 1, &[71; 60]), offset);
+        assert_eq!(arena.counters().bytes_uploaded, 240);
+        arena.forget(1, false);
+        assert_eq!(resolve(&mut arena, 1, 1, &[71; 60]), offset);
+        let offset = resolve(&mut arena, 1, 1, &[93; 300]);
+        assert_eq!(resolve(&mut arena, 1, 2, &[117; 300]), offset);
+        let c = arena.counters();
+        assert_eq!(
+            (
+                c.misses_new_id,
+                c.misses_forget,
+                c.misses_size_class,
+                c.misses_generation
+            ),
+            (1, 1, 1, 1)
+        );
+        assert_eq!(
+            (
+                c.miss_new_id_bytes,
+                c.miss_forget_bytes,
+                c.miss_size_class_bytes,
+                c.miss_generation_bytes
+            ),
+            (240, 240, 1200, 1200)
+        );
+        arena.grow_to(&device, &queue, &mut counters, u64::from(INITIAL_WORDS));
+        assert_eq!(arena.counters().capacity_bytes, 8 << 20);
+        assert_eq!(arena.counters().growth_peak_bytes, 12 << 20);
+        let output = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 1200,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(
+            arena.buffer.as_ref().unwrap(),
+            u64::from(offset) * 4,
+            &output,
+            0,
+            1200,
+        );
+        let submission = queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        output
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            })
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+        let mapped = output.slice(..).get_mapped_range().unwrap();
+        for word in mapped.as_chunks::<4>().0 {
+            assert_eq!(*word, 117u32.to_le_bytes());
+        }
+        drop(mapped);
+        output.unmap();
+        let mut small = Arena::new(32 << 20);
+        small.limit = 1024;
+        small
+            .offset_of(&device, &queue, &mut counters, 2, 1, &[7; 300])
+            .unwrap();
+        small.begin_batch();
+        small
+            .offset_of(&device, &queue, &mut counters, 3, 1, &[9; 300])
+            .unwrap();
+        small.begin_batch();
+        small
+            .offset_of(&device, &queue, &mut counters, 2, 1, &[7; 300])
+            .unwrap();
+        assert_eq!(small.counters().evictions, 2);
+        assert_eq!(small.counters().misses_eviction, 1);
+        assert_eq!(small.counters().miss_eviction_bytes, 1200);
+        let c = small.counters();
+        assert_eq!(
+            c.bytes_uploaded,
+            c.miss_new_id_bytes
+                + c.miss_forget_bytes
+                + c.miss_size_class_bytes
+                + c.miss_generation_bytes
+                + c.miss_eviction_bytes
+        );
     }
 }

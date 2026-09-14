@@ -1,9 +1,21 @@
 use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, RECT, TRIG};
 fn drawing() -> DrawRenderer {
+    drawing_with_limit(128 << 20)
+}
+
+fn drawing_with_limit(limit: u64) -> DrawRenderer {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     eprintln!("shadow adapter: {:?}", adapter.get_info());
-    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits {
+            max_buffer_size: limit,
+            max_storage_buffer_binding_size: limit,
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
+    .unwrap();
     let renderer = keeperfx_frame_replay::gpu::Renderer::new(device, queue).unwrap();
     DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap()
 }
@@ -131,41 +143,88 @@ fn actual_native_shadow_masks_and_triangles() {
 #[ignore = "requires GPU and native shadow fixture"]
 fn a_shadow_that_bins_to_nothing_still_records_its_mask() {
     let (table_bytes, cases) = fixture();
-    let mut draw = drawing();
-    let target = draw.create_target(79, 61).unwrap();
-    let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
-    clear(&mut draw, target);
-    let empty = draw.readback(target).unwrap();
-    draw.shadow_scratch_reset().unwrap();
-    // Collapse both vertex triples onto one point: the triangles' tight box is empty, so
-    // they have nothing to dispatch over. The mask is built from the descriptor and the
-    // RLE, which sit either side of the vertex block, so the resident chain must still
-    // advance to exactly this case's mask.
-    let mut asset = cases[0].asset.clone();
-    asset[32..152].fill(0);
-    let source = draw.create_resource(&asset, 1, 1, 1).unwrap();
-    draw.submit_shadow(target, &shadow(source, table, cases[0].colour))
-        .unwrap();
-    draw.release_resource(source).unwrap();
-    assert!(
-        cases[0].mask.iter().any(|&v| v != 0),
-        "the fixture mask is empty"
-    );
-    assert_eq!(
-        draw.shadow_scratch_read().unwrap(),
-        cases[0].mask,
-        "a shadow whose triangles bin to nothing must still record its mask"
-    );
-    assert_eq!(
-        draw.readback(target).unwrap(),
-        empty,
-        "degenerate shadow triangles must not write a pixel"
-    );
-    assert_eq!(
-        draw.frame_status().1,
-        0,
-        "a degenerate shadow raised a flag"
-    );
+    for limit in [128 << 20, 16 << 20] {
+        let mut draw = drawing_with_limit(limit);
+        let target = draw.create_target(79, 61).unwrap();
+        let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
+        clear(&mut draw, target);
+        let empty = draw.readback(target).unwrap();
+        draw.shadow_scratch_reset().unwrap();
+        // Collapse both vertex triples onto one point: the triangles' tight box is empty, so
+        // they have nothing to dispatch over. The mask is built from the descriptor and the
+        // RLE, which sit either side of the vertex block, so the resident chain must still
+        // advance to exactly this case's mask.
+        let mut asset = cases[0].asset.clone();
+        asset[32..152].fill(0);
+        let source = draw.create_resource(&asset, 1, 1, 1).unwrap();
+        draw.submit_shadow(target, &shadow(source, table, cases[0].colour))
+            .unwrap();
+        draw.release_resource(source).unwrap();
+        assert!(
+            cases[0].mask.iter().any(|&v| v != 0),
+            "the fixture mask is empty"
+        );
+        assert_eq!(
+            draw.shadow_scratch_read().unwrap(),
+            cases[0].mask,
+            "a shadow whose triangles bin to nothing must still record its mask"
+        );
+        assert_eq!(
+            draw.readback(target).unwrap(),
+            empty,
+            "degenerate shadow triangles must not write a pixel"
+        );
+        assert_eq!(
+            draw.frame_status().1,
+            0,
+            "a degenerate shadow raised a flag"
+        );
+        let source = draw.create_resource(&[0; 60], 1, 1, 1).unwrap();
+        let triangle = Command {
+            kind: TRIG,
+            source,
+            table,
+            source_x: 10,
+            source_y: 65536,
+            source_width: 64,
+            width: 79,
+            height: 61,
+            clip_width: 79,
+            clip_height: 61,
+            ..Default::default()
+        };
+        let before = draw.counters();
+        assert!(
+            draw.submit_target_triangles(
+                target,
+                &[
+                    triangle,
+                    Command {
+                        reserved: [1, 0, 0],
+                        ..triangle
+                    }
+                ],
+                0,
+                None
+            )
+            .is_err()
+        );
+        let after = draw.counters();
+        let uploaded = if limit >= 32 << 20 { 240 } else { 0 };
+        assert_eq!(
+            after.asset_upload_bytes - before.asset_upload_bytes,
+            uploaded
+        );
+        assert_eq!(
+            after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
+            uploaded
+        );
+        assert_eq!(
+            after.target_trig_table_bytes - before.target_trig_table_bytes,
+            0
+        );
+        assert_eq!(draw.readback(target).unwrap(), empty);
+    }
 }
 
 #[test]
@@ -352,10 +411,16 @@ fn target_triangle_validation_and_resident_slots() {
     let before = draw.counters();
     draw.submit_target_triangles(target, &[c], 0, None).unwrap();
     let after = draw.counters();
+    assert_eq!(after.asset_upload_bytes - before.asset_upload_bytes, 60 * 4);
     assert_eq!(
-        after.asset_upload_bytes - before.asset_upload_bytes,
-        (60 + 81920) * 4
+        after.target_trig_table_bytes - before.target_trig_table_bytes,
+        0
     );
+    assert_eq!(
+        after.target_trig_table_hits - before.target_trig_table_hits,
+        1
+    );
+    assert_eq!(after.target_trig_asset_buffers, 0);
     assert_eq!(after.readback_bytes, before.readback_bytes);
     draw.release_resource(mask_source).unwrap();
     draw.release_resource(source).unwrap();
@@ -372,52 +437,82 @@ fn target_triangle_validation_and_resident_slots() {
 #[ignore = "requires GPU and native shadow fixture"]
 fn the_whole_chain_in_one_encoder_matches_the_per_submit_replay() {
     let (table_bytes, cases) = fixture();
-    let mut draw = drawing();
-    let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
-    let reset_at = cases.len() / 2;
-    let mut run = |per_submit: bool| -> (Vec<u8>, Vec<u8>, u64) {
-        let target = draw.create_target(79, 61).unwrap();
-        draw.shadow_scratch_reset().unwrap();
-        draw.frame_submit().unwrap();
-        let before = draw.counters().submits;
-        draw.frame_begin(target).unwrap();
-        clear(&mut draw, target);
-        for (at, c) in cases.iter().enumerate() {
-            if at == reset_at {
-                // A reset records straight into the encoder while shadows are queued,
-                // so the queued half has to be replayed before it or the clear would
-                // land ahead of the masks it is meant to follow.
-                draw.frame_flush().unwrap();
-                draw.shadow_scratch_reset().unwrap();
+    for limit in [128 << 20, 16 << 20] {
+        let mut draw = drawing_with_limit(limit);
+        let arena = limit >= 32 << 20;
+        let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
+        let reset_at = cases.len() / 2;
+        let mut run = |per_submit: bool, cold: bool| -> (Vec<u8>, Vec<u8>, u64) {
+            let target = draw.create_target(79, 61).unwrap();
+            draw.shadow_scratch_reset().unwrap();
+            draw.frame_submit().unwrap();
+            let before = draw.counters();
+            draw.frame_begin(target).unwrap();
+            clear(&mut draw, target);
+            for (at, c) in cases.iter().enumerate() {
+                if at == reset_at {
+                    // A reset records straight into the encoder while shadows are queued,
+                    // so the queued half has to be replayed before it or the clear would
+                    // land ahead of the masks it is meant to follow.
+                    draw.frame_flush().unwrap();
+                    draw.shadow_scratch_reset().unwrap();
+                }
+                let source = draw.create_resource(&c.asset, 1, 1, 1).unwrap();
+                draw.submit_shadow(target, &shadow(source, table, c.colour))
+                    .unwrap();
+                draw.release_resource(source).unwrap();
+                if per_submit {
+                    draw.frame_flush().unwrap();
+                    draw.frame_submit().unwrap();
+                }
             }
-            let source = draw.create_resource(&c.asset, 1, 1, 1).unwrap();
-            draw.submit_shadow(target, &shadow(source, table, c.colour))
-                .unwrap();
-            draw.release_resource(source).unwrap();
-            if per_submit {
-                draw.frame_flush().unwrap();
-                draw.frame_submit().unwrap();
-            }
-        }
-        draw.frame_end().unwrap();
-        let submits = draw.counters().submits - before;
-        let scratch = draw.shadow_scratch_read().unwrap();
-        let pixels = draw.readback(target).unwrap();
-        draw.frame_abort().unwrap();
-        draw.release_target(target).unwrap();
-        (scratch, pixels, submits)
-    };
-    let (stepped_scratch, stepped_pixels, stepped_submits) = run(true);
-    let (single_scratch, single_pixels, single_submits) = run(false);
-    assert_eq!(single_scratch, stepped_scratch, "the chain diverged");
-    assert_eq!(single_pixels, stepped_pixels, "the triangles diverged");
-    assert!(
-        stepped_submits > single_submits,
-        "the per-submit replay must cut the frame more than once"
-    );
-    assert_eq!(
-        single_submits, 1,
-        "the whole chain belongs to one command buffer"
-    );
-    assert_eq!(draw.frame_status().1, 0, "the chain raised a flag");
+            draw.frame_end().unwrap();
+            let after = draw.counters();
+            let pairs = cases.len() as u64;
+            let misses = if arena { u64::from(cold) } else { pairs };
+            assert_eq!(after.shadow_pairs - before.shadow_pairs, pairs);
+            assert_eq!(
+                after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
+                pairs * 480
+            );
+            assert_eq!(
+                after.target_trig_table_bytes - before.target_trig_table_bytes,
+                misses * 327680
+            );
+            assert_eq!(
+                after.target_trig_table_misses - before.target_trig_table_misses,
+                misses
+            );
+            assert_eq!(
+                after.target_trig_table_hits - before.target_trig_table_hits,
+                pairs * 2 - misses
+            );
+            assert_eq!(
+                after.target_trig_asset_buffers - before.target_trig_asset_buffers,
+                if arena { 0 } else { pairs }
+            );
+            let submits = after.submits - before.submits;
+            let scratch = draw.shadow_scratch_read().unwrap();
+            let pixels = draw.readback(target).unwrap();
+            draw.release_target(target).unwrap();
+            (scratch, pixels, submits)
+        };
+        let (stepped_scratch, stepped_pixels, stepped_submits) = run(true, true);
+        let (single_scratch, single_pixels, single_submits) = run(false, false);
+        assert_eq!(single_scratch, stepped_scratch, "the chain diverged");
+        assert_eq!(single_pixels, stepped_pixels, "the triangles diverged");
+        assert!(
+            stepped_submits > single_submits,
+            "the per-submit replay must cut the frame more than once"
+        );
+        assert_eq!(
+            single_submits, 1,
+            "the whole chain belongs to one command buffer"
+        );
+        let (repeat_scratch, repeat_pixels, repeat_submits) = run(false, false);
+        assert_eq!(repeat_scratch, single_scratch);
+        assert_eq!(repeat_pixels, single_pixels);
+        assert_eq!(repeat_submits, 1);
+        assert_eq!(draw.frame_status().1, 0, "the chain raised a flag");
+    }
 }

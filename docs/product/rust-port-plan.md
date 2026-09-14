@@ -246,10 +246,22 @@ the mean and native surface/drawing gates pass. Uncapped 197.98/195.08 FPS
 establishes no ceiling increase. Replay’s roughly 11 MB/frame asset uploads
 (P3) and 0.58–0.78 ms host submission remain the next costs to address.
 
+**Presenter cost, P3 slice 1 ([measurements](../performance-baselines.md#presenter-cost-p3-slice-1-measured-2026-09-15)).**
+Runtime `97402ca75` removes warm shadow-table uploads/private asset buffers;
+matched capped busy HD asset uploads fall 11.07–11.08→4.48–4.49 MB/frame and replay
+2.999/2.757→2.224/1.958 ms. One submit and zero drawing errors remain; capacity is
+32 MiB, old+new growth overlap 48 MiB. Acceptance is partial: small buffer/cadence
+target misses, one high-load pair and untested mutation/transition coverage remain.
+Windowed uncapped is compositor-paced near 75 Hz this time, not a ceiling.
+Separate offscreen pairs improve 221.06/219.99→250.78/250.75 FPS while presentation
+rises 0.83→1.50–1.55 ms. Surface gates pass; the drawing oracle passes exercised
+operations despite separate control-tooling failures. No windowed ceiling or
+whole-process/GPU peak-memory gain is established.
+
 Next, in order:
 
-1. **Presenter cost, remaining.** Cut the roughly 11 MB/frame asset uploads
-   identified by P0 (P3), investigate host submission cost, then evaluate the
+1. **Presenter cost, remaining.** Attribute and reduce the remaining 3.9–4.5 MB/frame
+   new-ID asset uploads after P3 slice 1, investigate host submission cost, then evaluate the
    software index-upload path and late cursor restoration separately. P0/P1/P4
    are delivered; preserve `presentation_cpu` at most 1.0 ms and target at least
    260 uncapped FPS at 1080p with GPU drawing.

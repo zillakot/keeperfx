@@ -191,6 +191,14 @@ pub struct Counters {
     pub batches: u64,
     pub commands: u64,
     pub asset_upload_bytes: u64,
+    pub target_trig_geometry_bytes: u64,
+    pub target_trig_table_bytes: u64,
+    pub target_trig_table_hits: u64,
+    pub target_trig_table_misses: u64,
+    pub target_trig_asset_buffers: u64,
+    pub shadow_pairs: u64,
+    pub preparer_buffers: u64,
+    pub preparer_buffer_bytes: u64,
     pub command_upload_bytes: u64,
     pub readback_bytes: u64,
     pub submits: u64,
@@ -591,8 +599,8 @@ impl DrawRenderer {
     /// frame's recording first when growth is needed. Growth replaces the buffer the
     /// open encoder's bind groups name, and its forward copy would be overtaken by
     /// every staged write of that submission, so it can only happen between them.
-    /// Every live resource plus `extra` bounds what one batch can need, so a batch
-    /// that passes here cannot be refused inside the frame.
+    /// Callers include class padding in `extra` when raw resource lengths do not
+    /// bound the batch's allocations.
     pub(super) fn arena_headroom(&mut self, extra: u64) -> Result<()> {
         let words = self.resource_bytes as u64 + extra;
         if self.arena.fits(words) {
@@ -782,7 +790,7 @@ impl DrawRenderer {
         let released = self.resources.remove(&id).context("unknown resource")?;
         debug_assert!(self.resource_bytes >= released.bytes.len());
         self.resource_bytes = self.resource_bytes.saturating_sub(released.bytes.len());
-        self.arena.forget(id);
+        self.arena.release(id);
         Ok(())
     }
 
@@ -1021,6 +1029,9 @@ impl DrawRenderer {
         );
         self.triangles = Some(pipelines);
         recorded?;
+        self.counters.preparer_buffers += 3;
+        self.counters.preparer_buffer_bytes +=
+            pending.triangles.len() as u64 * 96 + pending.layout.len() as u64 * 20 + 16;
         self.counters.dispatches += 1;
         self.pass_boundary();
         Ok(())
@@ -1369,6 +1380,13 @@ impl AssetPacker<'_> {
                 counters,
                 generation,
             } => arena.offset_of(device, queue, counters, id, *generation, bytes),
+        }
+    }
+
+    pub(super) fn uploaded_bytes(&self) -> u64 {
+        match self {
+            Self::Batch { assets, .. } => assets.len() as u64 * 4,
+            Self::Arena { counters, .. } => counters.asset_upload_bytes,
         }
     }
 
@@ -2110,6 +2128,21 @@ impl TileIndex {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn target_triangle_batch_deduplicates_tables_and_accounts_bytes() {
+        let mut packer = AssetPacker::batch(1 << 20);
+        assert_eq!(packer.offset(1, &[7; 60]).unwrap(), 0);
+        let table = packer.offset(2, &[23; 81920]).unwrap();
+        assert_eq!(table, 60);
+        assert_eq!(packer.offset(3, &[9; 60]).unwrap(), 81980);
+        assert_eq!(packer.offset(2, &[23; 81920]).unwrap(), table);
+        assert_eq!(packer.uploaded_bytes(), 328160);
+        assert_eq!(packer.finish().unwrap().len(), 82040);
+        let mut limited = AssetPacker::batch(327680);
+        limited.offset(1, &[7; 60]).unwrap();
+        assert!(limited.offset(2, &[23; 81920]).is_err());
+    }
+
     #[test]
     fn only_the_mirrored_kinds_pack_into_a_batch() {
         // WgpuTerrainBridge::PacksInBatch mirrors this set; keep the two in step.
