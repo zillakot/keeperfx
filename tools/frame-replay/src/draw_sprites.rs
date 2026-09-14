@@ -106,17 +106,31 @@ fn validate_target(c: &Command, source: &Resource, width: u32, height: u32) -> R
 /// A half-open `[x0, y0, x1, y1)` superset of every target pixel one ordered sprite
 /// reads or writes, in the target's own space.
 ///
-/// `validate_target` proves every run lies inside the clip rectangle, but a row copy
-/// spans `[leftmost - 1, rightmost]`, one pixel left of the run it replicates, exactly
-/// as the native right-to-left kernel does. The rectangle therefore grows a column to
+/// The clip rectangle is the whole drawing window, so the bound comes from the sprite's
+/// own scaling ranges instead: they are validated contiguous and ascending, addressed in
+/// target coordinates, and `validate_target` proves every run lies inside them. A row
+/// copy spans `[leftmost - 1, rightmost]`, one pixel left of the run it replicates,
+/// exactly as the native right-to-left kernel does, so the rectangle grows a column to
 /// the left; where that column would cross the row start it lands on the tail of the
-/// previous row instead, so the rectangle widens to the whole row band one row higher.
-pub(super) fn write_rect(c: &Command, width: u32) -> [i64; 4] {
+/// previous row instead, and the rectangle widens to the whole row band one row higher.
+pub(super) fn write_rect(c: &Command, source: &Resource, width: u32) -> [i64; 4] {
+    let (w, h) = (c.source_width as usize, c.source_height as usize);
+    let axis = 2 * w * h;
+    if w == 0 || h == 0 || source.bytes.len() < axis + 8 * (w + h) {
+        return [0; 4];
+    }
+    let span = |offset: usize, count: usize| {
+        let (start, _) = range(source, offset);
+        let (last, length) = range(source, offset + 8 * (count - 1));
+        (start, last + length)
+    };
+    let (x0, x1) = span(axis, w);
+    let (y0, y1) = span(axis + 8 * w, h);
     let mut rect = [
-        i64::from(c.x).max(i64::from(c.clip_x)),
-        i64::from(c.y).max(i64::from(c.clip_y)),
-        (i64::from(c.x) + i64::from(c.width)).min(i64::from(c.clip_x) + i64::from(c.clip_width)),
-        (i64::from(c.y) + i64::from(c.height)).min(i64::from(c.clip_y) + i64::from(c.clip_height)),
+        x0.max(i64::from(c.clip_x)),
+        y0.max(i64::from(c.clip_y)),
+        x1.min(i64::from(c.clip_x) + i64::from(c.clip_width)),
+        y1.min(i64::from(c.clip_y) + i64::from(c.clip_height)),
     ];
     if rect[0] >= rect[2] || rect[1] >= rect[3] {
         return [0; 4];
@@ -237,7 +251,10 @@ impl DrawRenderer {
             limit,
         )?;
         let assets = packer.finish();
-        let rects: Vec<_> = run.iter().map(|c| write_rect(c, target.width)).collect();
+        let rects: Vec<_> = run
+            .iter()
+            .map(|c| write_rect(c, &self.resources[&c.source], target.width))
+            .collect();
         let layers = layers(&rects)?;
         ensure!(
             run.len() as u32 <= self.device.limits().max_compute_workgroups_per_dimension,
@@ -432,10 +449,10 @@ mod tests {
             kind: SPRITE,
             width: target,
             height: target,
-            clip_x,
-            clip_y: 2,
-            clip_width,
-            clip_height: 6,
+            clip_x: 0,
+            clip_y: 0,
+            clip_width: target,
+            clip_height: target,
             source_x: 9,
             source_width: 2,
             source_height: 1,
@@ -514,10 +531,10 @@ mod tests {
 
     #[test]
     fn write_rect_covers_every_address_the_kernel_can_touch() {
-        for (flip, clip_x, clip_width) in [(0, 4, 6), (2, 4, 6), (0, 1, 3), (2, 1, 3)] {
-            let (mut command, resource) = layered(clip_x, clip_width, 16);
+        for (flip, origin, extent) in [(0, 4, 6), (2, 4, 6), (0, 1, 3), (2, 1, 3)] {
+            let (mut command, resource) = layered(origin, extent, 16);
             command.source_x |= flip;
-            let rect = write_rect(&command, 16);
+            let rect = write_rect(&command, &resource, 16);
             for address in touched(&command, &resource, 16) {
                 let (x, y) = (address % 16, address / 16);
                 assert!(
@@ -526,8 +543,8 @@ mod tests {
                 );
             }
             assert!(
-                rect[0] < i64::from(clip_x),
-                "the row copy reaches the column left of the clip"
+                rect[0] < i64::from(origin),
+                "the row copy reaches the column left of the run"
             );
         }
     }
@@ -535,26 +552,33 @@ mod tests {
     #[test]
     fn layers_separate_overlapping_sprites_and_share_disjoint_ones() {
         let target = 16;
-        let (right, _) = layered(4, 6, target);
-        let (left, _) = layered(1, 3, target);
+        let (right, right_asset) = layered(4, 6, target);
+        let (left, left_asset) = layered(1, 3, target);
         let rects = [
-            write_rect(&right, target),
-            write_rect(&left, target),
-            write_rect(&right, target),
+            write_rect(&right, &right_asset, target),
+            write_rect(&left, &left_asset, target),
+            write_rect(&right, &right_asset, target),
         ];
         // The clip rectangles 4..10 and 1..4 do not overlap; the write rectangles do,
         // because the left sprite's row copy reaches column 0 and the right one's
         // reaches column 3.
         assert_eq!(layers(&rects[..2]).unwrap().len(), 2);
         assert_eq!(layers(&rects).unwrap(), vec![vec![0], vec![1], vec![2]]);
-        let apart = layered(5, 5, target).0;
-        let pair = [write_rect(&left, target), write_rect(&apart, target)];
+        let (apart, apart_asset) = layered(5, 5, target);
+        let pair = [
+            write_rect(&left, &left_asset, target),
+            write_rect(&apart, &apart_asset, target),
+        ];
         assert!(pair[0][2] == pair[1][0], "the rectangles touch at an edge");
         assert_eq!(layers(&pair).unwrap(), vec![vec![0, 1]]);
-        let mut band = left;
-        band.clip_y = 9;
+        let (band, mut band_asset) = layered(1, 3, target);
+        band_asset.bytes[20..24].copy_from_slice(&9u32.to_le_bytes());
         assert_eq!(
-            layers(&[write_rect(&left, target), write_rect(&band, target)]).unwrap(),
+            layers(&[
+                write_rect(&left, &left_asset, target),
+                write_rect(&band, &band_asset, target)
+            ])
+            .unwrap(),
             vec![vec![0, 1]],
             "disjoint row bands share a layer"
         );
@@ -562,20 +586,19 @@ mod tests {
 
     #[test]
     fn empty_write_rectangles_never_hold_a_layer_open() {
-        let clipped = Command {
-            kind: SPRITE,
-            width: 16,
-            height: 16,
-            clip_x: 4,
-            clip_width: 0,
-            clip_height: 4,
-            source_x: 9,
-            ..Default::default()
-        };
-        assert_eq!(write_rect(&clipped, 16), [0; 4]);
-        let (visible, _) = layered(4, 6, 16);
+        let (clipped, mut asset) = layered(4, 6, 16);
+        // Every scaling range clipped to nothing: contiguous, zero length, one origin.
+        for (offset, value) in [(8, 0u32), (12, 4), (16, 0)] {
+            asset.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        assert_eq!(write_rect(&clipped, &asset, 16), [0; 4]);
+        let (visible, visible_asset) = layered(4, 6, 16);
         assert_eq!(
-            layers(&[write_rect(&clipped, 16), write_rect(&visible, 16)]).unwrap(),
+            layers(&[
+                write_rect(&clipped, &asset, 16),
+                write_rect(&visible, &visible_asset, 16)
+            ])
+            .unwrap(),
             vec![vec![0, 1]]
         );
     }

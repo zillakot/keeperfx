@@ -7,9 +7,11 @@ fn words(values: &[u32]) -> Vec<u8> {
 }
 
 /// An ordered sprite covering `[x, x + width) x [y, y + height)` of the target. The
-/// artwork is a single run per source row, so the kernel writes the run right to left
-/// and replicates it down every remaining row of the clip. `gaps` leaves source columns
-/// uncovered, which makes the written pixels a strict subset of the write rectangle.
+/// clip rectangle is the whole target, as the emitter always sets it, so only the
+/// scaling ranges bound the sprite. The artwork is a single run per source row, so the
+/// kernel writes the run right to left and replicates it down every row of the sprite.
+/// `gaps` leaves source columns uncovered, which makes the written pixels a strict
+/// subset of the write rectangle.
 fn sprite(
     drawing: &mut DrawRenderer,
     x: i32,
@@ -49,10 +51,10 @@ fn sprite(
         source,
         width: SIZE,
         height: SIZE,
-        clip_x: x,
-        clip_y: y,
-        clip_width: width,
-        clip_height: height,
+        clip_x: 0,
+        clip_y: 0,
+        clip_width: SIZE,
+        clip_height: SIZE,
         source_x: 9,
         source_y: u32::from(tint) % 4,
         source_width: w as u32,
@@ -126,6 +128,8 @@ fn parity(drawing: &mut DrawRenderer, commands: &[Command]) -> u64 {
     after.ordered_sprite_layers - before.ordered_sprite_layers
 }
 
+/// The emitter gives every ordered sprite the whole drawing window as its clip, so the
+/// scaling ranges are what separate these three.
 #[test]
 #[ignore = "requires a Metal adapter"]
 fn disjoint_ordered_sprites_share_one_layer() {
@@ -199,6 +203,8 @@ fn sprites_clipped_by_a_view_layer_in_view_space() {
             );
             command.width = 40;
             command.height = 32;
+            command.clip_width = 40;
+            command.clip_height = 32;
             command
         })
         .collect();
@@ -250,12 +256,12 @@ fn queued_ordered_sprites_coalesce_into_the_same_layers() {
     assert_eq!(expected, drawing.readback(root).unwrap());
 }
 
-/// A row copy spans the run plus the pixel left of it, so two sprites whose clip
-/// rectangles are merely adjacent still overlap. Deriving the rectangle from the clip
-/// alone would put these two in one layer and race on the shared column.
+/// A row copy spans the run plus the pixel left of it, so two sprites whose extents are
+/// merely adjacent still overlap. A rectangle that stopped at the run would put these
+/// two in one layer and race on the shared column.
 #[test]
 #[ignore = "requires a Metal adapter"]
-fn adjacent_clip_rectangles_do_not_share_a_layer() {
+fn adjacent_sprite_extents_do_not_share_a_layer() {
     let mut drawing = DrawRenderer::headless().unwrap();
     let left = sprite(&mut drawing, 8, 12, 4, 10, 51, false);
     let right = sprite(&mut drawing, 20, 12, 4, 10, 97, false);
