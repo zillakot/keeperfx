@@ -78,6 +78,25 @@ class BenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "scene/backend"):
             benchmark.compare(entries, changed)
 
+    def test_refuses_to_mix_capped_and_uncapped_runs(self):
+        entries = benchmark.schedule(5)
+        reports = reports_for(entries)
+        self.assertFalse(benchmark.compare(entries, reports)["frame_cap"]["uncapped"])
+        uncapped = {"uncapped": True, "requested_fps_limit": 0, "label": "uncapped"}
+        mixed = copy.deepcopy(reports)
+        mixed[1]["frame_cap"] = uncapped
+        with self.assertRaisesRegex(RuntimeError, "capped and uncapped"):
+            benchmark.compare(entries, mixed)
+        every = copy.deepcopy(reports)
+        for report in every:
+            report["frame_cap"] = uncapped
+            report["settings"] = {"FRAMES_PER_SECOND": "0"}
+            report["engine"]["fps_limit"] = 0
+        comparison = benchmark.compare(entries, every)
+        self.assertTrue(comparison["frame_cap"]["uncapped"])
+        self.assertNotIn(benchmark.profile.CAPPED_LIMITATION, comparison["limitations"])
+        self.assertIn(benchmark.profile.UNCAPPED_LIMITATIONS[0], comparison["limitations"])
+
     def test_unavailable_cpu_does_not_become_zero(self):
         entries = benchmark.schedule(5)
         reports = reports_for(entries)

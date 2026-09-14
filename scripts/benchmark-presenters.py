@@ -40,11 +40,16 @@ def load_report(directory):
     return report
 
 
+def frame_cap(report):
+    return report.get("frame_cap") or {"uncapped": False, "requested_fps_limit": profile.CAPPED_FPS_LIMIT,
+                                       "label": f"capped at {profile.CAPPED_FPS_LIMIT} FPS"}
+
+
 def identity(report):
     request, engine = report["request"], report["engine"]
     return {"engine_sha256": report["engine_sha256"], "assets_sha256": report["assets"]["sha256"],
             "config_sha256": report["config_sha256"], "platform": report["platform"],
-            "settings": report["settings"],
+            "settings": report["settings"], "frame_cap": frame_cap(report),
             "request": {key: request[key] for key in ("scene", "campaign", "level", "resolution", "warmup_turns", "turns")},
             "actual": {key: engine[key] for key in ("width", "height", "output_width", "output_height",
                                                     "vsync_actual", "fps_limit", "turns_per_second", "interpolation")}}
@@ -64,6 +69,13 @@ def paired_change(original, rust):
 def compare(entries, reports):
     result = {"format": "KFXAB01", "aggregation": "Each run has equal weight; median and range of per-run statistics and paired changes.",
               "limitations": profile.LIMITATIONS, "scenes": {}}
+    caps = {frame_cap(report)["uncapped"] for report in reports}
+    if len(caps) > 1:
+        raise RuntimeError("capped and uncapped runs cannot be compared in one experiment")
+    result["frame_cap"] = frame_cap(reports[0]) if reports else None
+    if caps == {True}:
+        result["limitations"] = [item for item in profile.LIMITATIONS
+                                 if item != profile.CAPPED_LIMITATION] + profile.UNCAPPED_LIMITATIONS
     for scene in SCENES:
         pairs = {}
         for entry, report in zip(entries, reports, strict=True):
@@ -111,8 +123,12 @@ def compare(entries, reports):
 
 def write_comparison(output, comparison):
     profile.write_json(output / "comparison.json", comparison)
+    cap = comparison.get("frame_cap") or {"uncapped": False, "label": "capped at 60 FPS"}
     lines = ["# Matched native presentation comparison", "", comparison["aggregation"], "",
-             "Positive time saved means lower duration. These capped runs measure host overhead and frame pacing, not uncapped FPS.", "",
+             f"Every run in this comparison is **{cap['label']}**; capped and uncapped runs are never mixed.", "",
+             ("Positive time saved means lower duration. These uncapped runs measure host wall-clock pacing on this host."
+              if cap["uncapped"] else
+              "Positive time saved means lower duration. These capped runs measure host overhead and frame pacing, not uncapped FPS."), "",
              "| Scene | Scope | Statistic | Original ms | Rust ms | Paired time saved % (median; min to max) |",
              "| --- | --- | --- | ---: | ---: | ---: |"]
     for scene, values in comparison["scenes"].items():
@@ -144,6 +160,7 @@ def main():
     parser.add_argument("--warmup-turns", type=int, default=40)
     parser.add_argument("--turns", type=int, default=200)
     parser.add_argument("--resolution", type=profile.capture.resolution, default=(640, 480))
+    parser.add_argument("--uncapped", action="store_true", help="collect every run without the engine frame limiter")
     parser.add_argument("--conditions", required=True, help="display/scaling, power mode and observed background load during collection")
     args = parser.parse_args()
     if sys.platform != "darwin":
@@ -170,7 +187,7 @@ def main():
             command = [sys.executable, str(ROOT / "scripts/profile-game.py"), "--engine", str(engine), "--game-dir", str(game),
                        "--out", str(output / entry["path"]), "--scene", entry["scene"], "--backend", entry["backend"],
                        "--warmup-turns", str(args.warmup_turns), "--turns", str(args.turns),
-                       "--resolution", f"{args.resolution[0]}x{args.resolution[1]}"]
+                       "--resolution", f"{args.resolution[0]}x{args.resolution[1]}"] + (["--uncapped"] if args.uncapped else [])
             entry["command"] = command
             profile.write_json(output / "manifest.json", manifest)
             print(f"Pair {entry['pair']}/{args.pairs}: {entry['scene']} / {entry['backend']}", flush=True)
