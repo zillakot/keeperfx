@@ -131,8 +131,7 @@ int WgpuTerrainBridge::SubmitShadow(const KfxGpolyTarget& target, const KfxWgpuD
     KfxWgpuNativeOracle oracle, void* oracle_context)
 {
     Boundary(false);
-    // The shadow route accepts only its own command, so close any pending run first.
-    Flush();
+    // The route takes one command but keeps its place in the ordered record list.
     m_shadow_scratch = scratch;
     int accepted = SubmitNative(target, command, source, table, oracle, oracle_context);
     m_shadow_scratch = nullptr;
@@ -348,6 +347,10 @@ void WgpuTerrainBridge::InvalidateFrame()
 void WgpuTerrainBridge::FullRedraw()
 {
     if (m_queue_active) kfx_wgpu_draw_frame_abort(m_context, m_error.data(), m_error.size());
+    // The shadow mask chain is cross-frame GPU state that a CPU redraw invalidates.
+    if (m_context != nullptr)
+        kfx_wgpu_draw_shadow_scratch_reset(m_context, m_error.data(), m_error.size());
+    m_shadow_prior.assign(m_shadow_prior.size(), 0);
     m_queue_active = false;
     m_frame_active = false;
     ClearPending();
@@ -634,7 +637,7 @@ bool WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
         for (uint32_t index = 0; index < run.count; ++index) {
             const uint8_t* texture = nullptr;
             const uint8_t* fade = nullptr;
-            if (run.triangles) {
+            if (run.kind == kRunTriangles) {
                 const auto& triangle = m_triangles[triangles++];
                 for (const auto& resource : m_textures)
                     if (resource.handle == triangle.source) texture = resource.bytes.data();
@@ -664,7 +667,9 @@ bool WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
 
 void WgpuTerrainBridge::AppendCommand(const KfxWgpuDrawCommand& command, uint64_t source)
 {
-    if (m_order.empty() || m_order.back().triangles) m_order.push_back({false, 0});
+    const RunKind kind = command.kind == KFX_WGPU_DRAW_SHADOW ? kRunShadow : kRunCommands;
+    if (m_order.empty() || m_order.back().kind != kind || kind == kRunShadow)
+        m_order.push_back({kind, 0});
     ++m_order.back().count;
     m_pending.push_back(command);
     m_pending_sources.push_back(source);
@@ -672,7 +677,8 @@ void WgpuTerrainBridge::AppendCommand(const KfxWgpuDrawCommand& command, uint64_
 
 void WgpuTerrainBridge::AppendTriangle(const KfxWgpuTriangle& triangle)
 {
-    if (m_order.empty() || !m_order.back().triangles) m_order.push_back({true, 0});
+    if (m_order.empty() || m_order.back().kind != kRunTriangles)
+        m_order.push_back({kRunTriangles, 0});
     ++m_order.back().count;
     m_triangles.push_back(triangle);
 }
@@ -775,21 +781,9 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
     const uint64_t destination = SubmissionTarget();
     if (!destination) return false;
     if (m_resident_lease) m_gpu_dirty = true;
-    std::vector<uint8_t> shadow_mirror;
     size_t routes = 0;
-    if (m_shadow_scratch != nullptr) {
-        if (m_pending.size() != 1 || !m_triangles.empty() ||
-            m_pending[0].kind != KFX_WGPU_DRAW_SHADOW) {
-            std::snprintf(m_error.data(), m_error.size(), "shadow submission requires a solo batch");
-            return false;
-        }
-        shadow_mirror.resize(65536);
-        if (kfx_wgpu_draw_submit_shadow(m_context, destination, m_pending.data(), shadow_mirror.data(),
-                shadow_mirror.size(), m_error.data(), m_error.size()) != 1) return false;
-        m_counts.shadow_scratch_upload_bytes += 65536;
-        m_counts.shadow_scratch_readback_bytes += 65536 * sizeof(uint32_t);
-        routes = 1;
-    } else if (m_pending.size() == 1 && m_triangles.empty() &&
+    bool shadow_route = false;
+    if (m_pending.size() == 1 && m_triangles.empty() &&
             m_pending[0].kind == KFX_WGPU_DRAW_TRANSITION) {
         if (kfx_wgpu_draw_submit_target_images(m_context, destination, m_pending.data(), 1,
                 m_error.data(), m_error.size()) != 1) return false;
@@ -801,18 +795,25 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
     } else {
         size_t commands = 0, triangles = 0;
         for (const auto& run : m_order) {
-            if (run.triangles) {
+            if (run.kind == kRunTriangles) {
                 if (kfx_wgpu_draw_submit_triangles(m_context, destination, m_triangles.data() + triangles,
                         run.count, m_error.data(), m_error.size()) != 1) return false;
                 triangles += run.count;
-            } else if (kfx_wgpu_draw_submit(m_context, destination, m_pending.data() + commands,
-                    run.count, m_error.data(), m_error.size()) != 1) return false;
-            else commands += run.count;
+            } else if (run.kind == kRunShadow) {
+                if (kfx_wgpu_draw_submit_shadow(m_context, destination, m_pending.data() + commands,
+                        m_error.data(), m_error.size()) != 1) return false;
+                commands += run.count;
+                shadow_route = true;
+                ++m_counts.gpu_shadow_commands;
+            } else {
+                if (kfx_wgpu_draw_submit(m_context, destination, m_pending.data() + commands,
+                        run.count, m_error.data(), m_error.size()) != 1) return false;
+                commands += run.count;
+            }
             ++routes;
         }
     }
-    if (m_shadow_scratch != nullptr ||
-        (m_pending.size() == 1 && NeedsSoloBatch(m_pending[0]))) ++m_counts.bridge_solo_batches;
+    if (m_pending.size() == 1 && NeedsSoloBatch(m_pending[0])) ++m_counts.bridge_solo_batches;
     if (!m_resident_lease || m_verify) {
         if (kfx_wgpu_draw_readback(m_context, m_target, m_readback.data(), m_readback.size(),
                 m_width, m_error.data(), m_error.size()) != 1) return false;
@@ -827,18 +828,25 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
             std::memcpy(expected.data() + static_cast<size_t>(row) * m_width,
                 m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch, m_width);
         if (oracle != nullptr) {
-            std::vector<uint8_t> saved_scratch;
-            if (m_shadow_scratch != nullptr) saved_scratch.assign(m_shadow_scratch, m_shadow_scratch + 65536);
+            const bool compare_scratch = shadow_route && m_shadow_scratch != nullptr;
+            // The CPU oracle continues the resident chain, not whatever the game left in the scratch.
+            if (compare_scratch) {
+                std::memcpy(m_shadow_scratch, m_shadow_prior.data(), 65536);
+                m_counts.shadow_scratch_copy_bytes += 65536;
+            }
             m_oracle_active = true;
             oracle(expected.data() + ExpectedOffset(), m_width, oracle_context);
             m_oracle_active = false;
-            if (m_shadow_scratch != nullptr) {
-                const bool same = std::memcmp(m_shadow_scratch, shadow_mirror.data(), 65536) == 0;
-                std::memcpy(m_shadow_scratch, saved_scratch.data(), 65536);
-                if (!same) {
+            if (compare_scratch) {
+                std::vector<uint8_t> resident(65536);
+                if (kfx_wgpu_draw_shadow_scratch_read(m_context, resident.data(), resident.size(),
+                        m_error.data(), m_error.size()) != 1) return false;
+                m_counts.shadow_scratch_readback_bytes += 65536 * sizeof(uint32_t);
+                if (std::memcmp(m_shadow_scratch, resident.data(), 65536) != 0) {
                     std::snprintf(m_error.data(), m_error.size(), "GPU shadow scratch index comparison failed");
                     return false;
                 }
+                m_shadow_prior = std::move(resident);
             }
             m_counts.verification_cpu_commands += m_pending.size();
         } else {
@@ -855,11 +863,6 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
         if (m_resident_lease) m_expected = std::move(expected);
         m_counts.verified_triangles += m_triangles.size();
         ++m_counts.verified_batches;
-    }
-    if (m_shadow_scratch != nullptr) {
-        std::memcpy(m_shadow_scratch, shadow_mirror.data(), 65536);
-        ++m_counts.gpu_shadow_commands;
-        m_counts.shadow_scratch_copy_bytes += 65536;
     }
     if (!m_resident_lease) {
         for (uint32_t row = 0; row < m_height; ++row)
@@ -889,6 +892,8 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
 
 bool WgpuTerrainBridge::NeedsSoloBatch(const KfxWgpuDrawCommand& command)
 {
+    // The shadow route takes one command but keeps its place in the ordered record list.
+    if (command.kind == KFX_WGPU_DRAW_SHADOW) return false;
     return !(command.kind <= KFX_WGPU_DRAW_TRIG || command.kind == KFX_WGPU_DRAW_MOVIE ||
         command.kind == KFX_WGPU_DRAW_MAP_VIEW || command.kind == KFX_WGPU_DRAW_BITMAP);
 }

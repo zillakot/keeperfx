@@ -36,7 +36,9 @@ static bool packable(uint32_t kind)
     return kind <= KFX_WGPU_DRAW_TRIG || kind == KFX_WGPU_DRAW_MOVIE ||
         kind == KFX_WGPU_DRAW_MAP_VIEW || kind == KFX_WGPU_DRAW_BITMAP;
 }
-extern "C" int32_t kfx_wgpu_draw_submit_shadow(void*, uint64_t, const KfxWgpuDrawCommand*, uint8_t*, size_t, char*, size_t) { return -1; }
+extern "C" int32_t kfx_wgpu_draw_submit_shadow(void*, uint64_t, const KfxWgpuDrawCommand*, char*, size_t) { return -1; }
+extern "C" int32_t kfx_wgpu_draw_shadow_scratch_reset(void*, char*, size_t) { return 1; }
+extern "C" int32_t kfx_wgpu_draw_shadow_scratch_read(void*, uint8_t*, size_t, char*, size_t) { return -1; }
 extern "C" uint64_t kfx_wgpu_draw_target_snapshot(void*, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, char*, size_t) { return 0; }
 extern "C" int32_t kfx_wgpu_draw_target_snapshot_release(void*, uint64_t, char*, size_t) { return -1; }
 static bool mock_target_images = false;

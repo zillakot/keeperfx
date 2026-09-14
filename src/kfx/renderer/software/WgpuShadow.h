@@ -43,10 +43,9 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
     if ((uintptr_t)sprite->data < (uintptr_t)scratch + 65536 && (uintptr_t)scratch < (uintptr_t)end) return 0;
     size_t rle_length = end - sprite->data;
     if (!kfx_wgpu_native_read_barrier(sprite->data, rle_length) ||
-        !kfx_wgpu_native_read_barrier(scratch, 65536) ||
         !kfx_wgpu_native_read_barrier(pixmap.fade_tables, 16384) ||
         !kfx_wgpu_native_read_barrier(pixmap.ghost, 65536)) return 0;
-    size_t length = 65688 + rle_length;
+    size_t length = 152 + rle_length;
     uint8_t *asset = malloc(length), *tables = malloc(81920);
     if (!asset || !tables) { free(asset); free(tables); return 0; }
     const uint32_t descriptor[] = {sprite->clear_width, sprite->clear_height, sprite->width,
@@ -63,8 +62,7 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
             asset[32 + i * 20 + j * 4 + k] = fields[j] >> (8 * k);
     }
     if (!valid) { free(asset); free(tables); return 0; }
-    memcpy(asset + 152, scratch, 65536);
-    memcpy(asset + 65688, sprite->data, rle_length);
+    memcpy(asset + 152, sprite->data, rle_length);
     memcpy(tables, pixmap.fade_tables, 16384);
     memcpy(tables + 16384, pixmap.ghost, 65536);
     const struct KfxWgpuNativeResource source = {asset, length, 1, 1, 1};

@@ -148,14 +148,17 @@ private:
     std::vector<uint8_t> m_expected, m_cpu_checkpoint;
     bool m_oracle_active = false;
     uint8_t* m_shadow_scratch = nullptr;
+    // Verification only: the resident GPU scratch as of the last comparison.
+    std::vector<uint8_t> m_shadow_prior = std::vector<uint8_t>(65536, 0);
     void* m_context = nullptr;
     uint64_t m_target = 0;
     uint32_t m_width = 0, m_height = 0;
     uint64_t m_fail_after;
     bool m_allow_terrain = false;
     KfxGpolyTarget m_native_target = {};
-    // One run per contiguous same-source stretch; the three vectors are read in run order.
-    struct PendingRun { bool triangles; uint32_t count; };
+    // One run per contiguous same-route stretch; the three vectors are read in run order.
+    enum RunKind : uint8_t { kRunCommands, kRunTriangles, kRunShadow };
+    struct PendingRun { RunKind kind; uint32_t count; };
     std::vector<KfxWgpuDrawCommand> m_pending;
     std::vector<uint64_t> m_pending_sources;
     std::vector<KfxWgpuTriangle> m_triangles;

@@ -264,6 +264,30 @@ fn target_triangle_validation_and_resident_slots() {
         height: 8,
         ..Default::default()
     };
+    draw.submit_shadow(
+        target,
+        &Command {
+            kind: 11,
+            source: mask_source,
+            table,
+            colour: 1,
+            width: 8,
+            height: 8,
+            clip_width: 8,
+            clip_height: 8,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    draw.submit(
+        target,
+        &[Command {
+            kind: CLEAR,
+            colour: 71,
+            ..Default::default()
+        }],
+    )
+    .unwrap();
     let initial = draw.readback(target).unwrap();
     assert!(
         draw.submit_target_triangles(
@@ -283,21 +307,6 @@ fn target_triangle_validation_and_resident_slots() {
     assert_eq!(draw.readback(target).unwrap(), initial);
     assert!(draw.submit_target_triangles(target, &[c], 9, None).is_err());
     assert_eq!(draw.readback(target).unwrap(), initial);
-    draw.submit_shadow(
-        target,
-        &Command {
-            kind: 11,
-            source: mask_source,
-            table,
-            colour: 1,
-            width: 8,
-            height: 8,
-            clip_width: 8,
-            clip_height: 8,
-            ..Default::default()
-        },
-    )
-    .unwrap();
     let before = draw.counters();
     draw.submit_target_triangles(target, &[c], 0, None).unwrap();
     let after = draw.counters();
