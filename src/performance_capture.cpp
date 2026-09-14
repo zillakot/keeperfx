@@ -117,6 +117,10 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "arena_miss_generation_bytes",
     "arena_miss_eviction_bytes",
     "arena_explicit_forgets",
+#define KFX_ARENA_FIELDS(kind) "arena_" #kind "_bytes", "arena_" #kind "_misses", "arena_" #kind "_hits", "arena_" #kind "_source_bytes", "arena_" #kind "_distinct_lengths", "arena_" #kind "_length_overflows",
+    KFX_ARENA_KINDS(KFX_ARENA_FIELDS)
+#undef KFX_ARENA_FIELDS
+    "arena_trig_texture_source_bytes",
     "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
     "arena_capacity_bytes",
     "arena_live_bytes",

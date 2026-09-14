@@ -26,6 +26,9 @@ KINDS = ("simulation", "draw", "presentation", "present_wait", "frame_interval")
 PRESENTER_COUNTERS = ("acquire_ns", "acquire_block_ns", "reconfigure_count", "present_record_ns",
                       "submit_ns", "replay_ns", "allocations", "allocated_bytes")
 DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
+ARENA_RESOURCE_KINDS = ('sprite', 'ordered_sprite', 'cursor', 'trig', 'terrain_tile', 'terrain_fade', 'native_table', 'minimap', 'shadow', 'target_trig_geometry', 'target_trig_table', 'image', 'raw_image', 'tiled_image', 'movie', 'map_view', 'bitmap', 'lens', 'other')
+ARENA_KIND_METRICS = ('bytes', 'misses', 'hits', 'source_bytes', 'distinct_lengths', 'length_overflows')
+ARENA_KIND_COUNTERS = tuple(f"arena_{kind}_{metric}" for kind in ARENA_RESOURCE_KINDS for metric in ARENA_KIND_METRICS)
 DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "checkpoint_copy_bytes", "validation_waits",
                     "flagged_invalid_frames", "status_stalls", "asset_upload_bytes", "command_upload_bytes", "upload_bytes", "readback_bytes",
@@ -65,6 +68,7 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "arena_miss_generation_bytes",
                     "arena_miss_eviction_bytes",
                     "arena_explicit_forgets",
+                    *ARENA_KIND_COUNTERS, "arena_trig_texture_source_bytes",
                     "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
                     "arena_capacity_bytes",
                     "arena_live_bytes",
@@ -489,6 +493,8 @@ def summarize_drawing(drawing, presentations):
     schemas = [tuple(name for name in DRAWING_COUNTERS if name not in omitted)
                for omitted in (set(), additions, {"asset_upload_bytes", "command_upload_bytes"},
                                additions | {"asset_upload_bytes", "command_upload_bytes"})]
+    arena_additions = set(ARENA_KIND_COUNTERS) | {"arena_trig_texture_source_bytes"}
+    schemas += [tuple(name for name in schema if name not in arena_additions) for schema in schemas]
     if names not in schemas:
         raise RuntimeError("drawing counter names do not match this profiler")
     rows = drawing.get("per_frame")
@@ -509,6 +515,12 @@ def summarize_drawing(drawing, presentations):
         raise RuntimeError("drawing counter frames must cover every measured presentation but the first")
     if tuple(drawing.get("gauges", ())) != tuple(name for name in DRAWING_GAUGES if name in names):
         raise RuntimeError("drawing gauge names do not match this profiler")
+    if arena_additions.issubset(names):
+        byte_indices = [names.index(f"arena_{kind}_bytes") for kind in ARENA_RESOURCE_KINDS]
+        total_index = names.index("arena_bytes_uploaded")
+        if any(sum(row[index] for index in byte_indices) != row[total_index] for row in rows):
+            raise RuntimeError("arena resource bytes do not sum to arena_bytes_uploaded")
+        result["arena_upload_partition"] = {"conserved": True, "kinds": list(ARENA_RESOURCE_KINDS)}
     result["per_frame"] = {name: drawing_distribution([row[index] for row in rows],
                                                       name in DRAWING_GAUGES)
                            for index, name in enumerate(names)}
@@ -626,6 +638,19 @@ def write_report(output, report):
                 total = "gauge" if stats["total"] is None else stats["total"]
                 lines.append(f"| {name} | {stats['min']} | {stats['mean']:.2f} | {stats['p95']:.2f} | "
                              f"{stats['max']} | {total} |")
+            if drawing.get("arena_upload_partition"):
+                values = drawing["per_frame"]
+                total = values["arena_bytes_uploaded"]["total"]
+                lines += ["", "Arena uploads by resource kind (bytes conserved in every frame).", "",
+                          "| Kind | GPU bytes/frame | Share | Misses/frame | Hits/frame | Source bytes/frame | Distinct lengths/frame | Length overflows |",
+                          "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+                for kind in ARENA_RESOURCE_KINDS:
+                    c = {metric: values[f"arena_{kind}_{metric}"] for metric in ARENA_KIND_METRICS}
+                    share = c["bytes"]["total"] / total if total else 0
+                    lines.append(f"| {kind} | {c['bytes']['mean']:.2f} | {share:.2%} | {c['misses']['mean']:.2f} | "
+                                 f"{c['hits']['mean']:.2f} | {c['source_bytes']['mean']:.2f} | "
+                                 f"{c['distinct_lengths']['mean']:.2f} | {c['length_overflows']['total']} |")
+                lines += ["", f"General TRIG packed texture source bytes/frame: {values['arena_trig_texture_source_bytes']['mean']:.2f}."]
             waits = drawing["per_frame"]["wait_ns"]
             lines += ["", f"Blocking host wait: {waits['mean'] / 1_000_000:.3f} ms mean, "
                       f"{waits['p95'] / 1_000_000:.3f} ms p95 per frame. No GPU execution time is "

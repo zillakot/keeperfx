@@ -1138,6 +1138,7 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
             guard.handle = kfx_wgpu_draw_resource_create(m_context, source->bytes, source->length,
                 source->width, source->height, source->pitch, m_error.data(), m_error.size());
             if (guard.handle == 0) return Fail(nullptr);
+            if (source->cursor) kfx_wgpu_draw_resource_mark_cursor(m_context, guard.handle);
             m_counts.resource_snapshot_bytes += source->length;
         }
         source_handle = guard.handle;

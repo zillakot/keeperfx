@@ -22,6 +22,7 @@ struct KfxWgpuNativeResource {
     uint32_t width, height, pitch;
     const uint8_t* tail;
     size_t tail_length;
+    int cursor;
 };
 typedef void (*KfxWgpuNativeOracle)(uint8_t* pixels, uint32_t pitch, void* context);
 uint64_t kfx_wgpu_native_snapshot(const struct KfxGpolyTarget* target,

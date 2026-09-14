@@ -143,6 +143,7 @@ mod tests {
     #[test]
     fn semantic_resource_rejection_without_gpu() {
         let mut source = Resource {
+            cursor: false,
             width: 1282,
             height: 1,
             pitch: 1282,

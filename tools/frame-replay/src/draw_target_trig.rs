@@ -78,6 +78,7 @@ impl DrawRenderer {
                     "snapshot triangle geometry must be 60 bytes"
                 );
                 let mut validation = Resource {
+                    cursor: false,
                     width: 1,
                     height: 1,
                     pitch: 1,
@@ -97,10 +98,12 @@ impl DrawRenderer {
                     "invalid triangle table"
                 );
                 let before = packer.uploaded_bytes();
-                let source_offset = packer.offset(c.source, &geometry.bytes)?;
+                let source_offset =
+                    packer.offset(c.source, &geometry.bytes, ResourceKind::TargetTrigGeometry)?;
                 geometry_bytes += packer.uploaded_bytes() - before;
                 let before = packer.uploaded_bytes();
-                let table_offset = packer.offset(c.table, &table.bytes)?;
+                let table_offset =
+                    packer.offset(c.table, &table.bytes, ResourceKind::TargetTrigTable)?;
                 let uploaded = packer.uploaded_bytes() - before;
                 table_bytes += uploaded;
                 table_hits += u64::from(uploaded == 0);

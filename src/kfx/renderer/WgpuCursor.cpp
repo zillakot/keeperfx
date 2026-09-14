@@ -115,7 +115,7 @@ int kfx_wgpu_cursor_direct(const KfxGpolyTarget& target, const TbSprite* sprite,
     auto c = command(KFX_WGPU_DRAW_SPRITE, target.width, target.height);
     c.source_width = sprite->SWidth;
     c.source_height = sprite->SHeight;
-    const KfxWgpuNativeResource source = {asset.data(), asset.size(), 1, 1, 1, nullptr, 0};
+    const KfxWgpuNativeResource source = {asset.data(), asset.size(), 1, 1, 1, nullptr, 0, 1};
     Oracle o = {sprite, xs, ys, target.height};
     const int result = kfx_wgpu_native_draw(&target, &c, &source, nullptr, oracle, &o);
     totals.sprite_draws += result != 0;
@@ -187,6 +187,15 @@ struct WgpuCursor::State {
             COLLECT(arena_miss_generation_bytes);
             COLLECT(arena_miss_eviction_bytes);
             COLLECT(arena_explicit_forgets);
+            COLLECT(arena_trig_texture_source_bytes);
+            for (unsigned i = 0; i < KFX_ARENA_KIND_COUNT; ++i) {
+                COLLECT(arena_by_kind[i].bytes);
+                COLLECT(arena_by_kind[i].misses);
+                COLLECT(arena_by_kind[i].hits);
+                COLLECT(arena_by_kind[i].source_bytes);
+                COLLECT(arena_by_kind[i].distinct_lengths);
+                COLLECT(arena_by_kind[i].length_overflows);
+            }
             COLLECT(arena_evictions); COLLECT(arena_overflows); COLLECT(arena_bytes_uploaded);
 #undef COLLECT
             reported = c;
@@ -277,6 +286,7 @@ bool WgpuCursor::InitialiseTarget(uint32_t width, uint32_t height, const TbSprit
     if (!s.raster) return s.good(false);
     uint64_t resource = kfx_wgpu_draw_resource_create(s.context, asset.data(), asset.size(), 1, 1, 1, s.error, sizeof(s.error));
     if (!resource) return s.good(false);
+    kfx_wgpu_draw_resource_mark_cursor(s.context, resource);
     auto clear = command(KFX_WGPU_DRAW_CLEAR, width, height);
     clear.colour = 255;
     auto draw = command(KFX_WGPU_DRAW_SPRITE, width, height);

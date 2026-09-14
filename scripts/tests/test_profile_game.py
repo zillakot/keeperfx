@@ -67,6 +67,9 @@ def drawing_metadata(output, frames, backend="wgpu", available=True):
     metadata = json.loads((output / "raw.csv.json").read_text())
     per_frame = [[index + position for position in range(len(profile.DRAWING_COUNTERS))]
                  for index in range(frames)]
+    for row in per_frame:
+        row[profile.DRAWING_COUNTERS.index("arena_bytes_uploaded")] = sum(
+            row[profile.DRAWING_COUNTERS.index(f"arena_{kind}_bytes")] for kind in profile.ARENA_RESOURCE_KINDS)
     metadata["drawing"] = {"available": available, "backend": backend, "frames": len(per_frame),
                            "counters": list(profile.DRAWING_COUNTERS),
                            "gauges": list(profile.DRAWING_GAUGES), "per_frame": per_frame}
@@ -185,6 +188,36 @@ class ProfileTests(unittest.TestCase):
             report = profile.summarize(output, arguments())
             self.assertIn("upload_bytes", report["drawing"]["per_frame"])
             self.assertNotIn("asset_upload_bytes", report["drawing"]["per_frame"])
+
+    def test_arena_kind_partition_and_legacy_schema(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            engine_output(output)
+            metadata = drawing_metadata(output, 19)
+            report = profile.summarize(output, arguments())
+            drawing = report["drawing"]
+            self.assertTrue(drawing["arena_upload_partition"]["conserved"])
+            profile.write_report(output, dict(report, request=dict(vars(arguments()), campaign="keeporig", level=1),
+                                             engine_sha256="0", assets={"sha256": "0"}))
+            markdown = (output / "report.md").read_text()
+            self.assertIn("bytes conserved in every frame", markdown)
+            self.assertIn("| ordered_sprite |", markdown)
+            self.assertIn("General TRIG packed texture source bytes/frame:", markdown)
+            for field in (*profile.ARENA_KIND_COUNTERS, "arena_trig_texture_source_bytes"):
+                self.assertIsNotNone(drawing["per_frame"][field]["total"])
+            metadata["drawing"]["per_frame"][0][profile.DRAWING_COUNTERS.index("arena_trig_bytes")] += 1
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(RuntimeError, "do not sum"):
+                profile.summarize(output, arguments())
+            for field in (*profile.ARENA_KIND_COUNTERS, "arena_trig_texture_source_bytes"):
+                index = metadata["drawing"]["counters"].index(field)
+                metadata["drawing"]["counters"].pop(index)
+                for row in metadata["drawing"]["per_frame"]:
+                    row.pop(index)
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            old = profile.summarize(output, arguments())["drawing"]
+            self.assertNotIn("arena_upload_partition", old)
+            self.assertIn("arena_misses_new_id", old["per_frame"])
 
     def test_asset_route_counters_and_memory_gauges(self):
         with tempfile.TemporaryDirectory() as temporary:

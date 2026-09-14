@@ -1,3 +1,7 @@
+#[path = "draw_arena_kinds.rs"]
+pub mod arena_kinds;
+use arena_kinds::ResourceKind;
+
 #[path = "draw_arena.rs"]
 mod arena;
 pub use arena::ArenaCounters;
@@ -170,6 +174,7 @@ impl Record {
 }
 
 struct Resource {
+    cursor: bool,
     width: u32,
     height: u32,
     pitch: u32,
@@ -188,6 +193,8 @@ pub(super) struct Target {
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Counters {
+    pub arena_by_kind: [arena_kinds::ArenaKindCounters; arena_kinds::ARENA_KINDS],
+    pub arena_trig_texture_source_bytes: u64,
     pub batches: u64,
     pub commands: u64,
     pub asset_upload_bytes: u64,
@@ -774,6 +781,7 @@ impl DrawRenderer {
         self.resources.insert(
             id,
             Resource {
+                cursor: false,
                 width,
                 height,
                 pitch,
@@ -781,6 +789,12 @@ impl DrawRenderer {
             },
         );
         Ok(id)
+    }
+
+    pub fn mark_cursor_resource(&mut self, id: u64) {
+        if let Some(resource) = self.resources.get_mut(&id) {
+            resource.cursor = true;
+        }
     }
 
     pub fn release_resource(&mut self, id: u64) -> Result<()> {
@@ -1344,13 +1358,19 @@ impl AssetPacker<'_> {
         }
     }
 
-    pub(super) fn offset(&mut self, id: u64, bytes: &[u8]) -> Result<u32> {
-        self.prefix(id, bytes, bytes.len())
+    pub(super) fn offset(&mut self, id: u64, bytes: &[u8], kind: ResourceKind) -> Result<u32> {
+        self.prefix(id, bytes, bytes.len(), kind)
     }
 
     /// Only the batch path honours `length`; the arena keeps whole resources
     /// resident and the kernels read no further than their own bounds.
-    pub(super) fn prefix(&mut self, id: u64, bytes: &[u8], length: usize) -> Result<u32> {
+    pub(super) fn prefix(
+        &mut self,
+        id: u64,
+        bytes: &[u8],
+        length: usize,
+        kind: ResourceKind,
+    ) -> Result<u32> {
         match self {
             Self::Batch {
                 assets,
@@ -1379,7 +1399,7 @@ impl AssetPacker<'_> {
                 arena,
                 counters,
                 generation,
-            } => arena.offset_of(device, queue, counters, id, *generation, bytes),
+            } => arena.offset_of(device, queue, counters, (id, *generation), bytes, kind),
         }
     }
 
@@ -1622,7 +1642,16 @@ fn pack_terrain(
         let length = if texture { 7968 } else { 16384 };
         ensure!(resource.bytes.len() >= length, "short triangle resource");
         offsets[slot] = packer
-            .prefix(handle, &resource.bytes, length)
+            .prefix(
+                handle,
+                &resource.bytes,
+                length,
+                if texture {
+                    ResourceKind::TerrainTile
+                } else {
+                    ResourceKind::TerrainFade
+                },
+            )
             .context("triangle assets exceed buffer limit")?;
     }
     for vertex in triangle.vertices {
@@ -1722,7 +1751,11 @@ fn pack_records<'a>(
         ) {
             let source = resources.get(&c.source).context("unknown source version")?;
             source_pitch = source.pitch;
-            source_offset = packer.offset(c.source, &source.bytes)?;
+            source_offset = packer.offset(
+                c.source,
+                &source.bytes,
+                arena_kinds::source_kind(c, source.cursor),
+            )?;
             if matches!(c.kind, IMAGE | RAW_IMAGE | TILED_IMAGE) {
                 ensure!(
                     c.width > 0 && c.height > 0 && c.source_width > 0 && c.source_height > 0,
@@ -1803,7 +1836,7 @@ fn pack_records<'a>(
                     low = low.wrapping_add(c.step_low);
                 }
             }
-            table_offset = packer.offset(c.table, &table.bytes)?;
+            table_offset = packer.offset(c.table, &table.bytes, ResourceKind::NativeTable)?;
         }
         // The derived box narrows the record's declared rectangle, never widens it: a
         // caller may declare less than the whole target, and the kernel's own bounds test
@@ -2131,16 +2164,26 @@ mod tests {
     #[test]
     fn target_triangle_batch_deduplicates_tables_and_accounts_bytes() {
         let mut packer = AssetPacker::batch(1 << 20);
-        assert_eq!(packer.offset(1, &[7; 60]).unwrap(), 0);
-        let table = packer.offset(2, &[23; 81920]).unwrap();
+        assert_eq!(packer.offset(1, &[7; 60], ResourceKind::Other).unwrap(), 0);
+        let table = packer.offset(2, &[23; 81920], ResourceKind::Other).unwrap();
         assert_eq!(table, 60);
-        assert_eq!(packer.offset(3, &[9; 60]).unwrap(), 81980);
-        assert_eq!(packer.offset(2, &[23; 81920]).unwrap(), table);
+        assert_eq!(
+            packer.offset(3, &[9; 60], ResourceKind::Other).unwrap(),
+            81980
+        );
+        assert_eq!(
+            packer.offset(2, &[23; 81920], ResourceKind::Other).unwrap(),
+            table
+        );
         assert_eq!(packer.uploaded_bytes(), 328160);
         assert_eq!(packer.finish().unwrap().len(), 82040);
         let mut limited = AssetPacker::batch(327680);
-        limited.offset(1, &[7; 60]).unwrap();
-        assert!(limited.offset(2, &[23; 81920]).is_err());
+        limited.offset(1, &[7; 60], ResourceKind::Other).unwrap();
+        assert!(
+            limited
+                .offset(2, &[23; 81920], ResourceKind::Other)
+                .is_err()
+        );
     }
 
     #[test]

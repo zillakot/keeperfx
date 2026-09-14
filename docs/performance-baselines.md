@@ -307,6 +307,21 @@ shadow-prior divergence diagnostic. The first oracle attempt stopped on a helper
 response-envelope bug at turn 5 and is excluded. Full tables, identities, tails,
 load and both attempts are recorded in [PR #39](https://github.com/zillakot/keeperfx/pull/39).
 
+Arena attribution adds `arena_<kind>_{bytes,misses,hits,source_bytes,distinct_lengths,length_overflows}`
+for sprites, ordered sprites, cursor, general TRIG, terrain tiles/fades, native tables,
+minimap, shadow descriptor/RLE, target-triangle geometry/tables, image/raw/tiled image,
+movie, map view, bitmap, lens and other resources. Successful arena resolutions are
+attributed to the calling packer; shared IDs charge bytes to the first missing use.
+`bytes` counts uploaded GPU bytes and sums to `arena_bytes_uploaded` in every frame;
+`source_bytes` counts unexpanded bytes on misses (the full packed sprite payload).
+TRIG includes geometry and its packed texture tail, whose unexpanded miss bytes are
+also `arena_trig_texture_source_bytes`. Distinct lengths count successful resolutions,
+reset at queued-frame begin, and retain at most 64 lengths per kind; overflow counts
+unretained observations, making distinct counts lower bounds when nonzero. Immediate
+contexts without frame-begin retain that length set until destruction. Batch fallback
+uploads are excluded. JSON and Markdown reports preserve all existing counters and
+include the per-kind partition with a per-frame conservation check.
+
 ### Presenter cost, P3 slice 1: measured 2026-09-15
 
 [PR #40](https://github.com/zillakot/keeperfx/pull/40), runtime `97402ca75`,

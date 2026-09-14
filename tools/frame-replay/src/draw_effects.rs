@@ -141,7 +141,7 @@ impl DrawRenderer {
             self.asset_generation,
             limit,
         );
-        let base = packer.offset(command.source, bytes)?;
+        let base = packer.offset(command.source, bytes, ResourceKind::Lens)?;
         let words = packer.finish();
         let assets = match &words {
             Some(words) => buffer(

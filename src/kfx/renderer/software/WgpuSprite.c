@@ -170,8 +170,8 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
     command.source_width = w;
     command.source_height = h;
     command.transparent = KFX_WGPU_DRAW_OPAQUE;
-    struct KfxWgpuNativeResource resource = {asset, length, 1, 1, 1, NULL, 0};
-    struct KfxWgpuNativeResource lookup = {table, 65536, 256, 256, 256, NULL, 0};
+    struct KfxWgpuNativeResource resource = {asset, length, 1, 1, 1, NULL, 0, 0};
+    struct KfxWgpuNativeResource lookup = {table, 65536, 256, 256, 256, NULL, 0, 0};
     struct KfxGpolyTarget target = {SwTargetWScreen(), pitch, height, pitch};
     struct SpriteOracle oracle = {posx, posy, source, sprite, remap, colour, mode};
     int accepted = kfx_wgpu_native_draw(&target, &command, &resource,

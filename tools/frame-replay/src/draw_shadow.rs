@@ -156,7 +156,7 @@ impl DrawRenderer {
             self.asset_generation,
             limit,
         );
-        let base = packer.offset(source, bytes)?;
+        let base = packer.offset(source, bytes, ResourceKind::Shadow)?;
         let values = packer.finish();
         let input = match &values {
             Some(values) => buffer(
@@ -328,6 +328,7 @@ mod tests {
         }
         bytes.extend([1, 255, 254, 0, 253, 0, 0, 0]);
         let mut r = Resource {
+            cursor: false,
             width: 1,
             height: 1,
             pitch: 1,

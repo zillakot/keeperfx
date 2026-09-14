@@ -173,6 +173,7 @@ impl DrawRenderer {
         if let Some(timings) = &mut self.timings {
             timings.settle();
         }
+        self.arena.lengths.begin_frame();
         self.frame_index += 1;
         ensure!(self.frame.is_none(), "frame already active");
         // Growth is forbidden once the encoder is open, so it happens here, sized to
