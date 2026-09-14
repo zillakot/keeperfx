@@ -46,6 +46,7 @@ private:
     void destroy_rust_presenter();
     void* m_rust = nullptr;
     void* m_metal_view = nullptr;
+    bool m_offscreen = false;
     SDL_Window* m_rust_window = nullptr;
     bool m_rust_attempted = false;
     unsigned long m_rust_frames = 0;
