@@ -156,11 +156,12 @@ int main()
         KfxWgpuFrameCounters queued = {};
         char error[1024] = {};
         assert(kfx_wgpu_draw_frame_counters(bridge.Context(), &queued, error, sizeof(error)) == 1);
-        assert(queued.checkpoints == (verify ? 6 : 0));
+        // A flush is a replay into the frame's open encoder, not a submission boundary.
+        assert(queued.checkpoints == 0);
         assert(queued.validation_waits == 0);
         assert(bridge.EndFrame(true));
         assert(kfx_wgpu_draw_frame_counters(bridge.Context(), &queued, error, sizeof(error)) == 1);
-        assert(queued.checkpoints == (verify ? 6 : 1));
+        assert(queued.checkpoints == 0);
         assert(queued.validation_waits == 0);
         assert(actual == expected && !bridge.Failed());
         assert(bridge.GetCounters().barrier_readbacks == 1);
