@@ -4,8 +4,9 @@ pub const SHADOW: u32 = 11;
 
 const HEADER: usize = 32;
 const GEOMETRY: usize = 120;
-const MASK: usize = 65536;
-const RLE: usize = HEADER + GEOMETRY + MASK;
+const RLE: usize = HEADER + GEOMETRY;
+pub(super) const MASK_WORDS: usize = 65536;
+pub(super) const SLOTS: u32 = 2;
 
 fn descriptor(source: &Resource) -> Result<[u32; 8]> {
     ensure!(source.bytes.len() >= RLE, "truncated shadow resource");
@@ -69,23 +70,11 @@ fn descriptor(source: &Resource) -> Result<[u32; 8]> {
 }
 
 impl DrawRenderer {
-    /// Source packs eight LE u32 descriptor fields, two triangle geometries, a prior scratch checkpoint, and immutable RLE artwork.
-    pub fn create_shadow_mask(&mut self, source: u64) -> Result<u64> {
-        self.check_status()?;
-        let asset = self
-            .resources
-            .get(&source)
-            .context("unknown shadow resource")?;
-        descriptor(asset)?;
-        ensure!(
-            asset.bytes.len() <= self.storage_limit() as usize / 4,
-            "shadow asset exceeds GPU limit"
-        );
+    pub(super) fn shadow_pipeline(&mut self) -> Result<&wgpu::ComputePipeline> {
         ensure!(
             self.device.limits().max_compute_workgroups_per_dimension >= 32,
             "shadow dispatch exceeds GPU limit"
         );
-        let values: Vec<_> = asset.bytes.iter().map(|&b| u32::from(b)).collect();
         if self.shadow.is_none() {
             let module = self
                 .device
@@ -104,11 +93,32 @@ impl DrawRenderer {
                 },
             ));
         }
-        let target = self.create_target(256, 256)?;
+        Ok(self.shadow.as_ref().unwrap())
+    }
+
+    /// Records the mask into the resident scratch and the given slot; the caller submits.
+    pub(super) fn record_shadow_mask(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: u64,
+        slot: u32,
+    ) -> Result<()> {
+        let asset = self
+            .resources
+            .get(&source)
+            .context("unknown shadow resource")?;
+        descriptor(asset)?;
+        ensure!(
+            asset.bytes.len() <= self.storage_limit() as usize / 4,
+            "shadow asset exceeds GPU limit"
+        );
+        ensure!(slot < SLOTS, "shadow mask slot exceeds the resident ring");
+        let values: Vec<_> = asset.bytes.iter().map(|&b| u32::from(b)).collect();
+        self.shadow_pipeline()?;
         let input = buffer(
             &self.device,
             &mut self.counters,
-            "immutable shadow artwork and prior scratch",
+            "immutable shadow artwork",
             &values,
             wgpu::BufferUsages::STORAGE,
         );
@@ -116,9 +126,19 @@ impl DrawRenderer {
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &pipeline.get_bind_group_layout(0),
-            entries: &[entry(0, &self.targets[&target].indices), entry(1, &input)],
+            entries: &[
+                entry(0, &self.shadow_scratch),
+                entry(1, &input),
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.shadow_slots,
+                        offset: u64::from(slot) * MASK_WORDS as u64 * 4,
+                        size: std::num::NonZeroU64::new(MASK_WORDS as u64 * 4),
+                    }),
+                },
+            ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(pipeline);
@@ -126,30 +146,55 @@ impl DrawRenderer {
             pass.dispatch_workgroups(32, 32, 1);
         }
         self.counters.dispatches += 1;
-        self.submit_encoder(encoder);
         self.counters.asset_upload_bytes += values.len() as u64 * 4;
         self.counters.commands += 1;
-        self.counters.batches += 1;
-        if let Err(error) = self.check_status() {
-            self.release_target(target)?;
-            return Err(error);
-        }
-        Ok(target)
+        Ok(())
     }
 
-    pub fn submit_shadow(
-        &mut self,
-        target: u64,
-        command: &Command,
-        mirror: &mut [u8],
-    ) -> Result<()> {
+    /// Clears the cross-frame shadow scratch; required after a full CPU redraw or device loss.
+    pub fn shadow_scratch_reset(&mut self) -> Result<()> {
+        self.check_status()?;
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.clear_buffer(&self.shadow_scratch, 0, None);
+        self.submit_encoder(encoder);
+        self.check_status()
+    }
+
+    /// Blocking read of the resident scratch; verification and recovery only.
+    pub fn shadow_scratch_read(&mut self) -> Result<Vec<u8>> {
+        self.check_status()?;
+        let size = MASK_WORDS as u64 * 4;
+        let staging = self.tracked_buffer(&wgpu::BufferDescriptor {
+            label: Some("shadow scratch verification"),
+            size,
+            mapped_at_creation: false,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&self.shadow_scratch, 0, &staging, 0, size);
+        self.submit_encoder(encoder);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = sender.send(r);
+        });
+        self.wait_for_queue()?;
+        receiver.recv()??;
+        let mapped = staging.slice(..).get_mapped_range()?;
+        let values: Vec<_> = mapped.as_chunks::<4>().0.iter().map(|w| w[0]).collect();
+        drop(mapped);
+        staging.unmap();
+        self.counters.readback_bytes += size;
+        self.check_status()?;
+        Ok(values)
+    }
+
+    pub fn submit_shadow(&mut self, target: u64, command: &Command) -> Result<()> {
         self.check_status()?;
         ensure!(
             command.abi_version == ABI_VERSION
                 && command.kind == SHADOW
                 && command.reserved == [0; 3]
-                && command.colour < 64
-                && mirror.len() == MASK,
+                && command.colour < 64,
             "invalid native shadow command"
         );
         let asset = self
@@ -161,9 +206,8 @@ impl DrawRenderer {
             asset.bytes[HEADER..HEADER + 60].to_vec(),
             asset.bytes[HEADER + 60..HEADER + GEOMETRY].to_vec(),
         ];
+        let slot = self.shadow_next_slot;
         let mut resources = Vec::new();
-        let mut mask = 0;
-        let mut snapshot = 0;
         let result = (|| {
             let mut commands = Vec::new();
             for bytes in &geometry {
@@ -178,25 +222,31 @@ impl DrawRenderer {
                     ..*command
                 });
             }
-            mask = self.create_shadow_mask(command.source)?;
-            snapshot = self.create_target_snapshot(mask, 0, 0, 256, 256, 256)?;
-            self.submit_target_triangles(target, &commands, snapshot)?;
-            mirror.copy_from_slice(&self.readback(mask)?);
-            Ok(())
+            if self.enqueue_shadow(target, command.source, slot, &commands)? {
+                return Ok(());
+            }
+            self.submit_shadow_batch(target, command.source, slot, &commands)
         })();
+        if result.is_ok() {
+            self.shadow_next_slot = (slot + 1) % SLOTS;
+        }
         for resource in resources {
             self.release_resource(resource)?;
         }
-        if snapshot != 0 {
-            self.release_target_snapshot(snapshot)?;
-        }
-        if mask != 0 {
-            self.release_target(mask)?;
-        }
         result
     }
-}
 
+    /// Records the mask immediately before the triangles that sample its slot.
+    pub(super) fn submit_shadow_batch(
+        &mut self,
+        target: u64,
+        source: u64,
+        slot: u32,
+        commands: &[Command],
+    ) -> Result<()> {
+        self.submit_target_triangles(target, commands, slot, Some(source))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

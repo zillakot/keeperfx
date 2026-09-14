@@ -1,19 +1,19 @@
 use super::*;
 
 impl DrawRenderer {
-    /// Geometry sources contain exactly 60 bytes; texture is an immutable 256x256 GPU snapshot.
+    /// Geometry sources contain exactly 60 bytes; the texture is a resident 256x256 mask slot.
     pub fn submit_target_triangles(
         &mut self,
         target: u64,
         commands: &[Command],
-        texture: u64,
+        slot: u32,
+        mask: Option<u64>,
     ) -> Result<()> {
-        self.checkpoint_target(target)?;
         self.check_status()?;
         let (width, height) = self.target_dimensions(target)?;
         ensure!(
-            self.target_snapshot_dimensions(texture)? == (256, 256, 256),
-            "triangle snapshot must be 256x256"
+            slot < shadow::SLOTS,
+            "shadow mask slot exceeds the resident ring"
         );
         let limit = self.storage_limit() as usize;
         ensure!(
@@ -27,7 +27,6 @@ impl DrawRenderer {
         );
         let mut words = Vec::new();
         let mut uploads: Vec<(usize, Vec<u32>)> = Vec::new();
-        let mut copies = Vec::new();
         let mut length = 0usize;
         for c in commands {
             self.check_queued_resource(c.source)?;
@@ -72,10 +71,7 @@ impl DrawRenderer {
                 length,
                 geometry.bytes.iter().map(|&v| u32::from(v)).collect(),
             ));
-            length = length
-                .checked_add(60 + 65536)
-                .context("triangle arena overflow")?;
-            copies.push(source_offset + 60);
+            length = length.checked_add(60).context("triangle arena overflow")?;
             let table_offset = length;
             uploads.push((length, table.bytes.iter().map(|&v| u32::from(v)).collect()));
             length = length
@@ -88,7 +84,7 @@ impl DrawRenderer {
             words.extend([TRIG, 0, 0, c.colour]);
             words.extend(bounds(c.x, c.y, c.width, c.height)?);
             words.extend(bounds(c.clip_x, c.clip_y, c.clip_width, c.clip_height)?);
-            words.extend([source_offset as u32, table_offset as u32, 1, 0]);
+            words.extend([source_offset as u32, table_offset as u32, 1, slot + 1]);
             words.extend([c.source_x, 65536, 64, 0]);
             words.extend([0; 4]);
             words.extend([OPAQUE, 0, 0, 0]);
@@ -134,27 +130,14 @@ impl DrawRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        let snapshot = &self.target_snapshots[&texture];
-        for offset in &copies {
-            encoder.copy_buffer_to_buffer(
-                &snapshot.indices,
-                0,
-                &assets,
-                *offset as u64 * 4,
-                65536 * 4,
-            );
-        }
         let mut uploaded = 0;
         for (offset, values) in uploads {
             let bytes: Vec<_> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
             self.queue.write_buffer(&assets, offset as u64 * 4, &bytes);
             uploaded += bytes.len() as u64;
         }
-        self.submit_encoder(encoder);
         self.counters.asset_upload_bytes += uploaded;
         self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4 + 20;
-        self.target_resource_counters.sampling_copy_bytes += copies.len() as u64 * 65536 * 4;
         let valid = self.validate_trig_batch(&cb, &assets, &params, width, height)?;
         if self.deferred_status.is_none() {
             self.counters.readback_bytes += 4;
@@ -169,9 +152,13 @@ impl DrawRenderer {
                 entry(2, &assets),
                 entry(3, &params),
                 entry(4, &tb),
+                entry(6, &self.shadow_slots),
             ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        if let Some(source) = mask {
+            self.record_shadow_mask(&mut encoder, source, slot)?;
+        }
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.compute);

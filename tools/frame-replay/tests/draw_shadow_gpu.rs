@@ -1,4 +1,4 @@
-use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, TRIG};
+use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, RECT, TRIG};
 fn drawing() -> DrawRenderer {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
@@ -12,33 +12,57 @@ fn word(bytes: &[u8], offset: &mut usize) -> u32 {
     *offset += 4;
     v
 }
-#[test]
-#[ignore = "requires GPU and native shadow fixture"]
-fn actual_native_shadow_masks_and_triangles() {
-    native_shadow_cases(false);
+
+struct Case {
+    asset: Vec<u8>,
+    colour: u32,
+    mask: Vec<u8>,
+    pixels: Vec<u8>,
 }
 
-#[test]
-#[ignore = "requires GPU and native shadow fixture"]
-fn queued_world_keeps_shadow_mask_and_cpu_checkpoint_order() {
-    native_shadow_cases(true);
-}
-
-fn native_shadow_cases(queued: bool) {
+fn fixture() -> (Vec<u8>, Vec<Case>) {
     let path = std::env::var("KFX_SHADOW_FIXTURE").expect("KFX_SHADOW_FIXTURE is required");
     let bytes = std::fs::read(path).unwrap();
     let mut offset = 0;
     let count = word(&bytes, &mut offset);
-    let mut draw = drawing();
-    let target = draw.create_target(79, 61).unwrap();
-    if queued {
-        draw.frame_begin(target).unwrap();
-    }
-    let mut prior_pixel = 167;
-    let table = draw
-        .create_resource(&bytes[offset..offset + 81920], 256, 320, 256)
-        .unwrap();
+    let table = bytes[offset..offset + 81920].to_vec();
     offset += 81920;
+    let mut cases = Vec::new();
+    for _ in 0..count {
+        let length = word(&bytes, &mut offset) as usize;
+        let colour = word(&bytes, &mut offset);
+        let asset = bytes[offset..offset + length].to_vec();
+        offset += length;
+        let mask = bytes[offset..offset + 65536].to_vec();
+        offset += 65536;
+        let pixels = bytes[offset..offset + 79 * 61].to_vec();
+        offset += 79 * 61;
+        cases.push(Case {
+            asset,
+            colour,
+            mask,
+            pixels,
+        });
+    }
+    assert_eq!(offset, bytes.len());
+    (table, cases)
+}
+
+fn shadow(source: u64, table: u64, colour: u32) -> Command {
+    Command {
+        kind: 11,
+        source,
+        table,
+        colour,
+        width: 79,
+        height: 61,
+        clip_width: 79,
+        clip_height: 61,
+        ..Default::default()
+    }
+}
+
+fn clear(draw: &mut DrawRenderer, target: u64) {
     draw.submit(
         target,
         &[Command {
@@ -48,108 +72,158 @@ fn native_shadow_cases(queued: bool) {
         }],
     )
     .unwrap();
-    for case in 0..count {
-        let length = word(&bytes, &mut offset) as usize;
-        let colour = word(&bytes, &mut offset);
-        let mut asset = bytes[offset..offset + length].to_vec();
-        offset += length;
+}
+
+#[test]
+#[ignore = "requires GPU and native shadow fixture"]
+fn actual_native_shadow_masks_and_triangles() {
+    let (table_bytes, cases) = fixture();
+    let mut draw = drawing();
+    let target = draw.create_target(79, 61).unwrap();
+    let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
+    clear(&mut draw, target);
+    for (case, c) in cases.iter().enumerate() {
         if case == 0 {
-            let mut malformed = asset.clone();
+            let mut malformed = c.asset.clone();
             malformed[..4].fill(0);
             let invalid = draw.create_resource(&malformed, 1, 1, 1).unwrap();
             let before = draw.readback(target).unwrap();
-            let mut untouched = vec![77; 65536];
+            let scratch = draw.shadow_scratch_read().unwrap();
             assert!(
-                draw.submit_shadow(
-                    target,
-                    &Command {
-                        kind: 11,
-                        source: invalid,
-                        table,
-                        colour,
-                        width: 79,
-                        height: 61,
-                        clip_width: 79,
-                        clip_height: 61,
-                        ..Default::default()
-                    },
-                    &mut untouched
-                )
-                .is_err()
+                draw.submit_shadow(target, &shadow(invalid, table, c.colour))
+                    .is_err()
             );
             assert_eq!(draw.readback(target).unwrap(), before);
-            assert!(untouched.iter().all(|&v| v == 77));
+            assert_eq!(draw.shadow_scratch_read().unwrap(), scratch);
             draw.release_resource(invalid).unwrap();
         }
+        let mut asset = c.asset.clone();
         let source = draw.create_resource(&asset, 1, 1, 1).unwrap();
         asset.fill(123);
-        let command = Command {
-            kind: 11,
-            source,
-            table,
-            colour,
-            width: 79,
-            height: 61,
-            clip_width: 79,
-            clip_height: 61,
-            ..Default::default()
-        };
-        let before = draw.frame_counters().checkpoints;
-        if queued {
+        draw.submit_shadow(target, &shadow(source, table, c.colour))
+            .unwrap();
+        draw.release_resource(source).unwrap();
+        let mask = draw.shadow_scratch_read().unwrap();
+        if mask != c.mask {
+            let i = mask.iter().zip(&c.mask).position(|(a, b)| a != b).unwrap();
+            panic!(
+                "mask case {case}, index {i}, actual {}, expected {}",
+                mask[i], c.mask[i]
+            );
+        }
+        assert_eq!(
+            draw.readback(target).unwrap(),
+            c.pixels,
+            "shadow triangles case {case}"
+        );
+    }
+    assert_eq!(draw.target_resource_counters().snapshots, 0);
+    assert_eq!(draw.target_resource_counters().sampling_copy_bytes, 0);
+    eprintln!(
+        "{} actual native shadow masks and 2 triangles each match",
+        cases.len()
+    );
+}
+
+/// The chain runs inside queued frames with unrelated commands between the masks and their
+/// triangles, so slot reuse or a hoisted mask pass would show up as a pixel or scratch mismatch.
+#[test]
+#[ignore = "requires GPU and native shadow fixture"]
+fn interleaved_frame_shadow_chain() {
+    let (table_bytes, cases) = fixture();
+    let mut draw = drawing();
+    let target = draw.create_target(79, 61).unwrap();
+    let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
+    clear(&mut draw, target);
+    let mut seed = 0x971413u32;
+    let mut random = move || {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        seed >> 24
+    };
+    let mut checkpoints = 0;
+    let mut frames = 0;
+    let mut prior = 167;
+    for chunk in cases.chunks(7) {
+        draw.frame_begin(target).unwrap();
+        frames += 1;
+        let before = draw.counters();
+        for c in chunk {
+            let noise = random();
             draw.submit(
                 target,
                 &[Command {
-                    kind: keeperfx_frame_replay::draw::RECT,
-                    colour: prior_pixel,
+                    kind: RECT,
+                    colour: prior,
+                    x: i32::from(noise as u8 % 79),
+                    y: 0,
                     width: 1,
                     height: 1,
                     ..Default::default()
                 }],
             )
             .unwrap();
-        }
-        let mut mirror = vec![77; 65536];
-        draw.submit_shadow(target, &command, &mut mirror).unwrap();
-        draw.release_resource(source).unwrap();
-        if queued {
-            assert_eq!(draw.frame_counters().checkpoints, before + 1);
-        }
-        if mirror != bytes[offset..offset + 65536] {
-            let i = mirror
-                .iter()
-                .zip(&bytes[offset..])
-                .position(|(a, b)| a != b)
+            let source = draw.create_resource(&c.asset, 1, 1, 1).unwrap();
+            draw.submit_shadow(target, &shadow(source, table, c.colour))
                 .unwrap();
-            panic!(
-                "mask case {case}, index {i}, actual {}, expected {}",
-                mirror[i],
-                bytes[offset + i]
-            );
+            draw.release_resource(source).unwrap();
+            prior = u32::from(c.pixels[0]);
         }
-        offset += 65536;
-        let pixels = draw.readback(target).unwrap();
         assert_eq!(
-            pixels,
-            &bytes[offset..offset + 79 * 61],
-            "shadow triangles case {case}"
+            draw.counters().waits,
+            before.waits,
+            "a queued shadow frame must not block"
         );
-        prior_pixel = u32::from(bytes[offset]);
-        offset += 79 * 61;
-    }
-    if queued {
+        assert_eq!(draw.frame_counters().checkpoints, checkpoints);
         draw.frame_end().unwrap();
+        checkpoints = draw.frame_counters().checkpoints;
+        assert_eq!(checkpoints, frames);
+        assert_eq!(draw.frame_counters().validation_waits, frames);
+        let last = chunk.last().unwrap();
+        assert_eq!(draw.shadow_scratch_read().unwrap(), last.mask);
+        assert_eq!(draw.readback(target).unwrap(), last.pixels);
     }
-    assert_eq!(offset, bytes.len());
-    assert_eq!(draw.target_resource_counters().snapshots, u64::from(count));
+    let carried = draw.shadow_scratch_read().unwrap();
+    draw.shadow_scratch_reset().unwrap();
+    let cleared = draw.shadow_scratch_read().unwrap();
+    assert!(cleared.iter().all(|&v| v == 0));
+    assert_ne!(carried, cleared, "the scratch must carry state to reset");
+    draw.frame_begin(target).unwrap();
+    let source = draw.create_resource(&cases[0].asset, 1, 1, 1).unwrap();
+    draw.submit_shadow(target, &shadow(source, table, cases[0].colour))
+        .unwrap();
+    draw.release_resource(source).unwrap();
+    draw.frame_end().unwrap();
     assert_eq!(
-        draw.target_resource_counters().sampling_copy_bytes,
-        u64::from(count) * 2 * 65536 * 4
+        draw.shadow_scratch_read().unwrap(),
+        cases[0].mask,
+        "a reset restarts the chain at the first fixture case"
     );
-    eprintln!("{count} actual native shadow masks and 2 triangles each match");
+    assert_eq!(draw.target_resource_counters().snapshots, 0);
+    eprintln!("{} shadows chained across {frames} frames", cases.len());
 }
+
+#[test]
+#[ignore = "requires GPU and native shadow fixture"]
+fn verify_mode_scratch_read_is_blocking() {
+    let (table_bytes, cases) = fixture();
+    let mut draw = drawing();
+    let target = draw.create_target(79, 61).unwrap();
+    let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
+    clear(&mut draw, target);
+    let source = draw.create_resource(&cases[0].asset, 1, 1, 1).unwrap();
+    draw.submit_shadow(target, &shadow(source, table, cases[0].colour))
+        .unwrap();
+    let before = draw.counters();
+    assert_eq!(draw.shadow_scratch_read().unwrap(), cases[0].mask);
+    let after = draw.counters();
+    assert_eq!(after.waits, before.waits + 1);
+    assert_eq!(after.readback_bytes, before.readback_bytes + 65536 * 4);
+    assert!(after.wait_ns > before.wait_ns);
+}
+
 #[test]
 #[ignore = "requires GPU"]
-fn target_triangle_validation_and_snapshot_lifetime() {
+fn target_triangle_validation_and_resident_slots() {
     let mut draw = drawing();
     let target = draw.create_target(8, 8).unwrap();
     draw.submit(
@@ -161,20 +235,6 @@ fn target_triangle_validation_and_snapshot_lifetime() {
         }],
     )
     .unwrap();
-    let mask = draw.create_target(256, 256).unwrap();
-    draw.submit(
-        mask,
-        &[Command {
-            kind: CLEAR,
-            colour: 255,
-            ..Default::default()
-        }],
-    )
-    .unwrap();
-    let snapshot = draw
-        .create_target_snapshot(mask, 0, 0, 256, 256, 256)
-        .unwrap();
-    draw.release_target(mask).unwrap();
     let mut table = vec![0; 81920];
     for (i, b) in table.iter_mut().enumerate() {
         *b = (i + 19) as u8;
@@ -183,6 +243,15 @@ fn target_triangle_validation_and_snapshot_lifetime() {
     let vertices: [i32; 15] = [1, 1, 0, 0, 0, 7, 1, 0, 0, 0, 1, 7, 0, 0, 0];
     let geometry: Vec<_> = vertices.into_iter().flat_map(i32::to_le_bytes).collect();
     let source = draw.create_resource(&geometry, 1, 1, 1).unwrap();
+    let mut asset = Vec::new();
+    let rle: Vec<u8> = (0..4).flat_map(|_| [4u8, 1, 1, 1, 1, 0]).collect();
+    for n in [256u32, 256, 4, 4, 0, 0, 0, rle.len() as u32] {
+        asset.extend(n.to_le_bytes());
+    }
+    asset.extend(&geometry);
+    asset.extend(&geometry);
+    asset.extend(&rle);
+    let mask_source = draw.create_resource(&asset, 1, 1, 1).unwrap();
     let c = Command {
         kind: TRIG,
         source,
@@ -206,23 +275,38 @@ fn target_triangle_validation_and_snapshot_lifetime() {
                     ..c
                 }
             ],
-            snapshot
+            0,
+            None
         )
         .is_err()
     );
     assert_eq!(draw.readback(target).unwrap(), initial);
-    assert!(draw.submit_target_triangles(target, &[c], source).is_err());
+    assert!(draw.submit_target_triangles(target, &[c], 9, None).is_err());
     assert_eq!(draw.readback(target).unwrap(), initial);
+    draw.submit_shadow(
+        target,
+        &Command {
+            kind: 11,
+            source: mask_source,
+            table,
+            colour: 1,
+            width: 8,
+            height: 8,
+            clip_width: 8,
+            clip_height: 8,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let before = draw.counters();
-    draw.submit_target_triangles(target, &[c], snapshot)
-        .unwrap();
+    draw.submit_target_triangles(target, &[c], 0, None).unwrap();
     let after = draw.counters();
     assert_eq!(
         after.asset_upload_bytes - before.asset_upload_bytes,
         (60 + 81920) * 4
     );
     assert_eq!(after.readback_bytes - before.readback_bytes, 4);
-    draw.release_target_snapshot(snapshot).unwrap();
+    draw.release_resource(mask_source).unwrap();
     draw.release_resource(source).unwrap();
     draw.release_resource(table).unwrap();
     let result = draw.readback(target).unwrap();
