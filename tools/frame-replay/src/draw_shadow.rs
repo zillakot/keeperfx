@@ -155,6 +155,7 @@ impl DrawRenderer {
             &self.queue,
             &mut self.arena,
             &mut self.counters,
+            &mut self.tail,
             self.asset_generation,
             limit,
         );

@@ -433,7 +433,18 @@ impl DrawRenderer {
         }
     }
 
+    /// Whether a flush would replay anything, and so whether the present tail has to
+    /// be submitted before the replay's batches recycle arena scratch under it.
+    pub(super) fn frame_pending(&self) -> bool {
+        self.frame
+            .as_ref()
+            .is_some_and(|frame| !frame.stream.is_empty() || !frame.serials.is_empty())
+    }
+
     pub fn frame_flush(&mut self) -> Result<()> {
+        if self.frame_pending() {
+            self.tail_submit();
+        }
         let Some(mut frame) = self.frame.take() else {
             return Ok(());
         };
@@ -525,6 +536,7 @@ impl DrawRenderer {
                 &self.queue,
                 &mut self.arena,
                 &mut self.counters,
+                &mut self.tail,
                 self.asset_generation,
                 limit,
             );

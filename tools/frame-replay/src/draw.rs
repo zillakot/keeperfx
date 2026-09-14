@@ -541,6 +541,7 @@ impl DrawRenderer {
             &self.queue,
             &mut self.arena,
             &mut self.counters,
+            &mut self.tail,
             self.asset_generation,
             limit,
         );
@@ -908,15 +909,23 @@ pub(super) enum AssetPacker<'a> {
     },
 }
 
+/// Opening a batch recycles arena scratch, and the uploads that follow are staged
+/// into the head of the next submission. A present tail already reading a recycled
+/// region would see them, so the tail is submitted before the batch opens.
 pub(super) fn asset_packer<'a>(
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     arena: &'a mut arena::Arena,
     counters: &'a mut Counters,
+    tail: &mut Option<wgpu::CommandEncoder>,
     generation: u64,
     limit: usize,
 ) -> AssetPacker<'a> {
     if arena.enabled() {
+        if let Some(encoder) = tail.take() {
+            counters.submits += 1;
+            queue.submit([encoder.finish()]);
+        }
         arena.begin_batch();
         AssetPacker::Arena {
             device,

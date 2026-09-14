@@ -462,7 +462,10 @@ bool RendererSoftware::present_rust_frame()
         }
     }
     // Records the cursor restore into the present tail before it is finished, so the
-    // backup, composition, palette pass and restore share one submission.
+    // backup, composition, palette pass and restore share one submission. When
+    // acquisition was skipped the tail stays open and the next queued-frame flush
+    // submits it ahead of that frame's replay; a terminal failure drops it with the
+    // presenter, which the SDL fallback redraws from scratch anyway.
     LbMouseOnEndSwap();
     performance_begin(PerfPresentWait);
     if (result == 1) {

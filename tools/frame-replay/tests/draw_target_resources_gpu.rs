@@ -576,3 +576,39 @@ fn a_present_tail_matches_one_submit_per_step_and_adds_no_checkpoint() {
     assert_eq!(skipped.submits, 1);
     draw.check_status().unwrap();
 }
+
+#[test]
+#[ignore = "requires GPU adapter"]
+fn a_flush_under_an_open_tail_keeps_the_arena_region_the_tail_reads() {
+    let mut draw = drawing(Default::default());
+    let size = 8u32;
+    let root = draw.create_target(size, size).unwrap();
+    let background = draw.create_target(size, size).unwrap();
+    let first: Vec<u8> = (0..size * size).map(|i| (i * 11 + 1) as u8).collect();
+    let second: Vec<u8> = (0..size * size).map(|i| (i * 7 + 149) as u8).collect();
+    let painted = |source| Command {
+        transparent: keeperfx_frame_replay::draw::OPAQUE,
+        ..image(source, size, size)
+    };
+    let before = draw.create_resource(&first, size, size, size).unwrap();
+    let after = draw.create_resource(&second, size, size, size).unwrap();
+    draw.frame_begin(root).unwrap();
+    draw.submit(root, &[painted(before)]).unwrap();
+    draw.frame_flush().unwrap();
+    // The tail now holds a copy into an arena scratch region and a pass reading it.
+    let snapshot = draw
+        .create_target_snapshot(root, 0, 0, size, size, size)
+        .unwrap();
+    draw.submit_target_images(background, &[painted(snapshot)])
+        .unwrap();
+    // Replaying this needs a batch, whose arena allocation would otherwise reclaim
+    // that region and stage its upload ahead of every command in the tail.
+    draw.submit(root, &[painted(after)]).unwrap();
+    draw.frame_flush().unwrap();
+    draw.tail_submit();
+    assert_eq!(draw.readback(background).unwrap(), first);
+    assert_eq!(draw.readback(root).unwrap(), second);
+    draw.release_target_snapshot(snapshot).unwrap();
+    draw.frame_abort().unwrap();
+    draw.check_status().unwrap();
+}
