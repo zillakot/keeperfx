@@ -32,16 +32,20 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
     let table2 = drawing.create_resource(&fade, 256, 64, 256)?;
     fade.fill(0);
     data = &data[7968 + 16384..];
+    let unbinned = drawing.create_target(width, height)?;
     let mut commands = Vec::new();
+    let mut every = Vec::new();
     let mut expected = vec![167; (width * height) as usize];
-    drawing.submit(
-        target,
-        &[Command {
-            kind: CLEAR,
-            colour: 167,
-            ..Default::default()
-        }],
-    )?;
+    for into in [target, unbinned] {
+        drawing.submit(
+            into,
+            &[Command {
+                kind: CLEAR,
+                colour: 167,
+                ..Default::default()
+            }],
+        )?;
+    }
     for triangle in 0..count {
         let vertices = std::array::from_fn(|_| {
             let x = word(&mut data) as i32;
@@ -79,6 +83,7 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
             table: if triangle % 2 == 0 { table } else { table2 },
             vertices,
         });
+        every.push(*commands.last().unwrap());
         if commands.len() == 64 || triangle + 1 == count {
             drawing.submit_triangles(target, &commands)?;
             ensure!(
@@ -89,6 +94,17 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
         }
     }
     ensure!(data.is_empty(), "trailing fixture bytes");
+    // The same geometry through an index that reaches every tile: binning changes
+    // addressing, not arithmetic, so the two targets must be byte-equal.
+    drawing.bin_records(false);
+    for batch in every.chunks(64) {
+        drawing.submit_triangles(unbinned, batch)?;
+    }
+    drawing.bin_records(true);
+    ensure!(
+        drawing.readback(unbinned)? == expected,
+        "the unbinned raster disagrees with the binned one"
+    );
     let vertices = [
         Vertex {
             x: 2,
@@ -171,7 +187,7 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
         "host rejections must not raise the frame flag"
     );
     eprintln!(
-        "PASS: {count} original native triangles through production DrawRenderer, ordered overlapping batches, immutable mutated assets, flagged late shade, and host-rejected resource/vertex"
+        "PASS: {count} original native triangles binned and unbinned through production DrawRenderer, ordered overlapping batches, immutable mutated assets, flagged late shade, and host-rejected resource/vertex"
     );
     Ok(())
 }

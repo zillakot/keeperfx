@@ -414,6 +414,12 @@ impl DrawRenderer {
             .min(limits.max_buffer_size)
     }
 
+    /// Fixture hook: with binning off every record reaches every tile its clip covers,
+    /// so the binned and unbinned rasters can be compared on the same geometry.
+    pub fn bin_records(&mut self, binning: bool) {
+        self.tile_index.set_binning(binning);
+    }
+
     pub fn counters(&self) -> Counters {
         let mut counters = self.counters;
         if let Some(timings) = &self.timings {
@@ -1503,14 +1509,28 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 /// of `(offset, length)` pairs covering only the tiles its own records touch,
 /// followed by the shared entry array, so the passes together iterate each tile
 /// list exactly once and a pass costs nothing for tiles it never reaches.
-#[derive(Default)]
 pub(super) struct TileIndex {
+    binning: bool,
     counts: Vec<u32>,
     cursors: Vec<u32>,
     packed: Vec<u32>,
     passes: Vec<Pass>,
     length: usize,
     header: usize,
+}
+
+impl Default for TileIndex {
+    fn default() -> Self {
+        Self {
+            binning: true,
+            counts: Vec::new(),
+            cursors: Vec::new(),
+            packed: Vec::new(),
+            passes: Vec::new(),
+            length: 0,
+            header: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1552,24 +1572,30 @@ pub(super) fn pass_box(pass: &Pass, width: u32, height: u32) -> [u32; 4] {
     ]
 }
 
+/// Without binning a record reaches every tile its clip covers, which is what the
+/// kernel would iterate if there were no index; the per-record bounds test then does
+/// the whole rejection. Only the fixtures turn binning off.
 fn tile_span(
     command: &[u32; RECORD_WORDS],
     width: u32,
     height: u32,
+    binning: bool,
 ) -> Option<(u32, u32, u32, u32)> {
-    let x0 = (command[4] as i32)
+    let near = if binning { 4 } else { 8 };
+    let far = if binning { 6 } else { 10 };
+    let x0 = (command[near] as i32)
         .max(command[8] as i32)
         .max(0)
         .min(width as i32) as u32;
-    let y0 = (command[5] as i32)
+    let y0 = (command[near + 1] as i32)
         .max(command[9] as i32)
         .max(0)
         .min(height as i32) as u32;
-    let x1 = (command[6] as i32)
+    let x1 = (command[far] as i32)
         .min(command[10] as i32)
         .max(0)
         .min(width as i32) as u32;
-    let y1 = (command[7] as i32)
+    let y1 = (command[far + 1] as i32)
         .min(command[11] as i32)
         .max(0)
         .min(height as i32) as u32;
@@ -1591,6 +1617,10 @@ fn grow(vec: &mut Vec<u32>, length: usize, allocations: &mut u64) {
 }
 
 impl TileIndex {
+    pub(super) fn set_binning(&mut self, binning: bool) {
+        self.binning = binning;
+    }
+
     fn build(
         &mut self,
         counters: &mut Counters,
@@ -1615,7 +1645,7 @@ impl TileIndex {
             while segments.get(at).is_some_and(|end| index >= *end) {
                 at += 1;
             }
-            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height, self.binning) else {
                 continue;
             };
             let covered = (x1 - x0) as usize * (y1 - y0) as usize;
@@ -1667,7 +1697,7 @@ impl TileIndex {
             while segments.get(at).is_some_and(|end| index >= *end) {
                 at += 1;
             }
-            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height, self.binning) else {
                 continue;
             };
             let pass = self.passes[at];
@@ -1692,7 +1722,7 @@ impl TileIndex {
             while segments.get(at).is_some_and(|end| index >= *end) {
                 at += 1;
             }
-            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height, self.binning) else {
                 continue;
             };
             let pass = self.passes[at];

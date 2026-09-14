@@ -185,6 +185,8 @@ jobs:
         run: |
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_views_gpu -- --ignored --nocapture --test-threads=1
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_frame_order_gpu -- --ignored --nocapture --test-threads=1
+      - name: Check terrain tile binning, boundaries, degenerates and the compressed arena
+        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_terrain_binning_gpu -- --ignored --nocapture --test-threads=1
       - name: Replay synthetic frames and sequences
         run: |
           cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --lib -- --ignored --test-threads=1
