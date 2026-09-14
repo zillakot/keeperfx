@@ -287,6 +287,8 @@ void RendererSoftware::report_drawing()
         counts.bridge_readbacks, counts.gpu_readback_bytes,
         gpu.buffers, gpu.buffer_bytes, gpu.batches, gpu.commands, counts.gpu_ordered_sprites,
         gpu.arena_evictions, gpu.arena_overflows, gpu.arena_bytes_uploaded,
+        gpu.tile_allocations, gpu.tile_entries,
+        counts.bridge_target_flushes, counts.bridge_target_runs,
         gpu.host_staged_asset_bytes, gpu.arena_bytes_resident};
     performance_drawing_frame(&sample);
     const char* path = SDL_getenv("KFX_WGPU_DRAW_STATS");
