@@ -120,6 +120,7 @@ mod tests {
             bytes.extend(value.to_le_bytes());
         }
         let mut resource = Resource {
+            cursor: false,
             width: 28,
             height: 1,
             pitch: 28,

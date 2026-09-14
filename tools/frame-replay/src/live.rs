@@ -1171,6 +1171,15 @@ pub unsafe extern "C" fn kfx_wgpu_draw_resource_create(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_resource_mark_cursor(handle: *mut c_void, resource: u64) {
+    if !handle.is_null() {
+        unsafe {
+            (&mut *handle.cast::<crate::draw::DrawRenderer>()).mark_cursor_resource(resource);
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn kfx_wgpu_draw_resource_release(
     handle: *mut c_void,
     resource: u64,
@@ -1411,6 +1420,9 @@ pub struct DrawCounters {
     arena_live_bytes: u64,
     arena_retired_bytes: u64,
     arena_growth_peak_bytes: u64,
+    arena_by_kind:
+        [crate::draw::arena_kinds::ArenaKindCounters; crate::draw::arena_kinds::ARENA_KINDS],
+    arena_trig_texture_source_bytes: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1485,6 +1497,8 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 arena_live_bytes: arena.live_bytes,
                 arena_retired_bytes: arena.retired_bytes,
                 arena_growth_peak_bytes: arena.growth_peak_bytes,
+                arena_by_kind: counters.arena_by_kind,
+                arena_trig_texture_source_bytes: counters.arena_trig_texture_source_bytes,
             });
             Ok(Some(1))
         });
@@ -1495,6 +1509,16 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
 #[cfg(test)]
 mod draw_abi_tests {
     use super::*;
+
+    #[test]
+    fn arena_counter_layout() {
+        assert_eq!(
+            std::mem::size_of::<crate::draw::arena_kinds::ArenaKindCounters>(),
+            48
+        );
+        assert_eq!(std::mem::offset_of!(DrawCounters, arena_by_kind), 77 * 8);
+        assert_eq!(std::mem::size_of::<DrawCounters>(), (77 + 19 * 6 + 1) * 8);
+    }
 
     #[test]
     fn rejects_null_draw_inputs_without_gpu() {

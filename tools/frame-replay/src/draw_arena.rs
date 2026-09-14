@@ -1,3 +1,4 @@
+use super::ResourceKind;
 use anyhow::{Result, ensure};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -77,6 +78,7 @@ pub(crate) struct Arena {
     wanted: u32,
     enabled: bool,
     counters: ArenaCounters,
+    pub(super) lengths: super::arena_kinds::SourceLengths,
 }
 
 fn class_words(class: usize) -> u32 {
@@ -115,6 +117,7 @@ impl Arena {
             wanted: 0,
             enabled: limit_bytes >= MIN_LIMIT_BYTES,
             counters: ArenaCounters::default(),
+            lengths: Default::default(),
         }
     }
 
@@ -267,10 +270,11 @@ impl Arena {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         counters: &mut super::Counters,
-        id: u64,
-        generation: u64,
+        identity: (u64, u64),
         bytes: &[u8],
+        kind: ResourceKind,
     ) -> Result<u32> {
+        let (id, generation) = identity;
         let words = u32::try_from(bytes.len()).map_err(|_| anyhow::anyhow!(OVERFLOW))?;
         let class = size_class(words.max(ALIGN_WORDS));
         if let Some(entry) = self.residency.get(&id)
@@ -280,8 +284,10 @@ impl Arena {
             let stale = entry.generation != generation;
             self.touch(id, generation);
             if !stale {
+                self.lengths.record(counters, kind, bytes.len(), true);
                 return Ok(offset);
             }
+            self.lengths.record(counters, kind, bytes.len(), false);
             self.record_miss(MissReason::Generation, bytes.len());
             self.upload(queue, counters, offset, bytes);
             return Ok(offset);
@@ -293,6 +299,7 @@ impl Arena {
         };
         let offset = self.allocate(device, queue, counters, class)?;
         self.missing.remove(&id);
+        self.lengths.record(counters, kind, bytes.len(), false);
         self.record_miss(reason, bytes.len());
         self.upload(queue, counters, offset, bytes);
         self.counters.live_bytes += u64::from(class_words(class)) * 4;
@@ -597,7 +604,14 @@ mod tests {
         let count = (INITIAL_WORDS - 100000 - ALIGN_WORDS) / MIN_CLASS_WORDS;
         for id in 1_000_000..1_000_000 + u64::from(count) {
             draw.arena
-                .offset_of(&draw.device, &draw.queue, &mut draw.counters, id, 1, &[0])
+                .offset_of(
+                    &draw.device,
+                    &draw.queue,
+                    &mut draw.counters,
+                    (id, 1),
+                    &[0],
+                    ResourceKind::Other,
+                )
                 .unwrap();
         }
         for id in 1_000_000..1_000_000 + u64::from(count) {
@@ -680,7 +694,14 @@ mod tests {
         let mut arena = Arena::new(32 << 20);
         let mut resolve = |arena: &mut Arena, id, generation, bytes: &[u8]| {
             arena
-                .offset_of(&device, &queue, &mut counters, id, generation, bytes)
+                .offset_of(
+                    &device,
+                    &queue,
+                    &mut counters,
+                    (id, generation),
+                    bytes,
+                    ResourceKind::Other,
+                )
                 .unwrap()
         };
         let offset = resolve(&mut arena, 1, 1, &[71; 60]);
@@ -747,15 +768,36 @@ mod tests {
         let mut small = Arena::new(32 << 20);
         small.limit = 1024;
         small
-            .offset_of(&device, &queue, &mut counters, 2, 1, &[7; 300])
+            .offset_of(
+                &device,
+                &queue,
+                &mut counters,
+                (2, 1),
+                &[7; 300],
+                ResourceKind::Other,
+            )
             .unwrap();
         small.begin_batch();
         small
-            .offset_of(&device, &queue, &mut counters, 3, 1, &[9; 300])
+            .offset_of(
+                &device,
+                &queue,
+                &mut counters,
+                (3, 1),
+                &[9; 300],
+                ResourceKind::Other,
+            )
             .unwrap();
         small.begin_batch();
         small
-            .offset_of(&device, &queue, &mut counters, 2, 1, &[7; 300])
+            .offset_of(
+                &device,
+                &queue,
+                &mut counters,
+                (2, 1),
+                &[7; 300],
+                ResourceKind::Other,
+            )
             .unwrap();
         assert_eq!(small.counters().evictions, 2);
         assert_eq!(small.counters().misses_eviction, 1);

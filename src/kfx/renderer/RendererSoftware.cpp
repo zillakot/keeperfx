@@ -322,6 +322,8 @@ void RendererSoftware::report_drawing()
         gpu.arena_miss_generation_bytes,
         gpu.arena_miss_eviction_bytes,
         gpu.arena_explicit_forgets,
+        {gpu.arena_by_kind[0], gpu.arena_by_kind[1], gpu.arena_by_kind[2], gpu.arena_by_kind[3], gpu.arena_by_kind[4], gpu.arena_by_kind[5], gpu.arena_by_kind[6], gpu.arena_by_kind[7], gpu.arena_by_kind[8], gpu.arena_by_kind[9], gpu.arena_by_kind[10], gpu.arena_by_kind[11], gpu.arena_by_kind[12], gpu.arena_by_kind[13], gpu.arena_by_kind[14], gpu.arena_by_kind[15], gpu.arena_by_kind[16], gpu.arena_by_kind[17], gpu.arena_by_kind[18]},
+        gpu.arena_trig_texture_source_bytes,
         gpu.host_staged_asset_bytes, gpu.arena_bytes_resident, gpu.arena_scratch_bytes_peak,
         gpu.arena_capacity_bytes,
         gpu.arena_live_bytes,
@@ -332,7 +334,18 @@ void RendererSoftware::report_drawing()
     if (path != nullptr) {
         FILE* output = fopen(path, "w");
         if (output != nullptr) {
-            fprintf(output, "{\"backend\":\"wgpu-native-frame\",\"frames\":%lu,"
+            fprintf(output, "{");
+            for (unsigned i = 0; i < KFX_ARENA_KIND_COUNT; ++i) {
+                const auto& c = gpu.arena_by_kind[i];
+                fprintf(output, "\"arena_%s_bytes\":%llu,", KfxArenaKindNames[i], static_cast<unsigned long long>(c.bytes));
+                fprintf(output, "\"arena_%s_misses\":%llu,", KfxArenaKindNames[i], static_cast<unsigned long long>(c.misses));
+                fprintf(output, "\"arena_%s_hits\":%llu,", KfxArenaKindNames[i], static_cast<unsigned long long>(c.hits));
+                fprintf(output, "\"arena_%s_source_bytes\":%llu,", KfxArenaKindNames[i], static_cast<unsigned long long>(c.source_bytes));
+                fprintf(output, "\"arena_%s_distinct_lengths\":%llu,", KfxArenaKindNames[i], static_cast<unsigned long long>(c.distinct_lengths));
+                fprintf(output, "\"arena_%s_length_overflows\":%llu,", KfxArenaKindNames[i], static_cast<unsigned long long>(c.length_overflows));
+            }
+            fprintf(output, "\"arena_trig_texture_source_bytes\":%llu,", static_cast<unsigned long long>(gpu.arena_trig_texture_source_bytes));
+            fprintf(output, "\"backend\":\"wgpu-native-frame\",\"frames\":%lu,"
                 "\"gpu_batches\":%llu,\"gpu_spans\":%llu,\"gpu_pixels\":%llu,"
                 "\"cpu_gpoly_spans\":%llu,\"cpu_replayed_spans\":%llu,"
                 "\"bridge_readbacks\":%llu,\"gpu_readback_bytes\":%llu,\"native_copy_bytes\":%llu,"

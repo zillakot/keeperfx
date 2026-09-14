@@ -1,4 +1,5 @@
 #pragma once
+#include "kfx/renderer/ArenaKindCounters.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -125,6 +126,8 @@ struct KfxWgpuDrawCounters {
     uint64_t arena_live_bytes;
     uint64_t arena_retired_bytes;
     uint64_t arena_growth_peak_bytes;
+    struct KfxArenaKindCounters arena_by_kind[KFX_ARENA_KIND_COUNT];
+    uint64_t arena_trig_texture_source_bytes;
 
 };
 #pragma pack(pop)
@@ -141,6 +144,7 @@ uint64_t kfx_wgpu_draw_target_create(void *drawing, uint32_t width, uint32_t hei
     char *error, size_t capacity);
 int32_t kfx_wgpu_draw_target_release(void *drawing, uint64_t target,
     char *error, size_t capacity);
+void kfx_wgpu_draw_resource_mark_cursor(void *drawing, uint64_t resource);
 uint64_t kfx_wgpu_draw_resource_create(void *drawing, const uint8_t *bytes, size_t length,
     uint32_t width, uint32_t height, uint32_t pitch, char *error, size_t capacity);
 int32_t kfx_wgpu_draw_resource_release(void *drawing, uint64_t resource,

@@ -70,9 +70,9 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
     }
     if (textured) memcpy(source + 60, vec_map, texture_length);
     const struct KfxWgpuNativeResource source_resource = {source, 60 + texture_length, 1, 1, 1,
-        NULL, 0};
+        NULL, 0, 0};
     const struct KfxWgpuNativeResource table_resource = {pixmap.fade_tables, 16384, 256, 320, 256,
-        pixmap.ghost, 65536};
+        pixmap.ghost, 65536, 0};
     const struct KfxGpolyTarget target = {poly_screen + vec_screen_width,
         vec_window_width, vec_window_height, vec_screen_width};
     struct KfxWgpuDrawCommand command = {0};

@@ -156,7 +156,7 @@ impl DrawRenderer {
             self.asset_generation,
             limit,
         );
-        let base = packer.offset(c.source, bytes)?;
+        let base = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
         let words = packer.finish();
         let assets = match &words {
             Some(words) => buffer(

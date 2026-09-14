@@ -413,6 +413,7 @@ mod tests {
             ..Default::default()
         };
         let mut resource = Resource {
+            cursor: false,
             width: 1,
             height: 1,
             pitch: 1,
@@ -452,6 +453,7 @@ mod tests {
             ..Default::default()
         };
         let mut resource = Resource {
+            cursor: false,
             width: 1,
             height: 1,
             pitch: 1,
@@ -506,6 +508,7 @@ mod tests {
             ..Default::default()
         };
         let mut resource = Resource {
+            cursor: false,
             width: 1,
             height: 1,
             pitch: 1,

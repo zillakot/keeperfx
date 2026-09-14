@@ -134,7 +134,7 @@ int main()
             }
             bridge.Boundary(false);
             uint8_t source_pixels[4] = {static_cast<uint8_t>(batch), 11, 21, 31};
-            KfxWgpuNativeResource source = {source_pixels, 4, 2, 2, 2, nullptr, 0};
+            KfxWgpuNativeResource source = {source_pixels, 4, 2, 2, 2, nullptr, 0, 0};
             KfxWgpuDrawCommand hud = {};
             hud.abi_version = 1;
             hud.kind = KFX_WGPU_DRAW_IMAGE;
