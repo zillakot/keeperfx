@@ -82,9 +82,25 @@ impl DrawRenderer {
             self.asset_generation,
             limit,
         );
-        let words = pack_commands(&mut packer, commands, &self.resources, width, height, limit)?;
+        let words = pack_commands(
+            &mut packer,
+            commands,
+            &self.resources,
+            ViewSpace::whole(width, height),
+            limit,
+        )?;
         packer.finish();
-        bin_commands(&words, width, height, self.storage_limit() as usize)?;
+        let entries = self.counters.tile_entries;
+        self.tile_index.build(
+            &mut self.counters,
+            &words,
+            &ViewSpace::table(&[ViewSpace::whole(width, height)]),
+            &[commands.len()],
+            (width, height),
+            limit,
+        )?;
+        // The preflight only proves the limits; its index is never uploaded.
+        self.counters.tile_entries = entries;
         Ok(())
     }
 }

@@ -249,7 +249,27 @@ Next PRs, in order:
    checkpoint copy bytes 2.46 MB → 0, submits 116.7 → 76.4, buffer allocations 241.6 → 200.6,
    frame interval 19.75 ms → 18.58 ms and observed 50.6 → 53.8 frames/s. The two remaining
    waits are the CPU presenter's full-target readbacks; the wgpu-presenter pair is outstanding.
-4. The single-stream restructure, guided by a design document added under
+4. One command stream per frame in root space with one tile index (landed: every record
+   names the view it was issued against, so views are offset aliases of the root and a
+   target change no longer flushes; one counting sort over renderer-owned scratch bins the
+   whole frame, and each serial segment rasters once over the tiles its own records reach).
+   At busy 640x480 with GPU drawing behind the SDL presenter, matched pairs: bridge
+   target-change flushes 39.3 → 0 per frame, tile-list allocations 0, buffer allocations
+   198.5 → 161.3, Rust allocator calls 30.0 M → 5.7 M per measured window, CPU drawing
+   0.506 → 0.470-0.531 ms and presentation 0.943 → 0.884-0.903 ms. The allocator drop is the
+   per-batch tile lists this step deletes: a wgpu-presenter profile of `master` attributes 15%
+   of `frame_flush` samples to `RawVec` growth, and the frame's record buffers are now reused
+   across frames as well. **Rust batches did not
+   fall** (72.5 → 71.7-75.1): ~38 creature shadows per frame each close a raster segment, so
+   the design's "≈ 4" needs the mask chain hoisted as well as terrain, ordered sprites and
+   the lens/minimap folds. GPU blocking wait rose 9.08 → 10.91 ms per frame and observed FPS
+   fell 56.5 → 54.5-56.1. That cost is unattributed: the record layout and root-space tile
+   misalignment were both measured and rejected (the latter at 3.5% more tile entries than a
+   view-space binning of the same frame). Under the wgpu presenter on `master` the frame is
+   GPU-bound — 82% of main-thread samples in the swapchain wait at 1920x1080, 9.8 FPS, with
+   drawing at 0.5-0.7 ms and no blocking waits — so the presenter pair is the measurement that
+   decides whether this matters, and it is outstanding.
+5. The rest of the single-stream restructure, guided by the design document under
    [`docs/architecture/`](../architecture/).
 
 Coverage work remains independent of performance: arbitrary Lua pixel/batch
@@ -332,7 +352,7 @@ ownership, synchronization, counters and failure behavior.
 | Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h) cover the implemented families below. General triangles have all 27 kernels and deterministic thin-triangle setup. Queued frames, alias views, resource ownership and borrowed cursor integration are implemented; final combined runtime and performance evidence must match their exact source. |
 | Cover every drawing path | Open | Accepted original-vertex terrain bypasses CPU setup and rasterization; bounded 2D hooks suppress selected CPU pixel loops. The remaining families below and routine upload/readback bridges prevent complete GPU coverage. |
 | Native validation | Partial | Exact `e19ff26f7` sessions passed gameplay, parchment, save/reload and compound-lens possession, with 788 surface-verified presentations and no drawing failures. A real parchment oracle-recursion crash was fixed and retested. Later queued-frame source requires its own acceptance; complete views, languages, assets and failure coverage remain open. |
-| Performance and delivery | Open | The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
+| Performance and delivery | Open | The single command stream is in place and its structural counters moved, but it does not yet pay for itself: observed FPS fell about 2 at busy 640x480 while CPU drawing and presentation improved. The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
 
 | Drawing family and source boundary | Implemented coverage | Remaining GPU work / validation |
 | --- | --- | --- |

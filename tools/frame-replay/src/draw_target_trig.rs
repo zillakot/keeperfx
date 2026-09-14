@@ -18,7 +18,7 @@ impl DrawRenderer {
         self.shadow_residency()?;
         let limit = self.storage_limit() as usize;
         ensure!(
-            commands.len() <= MAX_COMMANDS && commands.len() * 112 <= limit,
+            commands.len() <= MAX_COMMANDS && commands.len() * RECORD_BYTES <= limit,
             "snapshot triangle batch exceeds limit"
         );
         let dispatch = self.device.limits().max_compute_workgroups_per_dimension;
@@ -93,7 +93,14 @@ impl DrawRenderer {
         if commands.is_empty() {
             return Ok(());
         }
-        let tiles = bin_commands(&words, width, height, limit)?;
+        self.tile_index.build(
+            &mut self.counters,
+            &words,
+            &ViewSpace::table(&[ViewSpace::whole(width, height)]),
+            &[commands.len()],
+            (width, height),
+            limit,
+        )?;
         let cb = buffer(
             &self.device,
             &mut self.counters,
@@ -105,24 +112,8 @@ impl DrawRenderer {
             &self.device,
             &mut self.counters,
             "snapshot triangle tiles",
-            &tiles,
+            self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
-        );
-        let params = buffer(
-            &self.device,
-            &mut self.counters,
-            "snapshot triangle parameters",
-            &[
-                width,
-                height,
-                commands.len() as u32,
-                width.div_ceil(16),
-                self.targets[&target].pitch,
-                self.targets[&target].offset,
-                0,
-                0,
-            ],
-            wgpu::BufferUsages::UNIFORM,
         );
         let assets = self.tracked_buffer(&wgpu::BufferDescriptor {
             label: Some("GPU texture and geometry arena"),
@@ -137,7 +128,13 @@ impl DrawRenderer {
             uploaded += bytes.len() as u64;
         }
         self.counters.asset_upload_bytes += uploaded;
-        self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4 + 20;
+        self.counters.command_upload_bytes +=
+            (words.len() + self.tile_index.data().len()) as u64 * 4 + 20;
+        let pass = self.tile_index.passes()[0];
+        let target_view = self.targets[&target].clone();
+        let Some((params, span_x, span_y)) = self.pass_parameters(&target_view, &pass) else {
+            return Ok(());
+        };
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.compute.get_bind_group_layout(0),
@@ -159,7 +156,7 @@ impl DrawRenderer {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
+            pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
         self.submit_encoder(encoder);

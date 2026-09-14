@@ -71,6 +71,8 @@ const DRAW_SHADER: &str = concat!(
     include_str!("draw_transition.wgsl")
 );
 const MAX_COMMANDS: usize = 262_144;
+pub(super) const RECORD_WORDS: usize = 28;
+pub(super) const RECORD_BYTES: usize = RECORD_WORDS * 4;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 #[repr(C)]
@@ -141,7 +143,7 @@ struct Resource {
 }
 
 #[derive(Clone)]
-struct Target {
+pub(super) struct Target {
     width: u32,
     height: u32,
     indices: wgpu::Buffer,
@@ -163,6 +165,8 @@ pub struct Counters {
     pub wait_ns: u64,
     pub buffers: u64,
     pub buffer_bytes: u64,
+    pub tile_allocations: u64,
+    pub tile_entries: u64,
 }
 
 pub struct DrawRenderer {
@@ -194,10 +198,14 @@ pub struct DrawRenderer {
     target_resource_counters: TargetResourceCounters,
     counters: Counters,
     frame: Option<frame_queue::QueuedFrame>,
+    frame_buffers: Option<frame_queue::FrameBuffers>,
     frame_counters: FrameCounters,
     replaying: bool,
     deferred_snapshot_releases: Vec<u64>,
     arena: arena::Arena,
+    tile_index: TileIndex,
+    stream_commands: PersistentBuffer,
+    stream_tiles: PersistentBuffer,
     asset_generation: u64,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
@@ -314,6 +322,7 @@ impl DrawRenderer {
             target_resource_counters: TargetResourceCounters::default(),
             counters: Counters::default(),
             frame: None,
+            frame_buffers: None,
             frame_counters: FrameCounters::default(),
             replaying: false,
             deferred_snapshot_releases: Vec::new(),
@@ -322,6 +331,9 @@ impl DrawRenderer {
                     .max_storage_buffer_binding_size
                     .min(limits.max_buffer_size),
             ),
+            tile_index: TileIndex::default(),
+            stream_commands: PersistentBuffer::default(),
+            stream_tiles: PersistentBuffer::default(),
             asset_generation: 1,
             failure: renderer.failure.clone(),
         })
@@ -507,8 +519,7 @@ impl DrawRenderer {
             &mut packer,
             commands,
             &self.resources,
-            target_width,
-            target_height,
+            ViewSpace::whole(target_width, target_height),
             limit,
         )?;
         let assets = packer.finish();
@@ -522,17 +533,19 @@ impl DrawRenderer {
                 && target.height.div_ceil(8) <= dispatch_limit,
             "drawing dispatch exceeds device limit"
         );
-        let tiles = bin_commands(
+        self.tile_index.build(
+            &mut self.counters,
             &words,
-            target.width,
-            target.height,
-            self.storage_limit() as usize,
+            &ViewSpace::table(&[ViewSpace::whole(target.width, target.height)]),
+            &[commands.len()],
+            (target.width, target.height),
+            limit,
         )?;
         let tile_buffer = buffer(
             &self.device,
             &mut self.counters,
             "ordered tile lists",
-            &tiles,
+            self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
         let command_buffer = buffer(
@@ -554,26 +567,15 @@ impl DrawRenderer {
                 .arena
                 .binding(&self.device, &self.queue, &mut self.counters),
         };
-        let parameters = buffer(
-            &self.device,
-            &mut self.counters,
-            "drawing dimensions",
-            &[
-                target.width,
-                target.height,
-                commands.len() as u32,
-                target.width.div_ceil(16),
-                target.pitch,
-                target.offset,
-                0,
-                0,
-            ],
-            wgpu::BufferUsages::UNIFORM,
-        );
         if let Some(assets) = &assets {
             self.counters.asset_upload_bytes += assets.len() as u64 * 4;
         }
-        self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4;
+        self.counters.command_upload_bytes +=
+            (words.len() + self.tile_index.data().len()) as u64 * 4;
+        let pass = self.tile_index.passes()[0];
+        let Some((parameters, span_x, span_y)) = self.pass_parameters(&target, &pass) else {
+            return Ok(());
+        };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered drawing batch"),
             layout: &self.compute.get_bind_group_layout(0),
@@ -595,7 +597,7 @@ impl DrawRenderer {
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &binding, &[]);
-            pass.dispatch_workgroups(target.width.div_ceil(8), target.height.div_ceil(8), 1);
+            pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
         self.submit_encoder(encoder);
@@ -603,6 +605,85 @@ impl DrawRenderer {
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
 
+        Ok(())
+    }
+
+    /// The uniform for one raster pass, with the dispatch extent its records need;
+    /// `None` when the pass covers nothing.
+    fn pass_parameters(
+        &mut self,
+        target: &Target,
+        pass: &Pass,
+    ) -> Option<(wgpu::Buffer, u32, u32)> {
+        let boxed = pass_box(pass, target.width, target.height);
+        let (span_x, span_y) = (boxed[2] - boxed[0], boxed[3] - boxed[1]);
+        if span_x == 0 || span_y == 0 {
+            return None;
+        }
+        let parameters = buffer(
+            &self.device,
+            &mut self.counters,
+            "drawing dimensions",
+            &[
+                target.width,
+                target.height,
+                boxed[2],
+                pass.columns(),
+                target.pitch,
+                target.offset,
+                pass.header,
+                boxed[0],
+                boxed[1],
+                boxed[3],
+                0,
+                0,
+            ],
+            wgpu::BufferUsages::UNIFORM,
+        );
+        Some((parameters, span_x, span_y))
+    }
+
+    /// One raster pass over one segment of the frame's stream; the segment's header in
+    /// the shared tile index bounds both what each pixel iterates and the dispatch box.
+    fn raster_segment(
+        &mut self,
+        target: &Target,
+        buffers: &(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer),
+        pass: &Pass,
+        commands: usize,
+    ) -> Result<()> {
+        let (command_buffer, tile_buffer, asset_buffer) = buffers;
+        let Some((parameters, span_x, span_y)) = self.pass_parameters(target, pass) else {
+            return Ok(());
+        };
+        let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ordered drawing segment"),
+            layout: &self.compute.get_bind_group_layout(0),
+            entries: &[
+                entry(0, &target.indices),
+                entry(1, command_buffer),
+                entry(2, asset_buffer),
+                entry(3, &parameters),
+                entry(4, tile_buffer),
+                entry(6, self.shadow_slot_binding()),
+                entry(7, self.status_binding()),
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("exclusive destination pixel ownership"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.compute);
+            pass.set_bind_group(0, &binding, &[]);
+            pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
+        }
+        self.counters.dispatches += 1;
+        self.submit_encoder(encoder);
+        self.check_status()?;
+        self.counters.batches += 1;
+        self.counters.commands += commands as u64;
         Ok(())
     }
 
@@ -885,20 +966,130 @@ pub(crate) fn packable(kind: u32) -> bool {
     kind <= TRIG || kind == MOVIE || kind == MAP_VIEW || kind == BITMAP
 }
 
+/// The rectangle a command was issued against, and its origin in the space the
+/// dispatch addresses; a root-space stream carries one per view, a single-view
+/// batch the view itself at the origin. Records name a view by index, so the
+/// packed record stays 112 bytes and the per-pixel fetch stays coalesced.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct ViewSpace {
+    pub origin_x: u32,
+    pub origin_y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ViewSpace {
+    /// Four words per view: origin, then the extent, which the kernel does not read but
+    /// which lets the index be compared against a view-space binning of the same frame.
+    pub(super) fn table(views: &[Self]) -> Vec<u32> {
+        views
+            .iter()
+            .flat_map(|view| [view.origin_x, view.origin_y, view.width, view.height])
+            .collect()
+    }
+
+    pub(super) fn whole(width: u32, height: u32) -> Self {
+        Self {
+            origin_x: 0,
+            origin_y: 0,
+            width,
+            height,
+        }
+    }
+
+    fn rebase(&self, rectangle: [u32; 4]) -> [u32; 4] {
+        [
+            rectangle[0].wrapping_add(self.origin_x),
+            rectangle[1].wrapping_add(self.origin_y),
+            rectangle[2].wrapping_add(self.origin_x),
+            rectangle[3].wrapping_add(self.origin_y),
+        ]
+    }
+
+    /// A dispatch over the root no longer stops at the view edge, so the clip
+    /// carries the view rectangle the per-view dispatch used to impose.
+    fn clip(&self, rectangle: [u32; 4]) -> [u32; 4] {
+        let rebased = self.rebase(rectangle);
+        let far = [self.origin_x + self.width, self.origin_y + self.height];
+        [
+            (rebased[0] as i32).max(self.origin_x as i32) as u32,
+            (rebased[1] as i32).max(self.origin_y as i32) as u32,
+            (rebased[2] as i32).min(far[0] as i32) as u32,
+            (rebased[3] as i32).min(far[1] as i32) as u32,
+        ]
+    }
+}
+
+/// A renderer-owned buffer reused across frames, grown in powers of two.
+#[derive(Default)]
+pub(super) struct PersistentBuffer {
+    buffer: Option<wgpu::Buffer>,
+    words: u64,
+    staging: Vec<u8>,
+}
+
+fn persist(
+    slot: &mut PersistentBuffer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    counters: &mut Counters,
+    label: &str,
+    words: &[u32],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    let needed = words.len().max(1) as u64;
+    if slot.words < needed {
+        let size = needed.next_power_of_two().max(1024) * 4;
+        counters.buffers += 1;
+        counters.buffer_bytes += size;
+        slot.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        slot.words = size / 4;
+    }
+    let buffer = slot.buffer.clone().unwrap();
+    if !words.is_empty() {
+        slot.staging.clear();
+        slot.staging
+            .extend(words.iter().flat_map(|word| word.to_le_bytes()));
+        queue.write_buffer(&buffer, 0, &slot.staging);
+    }
+    buffer
+}
+
 fn pack_commands(
     packer: &mut AssetPacker,
     commands: &[Command],
     resources: &HashMap<u64, Resource>,
-    width: u32,
-    height: u32,
+    view: ViewSpace,
+    limit: usize,
+) -> Result<Vec<u32>> {
+    pack_records(
+        packer,
+        commands.iter().map(|c| (c, view, 0)),
+        commands.len(),
+        resources,
+        limit,
+    )
+}
+
+fn pack_records<'a>(
+    packer: &mut AssetPacker,
+    records: impl Iterator<Item = (&'a Command, ViewSpace, u32)>,
+    count: usize,
+    resources: &HashMap<u64, Resource>,
     limit: usize,
 ) -> Result<Vec<u32>> {
     ensure!(
-        commands.len() <= MAX_COMMANDS && commands.len() * 112 <= limit,
+        count <= MAX_COMMANDS && count * RECORD_BYTES <= limit,
         "command batch exceeds limit"
     );
-    let mut words = Vec::with_capacity(commands.len() * 28);
-    for c in commands {
+    let mut words = Vec::with_capacity(count * RECORD_WORDS);
+    for (c, view, index) in records {
+        let (width, height) = (view.width, view.height);
         ensure!(
             c.abi_version == ABI_VERSION && c.reserved == [0; 3],
             "invalid command ABI"
@@ -1016,9 +1207,9 @@ fn pack_commands(
             }
             table_offset = packer.offset(c.table, &table.bytes)?;
         }
-        words.extend([c.kind, c.blend, 0, c.colour]);
-        words.extend(rectangle);
-        words.extend(clip);
+        words.extend([c.kind, c.blend, index, c.colour]);
+        words.extend(view.rebase(rectangle));
+        words.extend(view.clip(clip));
         words.extend([source_offset, table_offset, source_pitch, 0]);
         words.extend([c.source_x, c.source_y, c.source_width, c.source_height]);
         words.extend([c.start_low, c.start_high, c.step_low, c.step_high]);
@@ -1051,49 +1242,219 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     }
 }
 
-fn bin_commands(words: &[u32], width: u32, height: u32, limit: usize) -> Result<Vec<u32>> {
-    let columns = width.div_ceil(16);
-    let rows = height.div_ceil(16);
-    let mut lists = vec![Vec::new(); (columns * rows) as usize];
-    let mut length = lists.len() * 2;
-    for (index, command) in words.as_chunks::<28>().0.iter().enumerate() {
-        let x0 = (command[4] as i32)
-            .max(command[8] as i32)
-            .max(0)
-            .min(width as i32) as u32;
-        let y0 = (command[5] as i32)
-            .max(command[9] as i32)
-            .max(0)
-            .min(height as i32) as u32;
-        let x1 = (command[6] as i32)
-            .min(command[10] as i32)
-            .max(0)
-            .min(width as i32) as u32;
-        let y1 = (command[7] as i32)
-            .min(command[11] as i32)
-            .max(0)
-            .min(height as i32) as u32;
-        if x0 >= x1 || y0 >= y1 {
-            continue;
+/// One ascending per-tile list of record indices for the whole frame, built by a
+/// counting sort into buffers the renderer keeps. `segments` are the exclusive
+/// record ends of the raster passes the frame is cut into. Each pass gets a header
+/// of `(offset, length)` pairs covering only the tiles its own records touch,
+/// followed by the shared entry array, so the passes together iterate each tile
+/// list exactly once and a pass costs nothing for tiles it never reaches.
+#[derive(Default)]
+pub(super) struct TileIndex {
+    counts: Vec<u32>,
+    cursors: Vec<u32>,
+    packed: Vec<u32>,
+    passes: Vec<Pass>,
+    length: usize,
+    header: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct Pass {
+    /// Tile box, half-open, in tile units.
+    tiles: [u32; 4],
+    header: u32,
+    counts: usize,
+}
+
+impl Pass {
+    fn columns(&self) -> u32 {
+        self.tiles[2].saturating_sub(self.tiles[0])
+    }
+
+    fn rows(&self) -> u32 {
+        self.tiles[3].saturating_sub(self.tiles[1])
+    }
+
+    fn cells(&self) -> usize {
+        self.columns() as usize * self.rows() as usize
+    }
+
+    fn cell(&self, x: u32, y: u32) -> usize {
+        (y - self.tiles[1]) as usize * self.columns() as usize + (x - self.tiles[0]) as usize
+    }
+}
+
+/// The pixel box a pass must dispatch over, empty when it draws nothing.
+pub(super) fn pass_box(pass: &Pass, width: u32, height: u32) -> [u32; 4] {
+    if pass.columns() == 0 || pass.rows() == 0 {
+        return [0; 4];
+    }
+    [
+        pass.tiles[0] * 16,
+        pass.tiles[1] * 16,
+        (pass.tiles[2] * 16).min(width),
+        (pass.tiles[3] * 16).min(height),
+    ]
+}
+
+fn tile_span(
+    command: &[u32; RECORD_WORDS],
+    width: u32,
+    height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let x0 = (command[4] as i32)
+        .max(command[8] as i32)
+        .max(0)
+        .min(width as i32) as u32;
+    let y0 = (command[5] as i32)
+        .max(command[9] as i32)
+        .max(0)
+        .min(height as i32) as u32;
+    let x1 = (command[6] as i32)
+        .min(command[10] as i32)
+        .max(0)
+        .min(width as i32) as u32;
+    let y1 = (command[7] as i32)
+        .min(command[11] as i32)
+        .max(0)
+        .min(height as i32) as u32;
+    if x0 >= x1 || y0 >= y1 {
+        return None;
+    }
+    Some((x0 / 16, y0 / 16, x1.div_ceil(16), y1.div_ceil(16)))
+}
+
+fn grow(vec: &mut Vec<u32>, length: usize, allocations: &mut u64) {
+    if vec.len() >= length {
+        return;
+    }
+    let capacity = vec.capacity();
+    vec.resize(length, 0);
+    if vec.capacity() != capacity {
+        *allocations += 1;
+    }
+}
+
+impl TileIndex {
+    fn build(
+        &mut self,
+        counters: &mut Counters,
+        words: &[u32],
+        views: &[u32],
+        segments: &[usize],
+        extent: (u32, u32),
+        limit: usize,
+    ) -> Result<()> {
+        let (width, height) = extent;
+        let records = words.as_chunks::<RECORD_WORDS>().0;
+        let count = segments.len().max(1);
+        self.passes.clear();
+        self.passes.resize(count, Pass::default());
+        for pass in self.passes.iter_mut() {
+            pass.tiles = [u32::MAX, u32::MAX, 0, 0];
         }
-        let count = (x1.div_ceil(16) - x0 / 16) as usize * (y1.div_ceil(16) - y0 / 16) as usize;
-        length = length
-            .checked_add(count)
+        let mut entries = 0usize;
+        let mut at = 0;
+        for (index, command) in records.iter().enumerate() {
+            while segments.get(at).is_some_and(|end| index >= *end) {
+                at += 1;
+            }
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+                continue;
+            };
+            entries = entries
+                .checked_add((x1 - x0) as usize * (y1 - y0) as usize)
+                .context("tile list length overflow")?;
+            let box_of = &mut self.passes[at].tiles;
+            box_of[0] = box_of[0].min(x0);
+            box_of[1] = box_of[1].min(y0);
+            box_of[2] = box_of[2].max(x1);
+            box_of[3] = box_of[3].max(y1);
+        }
+        let mut header = views.len();
+        let mut cells = 0usize;
+        for pass in self.passes.iter_mut() {
+            pass.header = u32::try_from(header).context("tile header overflow")?;
+            pass.counts = cells;
+            header += pass.cells() * 2;
+            cells += pass.cells();
+        }
+        let length = header
+            .checked_add(entries)
             .context("tile list length overflow")?;
         ensure!(length <= limit / 4, "tile lists exceed storage limit");
-        for y in y0 / 16..y1.div_ceil(16) {
-            for x in x0 / 16..x1.div_ceil(16) {
-                lists[(y * columns + x) as usize].push(index as u32);
+        grow(
+            &mut self.counts,
+            cells.max(1),
+            &mut counters.tile_allocations,
+        );
+        grow(
+            &mut self.cursors,
+            cells.max(1),
+            &mut counters.tile_allocations,
+        );
+        grow(
+            &mut self.packed,
+            length.max(1),
+            &mut counters.tile_allocations,
+        );
+        self.counts[..cells].fill(0);
+        self.packed[..views.len()].copy_from_slice(views);
+        self.length = length;
+        self.header = header;
+        at = 0;
+        for (index, command) in records.iter().enumerate() {
+            while segments.get(at).is_some_and(|end| index >= *end) {
+                at += 1;
+            }
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+                continue;
+            };
+            let pass = self.passes[at];
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    self.counts[pass.counts + pass.cell(x, y)] += 1;
+                }
             }
         }
+        let mut offset = header as u32;
+        for pass in &self.passes {
+            for cell in 0..pass.cells() {
+                let total = self.counts[pass.counts + cell];
+                self.packed[pass.header as usize + cell * 2] = offset;
+                self.packed[pass.header as usize + cell * 2 + 1] = total;
+                self.cursors[pass.counts + cell] = offset;
+                offset += total;
+            }
+        }
+        at = 0;
+        for (index, command) in records.iter().enumerate() {
+            while segments.get(at).is_some_and(|end| index >= *end) {
+                at += 1;
+            }
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+                continue;
+            };
+            let pass = self.passes[at];
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let cursor = &mut self.cursors[pass.counts + pass.cell(x, y)];
+                    self.packed[*cursor as usize] = index as u32;
+                    *cursor += 1;
+                }
+            }
+        }
+        counters.tile_entries += entries as u64;
+        Ok(())
     }
-    let mut packed = vec![0; lists.len() * 2];
-    for (tile, list) in lists.iter().enumerate() {
-        packed[tile * 2] = packed.len() as u32;
-        packed[tile * 2 + 1] = list.len() as u32;
-        packed.extend(list);
+
+    fn data(&self) -> &[u32] {
+        &self.packed[..self.length]
     }
-    Ok(packed)
+
+    fn passes(&self) -> Vec<Pass> {
+        self.passes.clone()
+    }
 }
 
 #[cfg(test)]
@@ -1163,7 +1524,16 @@ mod tests {
             },
         ] {
             let mut packer = AssetPacker::batch(1 << 20);
-            assert!(pack_commands(&mut packer, &[command], &resources, 32, 32, 1 << 20).is_err());
+            assert!(
+                pack_commands(
+                    &mut packer,
+                    &[command],
+                    &resources,
+                    ViewSpace::whole(32, 32),
+                    1 << 20
+                )
+                .is_err()
+            );
         }
         assert!(validate_resource(31, 32, 1, 32).is_err());
         assert!(validate_resource(256, 32, 8, 31).is_err());
@@ -1195,18 +1565,85 @@ mod tests {
             },
         ];
         let mut packer = AssetPacker::batch(1 << 20);
-        let words =
-            pack_commands(&mut packer, &commands, &HashMap::new(), 32, 32, 1 << 20).unwrap();
-        let tiles = bin_commands(&words, 32, 32, 1024).unwrap();
-        for (tile, expected) in [&[0, 1, 2][..], &[0, 1], &[0, 1], &[0, 1]]
-            .iter()
-            .enumerate()
-        {
-            let offset = tiles[tile * 2] as usize;
-            let count = tiles[tile * 2 + 1] as usize;
-            assert_eq!(&tiles[offset..offset + count], *expected);
+        let words = pack_commands(
+            &mut packer,
+            &commands,
+            &HashMap::new(),
+            ViewSpace::whole(32, 32),
+            1 << 20,
+        )
+        .unwrap();
+        let mut index = TileIndex::default();
+        let mut counters = Counters::default();
+        let table = ViewSpace::table(&[ViewSpace::whole(32, 32)]);
+        let list = |index: &TileIndex, pass: usize, x: u32, y: u32| {
+            let pass = index.passes()[pass];
+            let tiles = index.data();
+            let cell = pass.header as usize + pass.cell(x, y) * 2;
+            let begin = tiles[cell] as usize;
+            tiles[begin..begin + tiles[cell + 1] as usize].to_vec()
+        };
+        index
+            .build(
+                &mut counters,
+                &words,
+                &table,
+                &[commands.len()],
+                (32, 32),
+                4096,
+            )
+            .unwrap();
+        assert_eq!(list(&index, 0, 0, 0), [0, 1, 2]);
+        for (x, y) in [(1, 0), (0, 1), (1, 1)] {
+            assert_eq!(list(&index, 0, x, y), [0, 1]);
         }
-        assert!(bin_commands(&words, 32, 32, 8 * 4).is_err());
+        assert_eq!(counters.tile_entries, 9);
+        let allocations = counters.tile_allocations;
+        index
+            .build(
+                &mut counters,
+                &words,
+                &table,
+                &[commands.len()],
+                (32, 32),
+                4096,
+            )
+            .unwrap();
+        assert_eq!(
+            counters.tile_allocations, allocations,
+            "a rebuilt index of the same shape must not allocate"
+        );
+        // Segment ends split the same lists without reordering or duplicating entries.
+        index
+            .build(
+                &mut counters,
+                &words,
+                &table,
+                &[1, commands.len()],
+                (32, 32),
+                4096,
+            )
+            .unwrap();
+        assert_eq!(list(&index, 0, 0, 0), [0]);
+        assert_eq!(list(&index, 1, 0, 0), [1, 2]);
+        assert_eq!(list(&index, 1, 1, 1), [1]);
+        assert_eq!(
+            pass_box(&index.passes()[1], 32, 32),
+            [0, 0, 32, 32],
+            "a pass covers only the tiles its own records reach"
+        );
+        assert!(
+            index
+                .build(
+                    &mut counters,
+                    &words,
+                    &table,
+                    &[commands.len()],
+                    (32, 32),
+                    8 * 4
+                )
+                .is_err()
+        );
     }
 
     fn renderer() -> (crate::gpu::Renderer, DrawRenderer) {

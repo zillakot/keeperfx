@@ -1,9 +1,10 @@
 fn map_i32(offset: u32) -> i32 {
     return bitcast<i32>(assets[offset] | assets[offset+1u]<<8u | assets[offset+2u]<<16u | assets[offset+3u]<<24u);
 }
-fn map_view_sample(c: Command, pixel: vec2<u32>, destination: u32) -> u32 {
+fn map_view_sample(c: Command, pixel: vec2<u32>, destination: u32, view: vec3<u32>) -> u32 {
+    let view_width = view.z;
     let base = c.assets.x;
-    let local = vec2<u32>(vec2<i32>(pixel) - c.bounds.xy);
+    let local = vec2<u32>(vec2<i32>(pixel) - view_bounds(c, view).xy);
     if c.source.x == 0u {
         let cell = local.x / c.source.w;
         let style = assets[base+cell*2u] | (assets[base+cell*2u+1u]<<8u);
@@ -28,12 +29,12 @@ fn map_view_sample(c: Command, pixel: vec2<u32>, destination: u32) -> u32 {
     if c.source.x == 3u {
         let center = bitcast<vec2<i32>>(c.accumulator.xy);
         let spread = bitcast<i32>(c.accumulator.z);
-        let index = i32(pixel.y*parameters.x+pixel.x);
+        let index = i32(pixel.y*view_width+pixel.x);
         for (var i=0u;i<c.source.y;i++) {
-            let offset = (center.y+map_i32(base+i*8u+4u))*i32(parameters.x)+center.x+map_i32(base+i*8u);
+            let offset = (center.y+map_i32(base+i*8u+4u))*i32(view_width)+center.x+map_i32(base+i*8u);
             if index == offset || (c.accumulator.w != 0u &&
                 (index == offset-spread || index == offset+spread ||
-                 index == offset-spread*i32(parameters.x) || index == offset+spread*i32(parameters.x))) {
+                 index == offset-spread*i32(view_width) || index == offset+spread*i32(view_width))) {
                 return c.operation.w;
             }
         }

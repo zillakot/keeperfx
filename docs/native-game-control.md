@@ -25,7 +25,9 @@ It never writes to the source directory. The default lifetime is 1,200 seconds;
 a supervisor terminates the launched child at the limit. On macOS, launching from
 a restricted shell requires desktop access for SDL; no input-synthesis permission
 is needed. The default presenter is SDL; `--backend wgpu --verify` selects Rust and
-its live GPU comparison. `--level 1 --campaign keeporig` starts gameplay directly.
+its live GPU comparison. Drawing defaults to software; `--draw-backend wgpu` selects the
+GPU drawing path and `--draw-verify` adds its CPU oracle comparison, which is a parity
+check rather than a performance run. `--level 1 --campaign keeporig` starts gameplay directly.
 
 The descriptor is private (0600) inside the new session directory (0700). Keep it
 private: its random token authorizes all API actions in that process, including

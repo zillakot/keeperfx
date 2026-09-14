@@ -148,7 +148,15 @@ impl DrawRenderer {
             width.div_ceil(8) <= dispatch_limit && height.div_ceil(8) <= dispatch_limit,
             "snapshot drawing dispatch exceeds device limit"
         );
-        let tiles = bin_commands(&batch.words, width, height, self.storage_limit() as usize)?;
+        let limit = self.storage_limit() as usize;
+        self.tile_index.build(
+            &mut self.counters,
+            &batch.words,
+            &ViewSpace::table(&[ViewSpace::whole(width, height)]),
+            &[commands.len()],
+            (width, height),
+            limit,
+        )?;
         self.checkpoint_target(target)?;
         let (assets, base) = if self.arena.enabled() {
             self.arena.begin_batch();
@@ -187,25 +195,14 @@ impl DrawRenderer {
             &self.device,
             &mut self.counters,
             "snapshot image tile lists",
-            &tiles,
+            self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
-        let parameters = buffer(
-            &self.device,
-            &mut self.counters,
-            "snapshot image dimensions",
-            &[
-                width,
-                height,
-                commands.len() as u32,
-                width.div_ceil(16),
-                self.targets[&target].pitch,
-                self.targets[&target].offset,
-                0,
-                0,
-            ],
-            wgpu::BufferUsages::UNIFORM,
-        );
+        let pass = self.tile_index.passes()[0];
+        let target_view = self.targets[&target].clone();
+        let Some((parameters, span_x, span_y)) = self.pass_parameters(&target_view, &pass) else {
+            return Ok(());
+        };
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let mut copied = 0;
         for (&id, &offset) in &batch.snapshots {
@@ -251,7 +248,7 @@ impl DrawRenderer {
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &binding, &[]);
-            pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
+            pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
         self.submit_encoder(encoder);
@@ -259,7 +256,8 @@ impl DrawRenderer {
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
         self.counters.asset_upload_bytes += uploaded;
-        self.counters.command_upload_bytes += (batch.words.len() + tiles.len()) as u64 * 4;
+        self.counters.command_upload_bytes +=
+            (batch.words.len() + self.tile_index.data().len()) as u64 * 4;
         self.target_resource_counters.sampling_copy_bytes += copied;
         Ok(())
     }
@@ -267,11 +265,11 @@ impl DrawRenderer {
     fn pack_target_images(&self, commands: &[Command]) -> Result<ImageBatch> {
         let limit = self.storage_limit() as usize;
         ensure!(
-            commands.len() <= MAX_COMMANDS && commands.len() * 112 <= limit,
+            commands.len() <= MAX_COMMANDS && commands.len() * RECORD_BYTES <= limit,
             "snapshot command batch exceeds limit"
         );
         let mut batch = ImageBatch {
-            words: Vec::with_capacity(commands.len() * 28),
+            words: Vec::with_capacity(commands.len() * RECORD_WORDS),
             snapshots: HashMap::new(),
             tables: HashMap::new(),
             asset_words: 0,

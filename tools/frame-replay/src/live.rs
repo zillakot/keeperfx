@@ -1000,6 +1000,8 @@ pub struct DrawCounters {
     arena_bytes_uploaded: u64,
     host_staged_asset_bytes: u64,
     arena_bytes_resident: u64,
+    tile_allocations: u64,
+    tile_entries: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1035,6 +1037,8 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 arena_bytes_uploaded: arena.bytes_uploaded,
                 host_staged_asset_bytes: drawing.staged_asset_bytes(),
                 arena_bytes_resident: arena.bytes_resident,
+                tile_allocations: counters.tile_allocations,
+                tile_entries: counters.tile_entries,
             });
             Ok(Some(1))
         });

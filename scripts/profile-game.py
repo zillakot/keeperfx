@@ -27,6 +27,8 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "full_readbacks", "full_readback_bytes", "buffers", "buffer_bytes",
                     "batches", "commands", "ordered_sprites",
                     "arena_evictions", "arena_overflows", "arena_bytes_uploaded",
+                    "tile_allocations", "tile_entries",
+                    "bridge_target_flushes", "bridge_target_runs",
                     "host_staged_asset_bytes", "arena_bytes_resident")
 DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident")
 SETTINGS = {

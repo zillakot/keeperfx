@@ -85,6 +85,7 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "upload_bytes", "readback_bytes", "full_readbacks", "full_readback_bytes",
     "buffers", "buffer_bytes", "batches", "commands", "ordered_sprites",
     "arena_evictions", "arena_overflows", "arena_bytes_uploaded",
+    "tile_allocations", "tile_entries", "bridge_target_flushes", "bridge_target_runs",
     "host_staged_asset_bytes", "arena_bytes_resident"};
 static_assert(sizeof(PerformanceDrawingCounters) == DrawingCounterCount * sizeof(unsigned long long),
     "drawing counters must be a packed array of unsigned long long");

@@ -11,13 +11,29 @@ struct Command {
 @group(0) @binding(1) var<storage, read> commands: array<Command>;
 @group(0) @binding(2) var<storage, read> assets: array<u32>;
 @group(0) @binding(4) var<storage, read> tiles: array<u32>;
-struct DrawParameters { x: u32, y: u32, z: u32, w: u32, pitch: u32, offset: u32, pad0: u32, pad1: u32 }
+// x/y are the target extent; w is the pass's tile columns; base/box bound its dispatch.
+struct DrawParameters {
+    x: u32, y: u32, box_x: u32, w: u32, pitch: u32, offset: u32,
+    tile_base: u32, base_x: u32, base_y: u32, box_y: u32, pad0: u32, pad1: u32,
+}
 @group(0) @binding(3) var<uniform> parameters: DrawParameters;
 @group(0) @binding(7) var<storage, read_write> status: array<atomic<u32>, 8>;
 const STATUS_FRAME: u32 = 0u;
 const STATUS_TRIG_LOOKUP: u32 = 1u;
 fn raise(cause: u32) { atomicStore(&status[STATUS_FRAME], 1u); atomicStore(&status[cause], 1u); }
 fn pixel_address(i: u32) -> u32 { return parameters.offset + (i / parameters.x) * parameters.pitch + i % parameters.x; }
+// The frame's views live at the head of the tile buffer, four words each: a record names
+// one in operation.z. Only the sampled kinds read it, and they read it once per command.
+fn view_of(c: Command) -> vec3<u32> {
+    let base = c.operation.z * 4u;
+    return vec3(tiles[base], tiles[base + 1u], tiles[base + 2u]);
+}
+// Bounds and clip are stored in the dispatch's space; samplers work in the view the
+// command was issued against, which is that space shifted by the view's origin.
+fn view_bounds(c: Command, view: vec3<u32>) -> vec4<i32> {
+    let o = vec2<i32>(view.xy);
+    return c.bounds - vec4(o, o);
+}
 
 fn mul_high(a: u32, b: u32) -> u32 {
     let a0 = a & 65535u;
@@ -80,13 +96,22 @@ fn circle_hits(p: vec2<i32>, radius: i32, outline: bool) -> u32 {
 
 @compute @workgroup_size(8, 8)
 fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
-    if id.x >= parameters.x || id.y >= parameters.y { return; }
-    let pixel = vec2<i32>(id.xy);
-    let index = id.y * parameters.x + id.x;
-    let tile = ((id.y / 16u) * parameters.w + id.x / 16u) * 2u;
+    // A pass covers only the box its own records touch; base_x/base_y place it in the target.
+    let at = id.xy + vec2(parameters.base_x, parameters.base_y);
+    if at.x >= parameters.box_x || at.y >= parameters.box_y { return; }
+    let pixel = vec2<i32>(at);
+    let index = at.y * parameters.x + at.x;
+    // One index per frame: tile_base is this pass's header, covering only the tiles its
+    // own records reach, and w its tile columns.
+    let cell = (at.y / 16u - parameters.base_y / 16u) * parameters.w
+        + (at.x / 16u - parameters.base_x / 16u);
+    let tile = parameters.tile_base + cell * 2u;
+    // A tile no record in this pass reaches keeps its pixels, so it costs no traffic.
+    if tiles[tile + 1u] == 0u { return; }
     var destination = pixels[pixel_address(index)];
-    for (var i = 0u; i < tiles[tile + 1u]; i++) {
-        let c = commands[tiles[tiles[tile] + i]];
+    let end = tiles[tile] + tiles[tile + 1u];
+    for (var i = tiles[tile]; i < end; i++) {
+        let c = commands[tiles[i]];
         if any(pixel < c.clip.xy) || any(pixel >= c.clip.zw) { continue; }
         if any(pixel < c.bounds.xy) || any(pixel >= c.bounds.zw) { continue; }
         var source = c.operation.w;
@@ -105,18 +130,24 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
             let shade = low & 0xff00u;
             source = assets[c.assets.y + shade + assets[c.assets.x + uv]];
         }
-        if c.operation.x == 9u {
-            let sampled = trig_sample(c, pixel, destination);
-            if sampled == 257u { raise(STATUS_TRIG_LOOKUP); continue; }
-            destination = sampled;
-            continue;
+        // Kinds below SPRITE never leave the dispatch's space, so they never read the view.
+        if c.operation.x >= 6u {
+            let view = view_of(c);
+            let local_pixel = pixel - vec2<i32>(view.xy);
+            let viewed = vec2<u32>(local_pixel);
+            if c.operation.x == 9u {
+                let sampled = trig_sample(c, local_pixel, destination);
+                if sampled == 257u { raise(STATUS_TRIG_LOOKUP); continue; }
+                destination = sampled;
+                continue;
+            }
+            if c.operation.x == 16u { source = transition_sample(c, viewed, view); }
+            if c.operation.x == 15u { source = bitmap_sample(c, viewed); }
+            if c.operation.x == 14u { source = map_view_sample(c, viewed, destination, view); }
+            if c.operation.x == 13u { source = movie_sample(c, viewed, view); }
+            if c.operation.x == 6u { source = sprite_sample(c, viewed); }
+            if c.operation.x == 7u || c.operation.x == 8u { source = raw_sample(c, viewed, view); }
         }
-        if c.operation.x == 16u { source = transition_sample(c, id.xy); }
-        if c.operation.x == 15u { source = bitmap_sample(c, id.xy); }
-        if c.operation.x == 14u { source = map_view_sample(c, id.xy, destination); }
-        if c.operation.x == 13u { source = movie_sample(c, id.xy); }
-        if c.operation.x == 6u { source = sprite_sample(c, id.xy); }
-        if c.operation.x == 7u || c.operation.x == 8u { source = raw_sample(c, id.xy); }
         if source == c.options.x { continue; }
         var hits = 1u;
         if c.operation.x == 4u || c.operation.x == 5u {
