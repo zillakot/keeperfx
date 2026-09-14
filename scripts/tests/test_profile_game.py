@@ -27,7 +27,9 @@ def engine_output(output, args=None):
     metadata = {"format": "KFXPERF01", "complete": True, "start": dict(snapshot, turn=start),
                 "end": dict(snapshot, turn=end), "renderer": "software", "video_driver": "dummy",
                 "width": 640, "height": 480, "output_width": 640, "output_height": 480,
-                "vsync_actual": 0, "turns_per_second": 20, "fps_limit": 60, "interpolation": True,
+                "vsync_actual": 0, "turns_per_second": 20,
+                "fps_limit": profile.UNCAPPED_FPS_LIMIT if getattr(args, "uncapped", False) else profile.CAPPED_FPS_LIMIT,
+                "interpolation": True,
                 "scene": "dungeon", "view": "dungeon_top",
                 "resources": {"wall_ns": 1_000_000_000,
                               "process_cpu": {"available": True, "source": "getrusage(RUSAGE_SELF)",
@@ -350,7 +352,7 @@ class ProfileTests(unittest.TestCase):
             asset.rename(root / "data/renamed")
             self.assertNotEqual(second["sha256"], profile.asset_identity(root)["sha256"])
 
-    def run_runner(self, root, behavior, headless=True):
+    def run_runner(self, root, behavior, headless=True, extra=()):
         engine = root / "engine"
         engine.write_bytes(b"engine")
         (root / "keeperfx.cfg").write_text("DELTA_TIME=OFF\nVSYNC=ON\n")
@@ -359,7 +361,7 @@ class ProfileTests(unittest.TestCase):
         (root / "save/personal.sav").write_bytes(b"personal")
         output = root / "out/profile"
         argv = ["profile-game.py", "--engine", str(engine), "--game-dir", str(root),
-                "--out", str(output), "--scene", "busy", "--turns", "20"]
+                "--out", str(output), "--scene", "busy", "--turns", "20", *extra]
         if headless:
             argv += ["--headless"]
         with mock.patch.object(profile, "ROOT", root), mock.patch("sys.argv", argv), \
@@ -415,6 +417,71 @@ class ProfileTests(unittest.TestCase):
                 self.assertEqual((output / "stderr.log").read_text(), "partial stderr")
                 self.assertEqual((output / "raw.csv").read_text(), "partial output")
                 self.assertEqual(list((root / "out").iterdir()), [output])
+
+    def test_capped_default_settings_are_unchanged_and_uncapped_clears_the_limiter(self):
+        self.assertEqual(profile.settings_for(arguments()), profile.SETTINGS)
+        self.assertEqual(list(profile.settings_for(arguments(uncapped=True))), list(profile.SETTINGS))
+        self.assertEqual(profile.settings_for(arguments(uncapped=True))["FRAMES_PER_SECOND"], "0")
+        self.assertEqual(profile.frame_cap_for(arguments()),
+                         {"uncapped": False, "requested_fps_limit": 60, "label": "capped at 60 FPS"})
+        self.assertEqual(profile.frame_cap_for(arguments(uncapped=True)),
+                         {"uncapped": True, "requested_fps_limit": 0, "label": "uncapped"})
+
+    def test_summary_requires_the_engine_frame_limit_to_match_the_requested_cap(self):
+        for uncapped, other in ((False, True), (True, False)):
+            with self.subTest(uncapped=uncapped), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary)
+                args = arguments(uncapped=uncapped)
+                engine_output(output, args)
+                report = profile.summarize(output, args)
+                self.assertEqual(report["frame_cap"]["uncapped"], uncapped)
+                self.assertEqual(report["frame_cap"]["engine_fps_limit"], 0 if uncapped else 60)
+                self.assertEqual(report["observed"]["frame_cap"], "uncapped" if uncapped else "capped at 60 FPS")
+                self.assertAlmostEqual(report["observed"]["turns_per_second"], 20)
+                with self.assertRaisesRegex(RuntimeError, "frame cap"):
+                    profile.summarize(output, arguments(uncapped=other))
+
+    def test_uncapped_limitations_replace_the_capped_claim(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            args = arguments(uncapped=True)
+            engine_output(output, args)
+            limitations = profile.summarize(output, args)["limitations"]
+            self.assertNotIn(profile.CAPPED_LIMITATION, limitations)
+            for item in profile.UNCAPPED_LIMITATIONS:
+                self.assertIn(item, limitations)
+            engine_output(output, arguments())
+            self.assertIn(profile.CAPPED_LIMITATION, profile.summarize(output, arguments())["limitations"])
+
+    def test_report_labels_every_frame_rate_figure_with_the_cap_state(self):
+        for uncapped, label in ((False, "capped at 60 FPS"), (True, "uncapped")):
+            with self.subTest(uncapped=uncapped), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary)
+                args = arguments(uncapped=uncapped)
+                engine_output(output, args)
+                report = profile.summarize(output, args)
+                request = dict(vars(args), campaign="keeporig", level=1)
+                profile.write_report(output, dict(report, request=request, engine_sha256="0",
+                                                  assets={"sha256": "0"}))
+                text = (output / "report.md").read_text()
+                self.assertIn(f"frames/s ({label}).", text)
+                self.assertIn(f"Frame cap: {label} (engine frame limit {0 if uncapped else 60})", text)
+                self.assertIn("turns/s (requested 20;", text)
+
+    def test_runner_writes_an_uncapped_configuration_and_records_the_cap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def run(command, **kwargs):
+                self.assertIn("FRAMES_PER_SECOND=0", (kwargs["cwd"] / "keeperfx.cfg").read_text())
+                engine_output(Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent, arguments(uncapped=True))
+                return subprocess.CompletedProcess(command, 0, "stdout", "stderr")
+            output = self.run_runner(root, run, extra=["--uncapped"])
+            report = json.loads((output / "report.json").read_text())
+            self.assertTrue(report["request"]["uncapped"])
+            self.assertEqual(report["settings"]["FRAMES_PER_SECOND"], "0")
+            self.assertEqual(report["frame_cap"], {"uncapped": True, "requested_fps_limit": 0,
+                                                   "label": "uncapped", "engine_fps_limit": 0})
+            self.assertIn("FRAMES_PER_SECOND=0", (output / "keeperfx.cfg").read_text())
 
 
 if __name__ == "__main__":
