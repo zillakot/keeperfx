@@ -54,9 +54,13 @@ fn sprite_copy_forward(source: i32, destination: i32, count: i32, alignment: u32
     }
 }
 
+// One workgroup per sprite of a layer; a layer's members write disjoint rectangles, so
+// the workgroups commute while the row-copy order inside each one stays serial.
+@group(0) @binding(5) var<storage, read> layer: array<u32>;
+
 @compute @workgroup_size(1)
-fn sprite_ordered() {
-    let c = commands[0];
+fn sprite_ordered(@builtin(workgroup_id) wid: vec3<u32>) {
+    let c = commands[layer[wid.x]];
     let w = c.source.z;
     let h = c.source.w;
     let axis = c.assets.x + 2u * w * h;

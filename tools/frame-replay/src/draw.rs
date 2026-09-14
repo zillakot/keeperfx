@@ -199,6 +199,10 @@ pub struct Counters {
     pub buffer_bytes: u64,
     pub tile_allocations: u64,
     pub tile_entries: u64,
+    /// Layers of mutually disjoint ordered sprites, and the compute passes serving them.
+    /// One pass per layer, so a divergence is a bug.
+    pub ordered_sprite_layers: u64,
+    pub ordered_sprite_passes: u64,
     /// The terrain share of `tile_entries`; terrain inner-loop iterations are 256 times it.
     pub terrain_tile_entries: u64,
     /// `tile_entries` split by record kind; the entries sum to `tile_entries`.
@@ -224,6 +228,9 @@ pub struct DrawRenderer {
     queue: wgpu::Queue,
     compute: wgpu::ComputePipeline,
     compute_sprite_ordered: wgpu::ComputePipeline,
+    /// `[0, 1, 2, ...]`, the record index table every layer that holds the run's first
+    /// records in order binds instead of uploading one of its own.
+    sprite_layer_identity: Option<wgpu::Buffer>,
     effects: Option<wgpu::ComputePipeline>,
     shadow: Option<wgpu::ComputePipeline>,
     shadow_scratch: Option<wgpu::Buffer>,
@@ -366,6 +373,7 @@ impl DrawRenderer {
             queue,
             compute,
             compute_sprite_ordered,
+            sprite_layer_identity: None,
             effects: None,
             shadow: None,
             shadow_scratch: None,
@@ -1573,7 +1581,11 @@ fn pack_records<'a>(
             } else if c.kind == TRIG {
                 tight = Some(trig::validate(c, source, width, height)?);
             } else if c.kind == SPRITE {
-                tight = Some(sprites::validate(c, source)?);
+                let box_of = sprites::validate(c, source)?;
+                tight = Some(match sprites::ordered(c) {
+                    true => sprites::write_rect(c, source, width),
+                    false => box_of,
+                });
             } else {
                 ensure!(
                     source.pitch == 256 && source.width >= 32 && source.height >= 32,
