@@ -44,70 +44,76 @@ impl DrawRenderer {
         let mut table_bytes = 0;
         let mut table_hits = 0;
         let mut table_misses = 0;
-        for c in commands {
-            ensure!(
-                c.abi_version == ABI_VERSION
-                    && c.reserved == [0; 3]
-                    && c.kind == TRIG
-                    && c.source_y == 65536
-                    && c.colour <= 255,
-                "invalid snapshot triangle command"
-            );
-            let geometry = self
-                .resources
-                .get(&c.source)
-                .context("unknown triangle geometry")?;
-            ensure!(
-                geometry.bytes.len() == 60,
-                "snapshot triangle geometry must be 60 bytes"
-            );
-            let mut validation = Resource {
-                width: 1,
-                height: 1,
-                pitch: 1,
-                bytes: geometry.bytes.clone(),
-            };
-            validation.bytes.resize(60 + 65536, 0);
-            let box_of = trig::validate(c, &validation, width, height)?;
-            let table = self
-                .resources
-                .get(&c.table)
-                .context("unknown triangle table")?;
-            ensure!(
-                table.width == 256
-                    && table.height == 320
-                    && table.pitch == 256
-                    && table.bytes.len() == 81920,
-                "invalid triangle table"
-            );
-            let before = packer.uploaded_bytes();
-            let source_offset = packer.offset(c.source, &geometry.bytes)?;
-            geometry_bytes += packer.uploaded_bytes() - before;
-            let before = packer.uploaded_bytes();
-            let table_offset = packer.offset(c.table, &table.bytes)?;
-            let uploaded = packer.uploaded_bytes() - before;
-            table_bytes += uploaded;
-            table_hits += u64::from(uploaded == 0);
-            table_misses += u64::from(uploaded != 0);
-            words.extend([TRIG, 0, 0, c.colour]);
-            let policy = self.box_policy;
-            let declared = bounds(c.x, c.y, c.width, c.height)?;
-            words.extend(if policy.tight {
-                policy.resolve(box_of, width, height, declared)
-            } else {
-                declared
-            });
-            words.extend(bounds(c.clip_x, c.clip_y, c.clip_width, c.clip_height)?);
-            words.extend([source_offset, table_offset, 1, slot + 1]);
-            words.extend([c.source_x, 65536, 64, 0]);
-            words.extend([0; 4]);
-            words.extend([OPAQUE, 0, 0, 0]);
-        }
+        let packed = (|| -> Result<()> {
+            for c in commands {
+                ensure!(
+                    c.abi_version == ABI_VERSION
+                        && c.reserved == [0; 3]
+                        && c.kind == TRIG
+                        && c.source_y == 65536
+                        && c.colour <= 255,
+                    "invalid snapshot triangle command"
+                );
+                let geometry = self
+                    .resources
+                    .get(&c.source)
+                    .context("unknown triangle geometry")?;
+                ensure!(
+                    geometry.bytes.len() == 60,
+                    "snapshot triangle geometry must be 60 bytes"
+                );
+                let mut validation = Resource {
+                    width: 1,
+                    height: 1,
+                    pitch: 1,
+                    bytes: geometry.bytes.clone(),
+                };
+                validation.bytes.resize(60 + 65536, 0);
+                let box_of = trig::validate(c, &validation, width, height)?;
+                let table = self
+                    .resources
+                    .get(&c.table)
+                    .context("unknown triangle table")?;
+                ensure!(
+                    table.width == 256
+                        && table.height == 320
+                        && table.pitch == 256
+                        && table.bytes.len() == 81920,
+                    "invalid triangle table"
+                );
+                let before = packer.uploaded_bytes();
+                let source_offset = packer.offset(c.source, &geometry.bytes)?;
+                geometry_bytes += packer.uploaded_bytes() - before;
+                let before = packer.uploaded_bytes();
+                let table_offset = packer.offset(c.table, &table.bytes)?;
+                let uploaded = packer.uploaded_bytes() - before;
+                table_bytes += uploaded;
+                table_hits += u64::from(uploaded == 0);
+                table_misses += u64::from(uploaded != 0);
+                words.extend([TRIG, 0, 0, c.colour]);
+                let policy = self.box_policy;
+                let declared = bounds(c.x, c.y, c.width, c.height)?;
+                words.extend(if policy.tight {
+                    policy.resolve(box_of, width, height, declared)
+                } else {
+                    declared
+                });
+                words.extend(bounds(c.clip_x, c.clip_y, c.clip_width, c.clip_height)?);
+                words.extend([source_offset, table_offset, 1, slot + 1]);
+                words.extend([c.source_x, 65536, 64, 0]);
+                words.extend([0; 4]);
+                words.extend([OPAQUE, 0, 0, 0]);
+            }
+            Ok(())
+        })();
         let assets = packer.finish();
-        self.counters.target_trig_geometry_bytes += geometry_bytes;
-        self.counters.target_trig_table_bytes += table_bytes;
-        self.counters.target_trig_table_hits += table_hits;
-        self.counters.target_trig_table_misses += table_misses;
+        if assets.is_none() {
+            self.counters.target_trig_geometry_bytes += geometry_bytes;
+            self.counters.target_trig_table_bytes += table_bytes;
+            self.counters.target_trig_table_hits += table_hits;
+            self.counters.target_trig_table_misses += table_misses;
+        }
+        packed?;
         if commands.is_empty() {
             return Ok(());
         }
@@ -135,6 +141,10 @@ impl DrawRenderer {
         );
         let assets = match assets {
             Some(assets) => {
+                self.counters.target_trig_geometry_bytes += geometry_bytes;
+                self.counters.target_trig_table_bytes += table_bytes;
+                self.counters.target_trig_table_hits += table_hits;
+                self.counters.target_trig_table_misses += table_misses;
                 self.counters.asset_upload_bytes += assets.len() as u64 * 4;
                 self.counters.target_trig_asset_buffers += 1;
                 buffer(

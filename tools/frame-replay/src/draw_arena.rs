@@ -128,16 +128,6 @@ impl Arena {
         ArenaCounters {
             bytes_resident: u64::from(self.high_water) * 4,
             capacity_bytes: u64::from(self.capacity) * 4,
-            live_bytes: self
-                .residency
-                .values()
-                .map(|r| u64::from(class_words(r.class)) * 4)
-                .sum(),
-            retired_bytes: self
-                .retired
-                .iter()
-                .map(|(class, _)| u64::from(class_words(*class)) * 4)
-                .sum(),
             ..self.counters
         }
     }
@@ -175,6 +165,7 @@ impl Arena {
             self.free[class].push(offset);
         }
         self.scratch_words = 0;
+        self.counters.retired_bytes = 0;
     }
 
     /// Locks growth for the life of an encoder, and grows ahead of it to the demand
@@ -211,22 +202,29 @@ impl Arena {
     }
 
     pub(super) fn release(&mut self, id: u64) {
-        self.forget(id);
-        self.missing.remove(&id);
+        self.forget(id, true);
     }
 
-    pub(super) fn forget(&mut self, id: u64) {
+    fn forget(&mut self, id: u64, released: bool) {
         if self.remove(id) {
-            self.missing.insert(id, MissReason::Forget);
+            if !released {
+                self.missing.insert(id, MissReason::Forget);
+            }
             self.counters.explicit_forgets += 1;
+        }
+        if released {
+            self.missing.remove(&id);
         }
     }
 
     fn remove(&mut self, id: u64) -> bool {
         if let Some(entry) = self.residency.remove(&id) {
+            let bytes = u64::from(class_words(entry.class)) * 4;
+            self.counters.live_bytes -= bytes;
             self.lru.remove(&(entry.last_used, id));
             self.pinned.remove(&id);
             if self.holds > 0 {
+                self.counters.retired_bytes += bytes;
                 self.retired.push((entry.class, entry.offset));
             } else {
                 self.free[entry.class].push(entry.offset);
@@ -281,6 +279,7 @@ impl Arena {
         self.missing.remove(&id);
         self.record_miss(reason, bytes.len());
         self.upload(queue, counters, offset, bytes);
+        self.counters.live_bytes += u64::from(class_words(class)) * 4;
         self.residency.insert(
             id,
             Residency {
@@ -502,6 +501,7 @@ mod tests {
                 last_used: 0,
             },
         );
+        arena.counters.live_bytes = 1024;
         arena.pinned.insert(7);
         arena.release(7);
         assert!(arena.residency.is_empty());
@@ -535,7 +535,7 @@ mod tests {
         let offset = resolve(&mut arena, 1, 1, &[71; 60]);
         assert_eq!(resolve(&mut arena, 1, 1, &[71; 60]), offset);
         assert_eq!(arena.counters().bytes_uploaded, 240);
-        arena.forget(1);
+        arena.forget(1, false);
         assert_eq!(resolve(&mut arena, 1, 1, &[71; 60]), offset);
         let offset = resolve(&mut arena, 1, 1, &[93; 300]);
         assert_eq!(resolve(&mut arena, 1, 2, &[117; 300]), offset);

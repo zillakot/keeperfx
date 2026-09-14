@@ -143,41 +143,88 @@ fn actual_native_shadow_masks_and_triangles() {
 #[ignore = "requires GPU and native shadow fixture"]
 fn a_shadow_that_bins_to_nothing_still_records_its_mask() {
     let (table_bytes, cases) = fixture();
-    let mut draw = drawing();
-    let target = draw.create_target(79, 61).unwrap();
-    let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
-    clear(&mut draw, target);
-    let empty = draw.readback(target).unwrap();
-    draw.shadow_scratch_reset().unwrap();
-    // Collapse both vertex triples onto one point: the triangles' tight box is empty, so
-    // they have nothing to dispatch over. The mask is built from the descriptor and the
-    // RLE, which sit either side of the vertex block, so the resident chain must still
-    // advance to exactly this case's mask.
-    let mut asset = cases[0].asset.clone();
-    asset[32..152].fill(0);
-    let source = draw.create_resource(&asset, 1, 1, 1).unwrap();
-    draw.submit_shadow(target, &shadow(source, table, cases[0].colour))
-        .unwrap();
-    draw.release_resource(source).unwrap();
-    assert!(
-        cases[0].mask.iter().any(|&v| v != 0),
-        "the fixture mask is empty"
-    );
-    assert_eq!(
-        draw.shadow_scratch_read().unwrap(),
-        cases[0].mask,
-        "a shadow whose triangles bin to nothing must still record its mask"
-    );
-    assert_eq!(
-        draw.readback(target).unwrap(),
-        empty,
-        "degenerate shadow triangles must not write a pixel"
-    );
-    assert_eq!(
-        draw.frame_status().1,
-        0,
-        "a degenerate shadow raised a flag"
-    );
+    for limit in [128 << 20, 16 << 20] {
+        let mut draw = drawing_with_limit(limit);
+        let target = draw.create_target(79, 61).unwrap();
+        let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
+        clear(&mut draw, target);
+        let empty = draw.readback(target).unwrap();
+        draw.shadow_scratch_reset().unwrap();
+        // Collapse both vertex triples onto one point: the triangles' tight box is empty, so
+        // they have nothing to dispatch over. The mask is built from the descriptor and the
+        // RLE, which sit either side of the vertex block, so the resident chain must still
+        // advance to exactly this case's mask.
+        let mut asset = cases[0].asset.clone();
+        asset[32..152].fill(0);
+        let source = draw.create_resource(&asset, 1, 1, 1).unwrap();
+        draw.submit_shadow(target, &shadow(source, table, cases[0].colour))
+            .unwrap();
+        draw.release_resource(source).unwrap();
+        assert!(
+            cases[0].mask.iter().any(|&v| v != 0),
+            "the fixture mask is empty"
+        );
+        assert_eq!(
+            draw.shadow_scratch_read().unwrap(),
+            cases[0].mask,
+            "a shadow whose triangles bin to nothing must still record its mask"
+        );
+        assert_eq!(
+            draw.readback(target).unwrap(),
+            empty,
+            "degenerate shadow triangles must not write a pixel"
+        );
+        assert_eq!(
+            draw.frame_status().1,
+            0,
+            "a degenerate shadow raised a flag"
+        );
+        let source = draw.create_resource(&[0; 60], 1, 1, 1).unwrap();
+        let triangle = Command {
+            kind: TRIG,
+            source,
+            table,
+            source_x: 10,
+            source_y: 65536,
+            source_width: 64,
+            width: 79,
+            height: 61,
+            clip_width: 79,
+            clip_height: 61,
+            ..Default::default()
+        };
+        let before = draw.counters();
+        assert!(
+            draw.submit_target_triangles(
+                target,
+                &[
+                    triangle,
+                    Command {
+                        reserved: [1, 0, 0],
+                        ..triangle
+                    }
+                ],
+                0,
+                None
+            )
+            .is_err()
+        );
+        let after = draw.counters();
+        let uploaded = if limit >= 32 << 20 { 240 } else { 0 };
+        assert_eq!(
+            after.asset_upload_bytes - before.asset_upload_bytes,
+            uploaded
+        );
+        assert_eq!(
+            after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
+            uploaded
+        );
+        assert_eq!(
+            after.target_trig_table_bytes - before.target_trig_table_bytes,
+            0
+        );
+        assert_eq!(draw.readback(target).unwrap(), empty);
+    }
 }
 
 #[test]
@@ -364,10 +411,16 @@ fn target_triangle_validation_and_resident_slots() {
     let before = draw.counters();
     draw.submit_target_triangles(target, &[c], 0, None).unwrap();
     let after = draw.counters();
+    assert_eq!(after.asset_upload_bytes - before.asset_upload_bytes, 60 * 4);
     assert_eq!(
-        after.asset_upload_bytes - before.asset_upload_bytes,
-        (60 + 81920) * 4
+        after.target_trig_table_bytes - before.target_trig_table_bytes,
+        0
     );
+    assert_eq!(
+        after.target_trig_table_hits - before.target_trig_table_hits,
+        1
+    );
+    assert_eq!(after.target_trig_asset_buffers, 0);
     assert_eq!(after.readback_bytes, before.readback_bytes);
     draw.release_resource(mask_source).unwrap();
     draw.release_resource(source).unwrap();
