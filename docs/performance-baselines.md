@@ -163,7 +163,9 @@ so rejected their batch, and bytes written into the arena.
 `arena_bytes_resident` is a second gauge holding the arena extent suballocated so
 far, including free-listed slots and power-of-two class padding, so it bounds the
 live working set rather than tracking it exactly and its window total is
-meaningless. `upload_bytes` still counts every asset write, arena or not.
+meaningless. It counts expanded arena bytes — one `u32` per source byte, the GPU
+footprint — so dividing by four gives the real asset bytes that the arena's
+source-byte capacity is stated in. `upload_bytes` still counts every asset write, arena or not.
 
 The first presentation only establishes the counter baseline, so there is exactly
 one fewer counter frame than presentation sample. `wait_ns` is host time blocked

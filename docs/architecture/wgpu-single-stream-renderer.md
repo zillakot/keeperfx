@@ -424,12 +424,15 @@ Each step is one PR and keeps every existing fixture green.
 
 **Measured, 2026-09-14.** Busy scene, 640x480, `KFX_DRAW_BACKEND=wgpu` with the SDL presenter (the
 Rust presenter could not acquire a drawable on the measuring host), Apple M5 Metal, 304 measured frames:
-`arena_bytes_resident` 12.09 MB mean and 13.34 MB maximum against the 32 MiB phase-1 budget, with
-`arena_evictions` and `arena_overflows` at zero. The gauge is the suballocated arena extent, so it is an
-upper bound on the live working set. The working set therefore fits phase-1 `u32` expansion at the
-default 128 MiB storage binding, and PR 13 does not need to move earlier. 1920x1080 is unmeasured; the
-per-pixel term that grows there is the initial root image, so the bound should rise by roughly the
-framebuffer difference rather than change class.
+`arena_bytes_resident` 12.09 MB mean and 13.34 MB maximum, with `arena_evictions` and `arena_overflows`
+at zero. **Units differ between the gauge and the budget:** the gauge counts *expanded* arena bytes, one
+`u32` per source byte and therefore the GPU footprint, while the 32 MiB phase-1 budget counts *real
+asset bytes*. The 13.34 MB peak is thus 3.34 MB of real asset bytes — 10% of the 32 MiB budget and 10%
+of the 128 MiB storage binding — matching the ≈ 3.5 MiB raw / ≈ 14 MiB arena estimate. The gauge is the
+suballocated extent, so it is an upper bound on the live working set. The working set therefore fits
+phase-1 `u32` expansion at the default 128 MiB storage binding, and PR 13 does not need to move earlier.
+1920x1080 is unmeasured; the per-pixel term that grows there is the initial root image, so the bound
+should rise by roughly the framebuffer difference rather than change class.
 
 ## Risks
 

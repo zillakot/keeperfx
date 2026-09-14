@@ -157,12 +157,15 @@ triangles and generic commands share one ordered record list, so the span and
 triangle paths no longer flush each other. Inside a resident frame a batch closes
 only at a kind the GPU packer accepts alone (shadow, transition, minimap, lens
 effect), an ordered sprite, a target or view change, a snapshot, readback or
-barrier, the 4,096 command cap or verification mode. A world-bucket boundary and
-an emitter head only stop terrain from continuing; outside a resident lease every
-command still flushes, so a command accepted inside a frame
-reaches the native target at the next barrier, readback or frame end rather than
-before it returns. A batch the GPU rejects loses its whole pending run, and the
-frame recovers through a full CPU redraw. Pixel, box, HV-line and circle hooks in
+barrier, a rasterizer change, texture or fade cache eviction, 128 pending
+triangles, 32,768 pending spans, the 4,096 command cap, or verification mode. A
+world-bucket boundary and an emitter head only stop terrain from continuing;
+outside a resident lease every command still flushes, so a command accepted
+inside a frame reaches the native target at the next barrier, readback or frame
+end rather than before it returns. When a pending run cannot be submitted the
+bridge rasterizes it on the CPU if it holds only terrain, and otherwise drops it
+and marks the frame invalid so presentation waits for a full CPU redraw; it never
+drops a run and leaves the frame valid. Pixel, box, HV-line and circle hooks in
 [bflib_vidraw.c](../src/kfx/renderer/software/bflib_vidraw.c) use the same bridge.
 Circles execute their integer coverage recurrence on GPU. The
 [sprite adapter](../src/kfx/renderer/software/WgpuSprite.c) decodes RLE into immutable
@@ -241,8 +244,10 @@ native evidence and its source/binary limits are in the coverage ledger.
 
 - `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations.
 - `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_host_staged_asset_bytes`: host-side staged asset bytes the drawing context holds, a gauge rather than a total, and not GPU memory.
-- `arena_evictions`, `arena_overflows`, `arena_bytes_uploaded`: persistent asset arena LRU reclaims, exhausted allocations that reject a batch, and bytes actually written into the arena. `arena_bytes_resident` is a gauge: the arena extent suballocated so far, free-listed slots and power-of-two class padding included, so it bounds the live working set rather than tracking it exactly. Assets the arena does not own yet — the per-shadow `submit_target_triangles` tables — stay in `gpu_asset_upload_bytes` without appearing in `arena_bytes_uploaded`.
+- `arena_evictions`, `arena_overflows`, `arena_bytes_uploaded`: persistent asset arena LRU reclaims, exhausted allocations that reject a batch, and bytes actually written into the arena. `arena_bytes_resident` is a gauge: the arena extent suballocated so far in expanded bytes — one `u32` per source byte, free-listed slots and power-of-two class padding included — so it bounds the live working set rather than tracking it exactly. Assets the arena does not own yet — the per-shadow `submit_target_triangles` tables — stay in `gpu_asset_upload_bytes` without appearing in `arena_bytes_uploaded`.
 - `bridge_solo_batches`: the `gpu_batches` subset a single command occupied alone because its kind cannot share a submission; the floor the shadow path sets.
+- `rejected_commands` / `rejected_spans`: pending generic commands and terrain spans the target never received because the run was dropped without a CPU replay; each such drop invalidates the frame.
+- `gpu_batches` counts bridge submission routes, not GPU submissions. Inside a queued frame a route is an `enqueue_commands` call that may still merge with its neighbour, so a lower count means fewer FFI crossings and fewer command copies, not fewer dispatches; `gpu_submits` and `gpu_dispatches` measure those.
 - No GPU execution time is collected. It was not attempted because the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable and the copy-only submissions carry no pass for `timestamp_writes`.
 
 Zero declined spans is not a whole-renderer CPU-drawing count. These counters

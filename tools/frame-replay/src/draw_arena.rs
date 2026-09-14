@@ -88,7 +88,9 @@ impl Arena {
     }
 
     /// Ends the pinning scope: everything referenced by the batch just built
-    /// becomes evictable and transient regions return to their free lists.
+    /// becomes evictable and transient regions return to their free lists. Safe
+    /// only while every consumer submits its batch before opening the next one,
+    /// because a reused region is rewritten at the head of the following submit.
     pub(super) fn begin_batch(&mut self) {
         self.clock += 1;
         self.pinned.clear();

@@ -846,6 +846,12 @@ impl AssetPacker<'_> {
     }
 }
 
+/// Kinds `pack_commands` accepts in a multi-command batch. `WgpuTerrainBridge::PacksInBatch`
+/// mirrors this set; a change here needs the same change there.
+pub(crate) fn packable(kind: u32) -> bool {
+    kind <= TRIG || kind == MOVIE || kind == MAP_VIEW || kind == BITMAP
+}
+
 fn pack_commands(
     packer: &mut AssetPacker,
     commands: &[Command],
@@ -865,10 +871,7 @@ fn pack_commands(
             "invalid command ABI"
         );
         ensure!(
-            (c.kind <= TRIG || c.kind == MOVIE || c.kind == MAP_VIEW || c.kind == BITMAP)
-                && c.blend <= 2
-                && c.colour <= 255
-                && c.transparent <= OPAQUE,
+            packable(c.kind) && c.blend <= 2 && c.colour <= 255 && c.transparent <= OPAQUE,
             "invalid drawing operation"
         );
         let rectangle = if c.kind == CLEAR {
@@ -1062,6 +1065,31 @@ fn bin_commands(words: &[u32], width: u32, height: u32, limit: usize) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_mirrored_kinds_pack_into_a_batch() {
+        // WgpuTerrainBridge::PacksInBatch mirrors this set; keep the two in step.
+        for kind in [
+            CLEAR,
+            RECT,
+            IMAGE,
+            GPOLY_SPAN,
+            CIRCLE_FILLED,
+            CIRCLE_OUTLINE,
+            SPRITE,
+            RAW_IMAGE,
+            TILED_IMAGE,
+            TRIG,
+            MOVIE,
+            MAP_VIEW,
+            BITMAP,
+        ] {
+            assert!(packable(kind), "kind {kind} must pack");
+        }
+        for kind in [LENS_EFFECT, SHADOW, MINIMAP, TRANSITION] {
+            assert!(!packable(kind), "kind {kind} must stay solo");
+        }
+    }
+
     use super::*;
 
     #[test]
