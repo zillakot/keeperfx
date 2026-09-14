@@ -161,11 +161,15 @@ write and raises a frame flag instead, and the frame presents as drawn.
 [WgpuTerrainBridge](../src/kfx/renderer/WgpuTerrainBridge.cpp) batches selected
 terrain and generic commands between audited world-dispatch boundaries. Accepted textured gpoly calls
 copy original unsorted vertices and return before CPU sorting, setup, clipping or
-scan conversion. [GPU preparation](../tools/frame-replay/src/gpoly.rs) supplies its
-row buffer directly to the [ordered pixel pass](../tools/frame-replay/src/draw_triangles.rs);
-no prepared rows are read back to construct draw commands. Each destination pixel
-consumes the bounded triangle batch in submission order. A four-byte GPU shade
-validation flag is read back before target writes. Pending terrain spans, terrain
+scan conversion. [GPU preparation](../tools/frame-replay/src/gpoly.rs) runs once per frame into a
+renderer-owned row arena compressed to each triangle's covered rows, and every
+triangle enters the raster stream as its own record. No prepared rows are read back
+to construct draw commands. A destination pixel consumes only the triangles whose
+conservative screen-space box reaches its 16x16 tile, in submission order: the box is
+the clamped vertex range, which the setup kernel provably never writes outside, so
+the raster visits exactly the covered span and the per-pixel shade check replaces the
+separate span-validation pass. Terrain therefore no longer cuts the raster into
+segments, and it composes with the other families in one pass. Pending terrain spans, terrain
 triangles and generic commands share one ordered record list, so the span and
 triangle paths no longer flush each other. A record carries the view it was issued
 against, so a target or view change opens a run inside that list instead of closing
@@ -298,6 +302,7 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `frame_checkpoints`, `frame_gpu_checkpoint_copy_bytes`, `frame_validation_waits` and `frame_validation_bytes`: queued-frame flushes and what they used to cost. The copy bytes and both validation figures are structurally zero: a flush records the batches straight into the root and publishes the status word instead of aggregating per-batch flags under a blocking poll.
 - `frame_flagged_invalid`, `frame_status_reads` and `frame_status_stalls`: frames a kernel flagged as having an out-of-range lookup, completed status ring reads, and publishes skipped because every ring slot was still mapped. A stall only defers the flag to the next publish; it never loses it.
 - `tile_allocations` counts growths of the persistent binning scratch and is zero after warm-up; `tile_entries` is the per-frame size of the tile index the raster passes share. The ordered-sprite preflight builds an index it never uploads and is excluded from `tile_entries`.
+- `terrain_tile_entries` is the terrain share of `tile_entries`. Terrain inner-loop iterations are exactly 256 times it, because a 16x16 tile's 256 pixels each iterate that tile's list once. `prepared_row_words` is the compressed prepared-row arena the frame used, eight words per covered row, and `prepared_row_allocations` counts its growths, which reach zero after warm-up.
 - `bridge_target_flushes`: pending work flushed because the target was not a view of the frame root at all. Target and view changes inside the frame root no longer flush; `bridge_target_runs` counts those.
 - `gpu_batches` counts bridge submission routes, not GPU submissions. Inside a queued frame a route is an `enqueue_commands` call that may still merge with its neighbour, so a lower count means fewer FFI crossings and fewer command copies, not fewer dispatches; `gpu_submits` and `gpu_dispatches` measure those.
 - `gpu_raster_ns`, `gpu_terrain_prepare_ns`, `gpu_shadow_mask_ns`, `gpu_target_trig_ns`, `gpu_ordered_sprite_ns`, `gpu_minimap_ns`, `gpu_lens_ns` and `gpu_present_ns`: GPU execution time per pass kind, collected only when `KFX_WGPU_GPU_TIMING=1` and the adapter supports `TIMESTAMP_QUERY`. The pass descriptors carry `timestamp_writes`, which needs that feature alone; `TIMESTAMP_QUERY_INSIDE_ENCODERS`, which this Metal adapter lacks, would only be needed to stamp outside a pass. Results resolve into an eight-slot ring and are read through the same non-blocking map the status ring uses, so timing never adds a wait. Copy-only submissions carry no pass and are untimed by construction. `gpu_timed_passes` counts the stamped passes; `gpu_untimed_passes` counts submissions or passes that found no free ring slot, so a nonzero value means the per-pass totals under-report. These are GPU durations and are not comparable with the host wall-clock `draw` and `presentation` scopes, which include queue submission, surface acquisition and CPU work.
