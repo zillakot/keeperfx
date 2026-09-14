@@ -12,7 +12,7 @@ struct Command {
 @group(0) @binding(1) var<storage, read> commands: array<Command>;
 @group(0) @binding(2) var<storage, read> assets: array<u32>;
 @group(0) @binding(4) var<storage, read> tiles: array<u32>;
-struct DrawParameters { x: u32, y: u32, z: u32, w: u32, pitch: u32, offset: u32, pad0: u32, pad1: u32 }
+struct DrawParameters { x: u32, y: u32, z: u32, w: u32, pitch: u32, offset: u32, tile_base: u32, tile_count: u32 }
 @group(0) @binding(3) var<uniform> parameters: DrawParameters;
 @group(0) @binding(7) var<storage, read_write> status: array<atomic<u32>, 8>;
 const STATUS_FRAME: u32 = 0u;
@@ -90,10 +90,13 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= parameters.x || id.y >= parameters.y { return; }
     let pixel = vec2<i32>(id.xy);
     let index = id.y * parameters.x + id.x;
-    let tile = ((id.y / 16u) * parameters.w + id.x / 16u) * 2u;
+    // One index per frame: tile_base picks this pass's row of per-tile ranges, and the
+    // next row's entry for the same tile is where the range ends.
+    let tile = parameters.tile_base + (id.y / 16u) * parameters.w + id.x / 16u;
     var destination = pixels[pixel_address(index)];
-    for (var i = 0u; i < tiles[tile + 1u]; i++) {
-        let c = commands[tiles[tiles[tile] + i]];
+    let end = tiles[tile + parameters.tile_count];
+    for (var i = tiles[tile]; i < end; i++) {
+        let c = commands[tiles[i]];
         if any(pixel < c.clip.xy) || any(pixel >= c.clip.zw) { continue; }
         if any(pixel < c.bounds.xy) || any(pixel >= c.bounds.zw) { continue; }
         var source = c.operation.w;

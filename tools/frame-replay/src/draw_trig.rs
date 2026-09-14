@@ -90,7 +90,14 @@ impl DrawRenderer {
             limit,
         )?;
         packer.finish();
-        bin_commands(&words, width, height, self.storage_limit() as usize)?;
+        self.tile_index.build(
+            &mut self.counters,
+            &words,
+            &[commands.len()],
+            width,
+            height,
+            limit,
+        )?;
         Ok(())
     }
 }

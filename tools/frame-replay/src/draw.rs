@@ -165,6 +165,8 @@ pub struct Counters {
     pub wait_ns: u64,
     pub buffers: u64,
     pub buffer_bytes: u64,
+    pub tile_allocations: u64,
+    pub tile_entries: u64,
 }
 
 pub struct DrawRenderer {
@@ -200,6 +202,7 @@ pub struct DrawRenderer {
     replaying: bool,
     deferred_snapshot_releases: Vec<u64>,
     arena: arena::Arena,
+    tile_index: TileIndex,
     asset_generation: u64,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
@@ -324,6 +327,7 @@ impl DrawRenderer {
                     .max_storage_buffer_binding_size
                     .min(limits.max_buffer_size),
             ),
+            tile_index: TileIndex::default(),
             asset_generation: 1,
             failure: renderer.failure.clone(),
         })
@@ -523,17 +527,19 @@ impl DrawRenderer {
                 && target.height.div_ceil(8) <= dispatch_limit,
             "drawing dispatch exceeds device limit"
         );
-        let tiles = bin_commands(
+        self.tile_index.build(
+            &mut self.counters,
             &words,
+            &[commands.len()],
             target.width,
             target.height,
-            self.storage_limit() as usize,
+            limit,
         )?;
         let tile_buffer = buffer(
             &self.device,
             &mut self.counters,
             "ordered tile lists",
-            &tiles,
+            self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
         let command_buffer = buffer(
@@ -567,14 +573,15 @@ impl DrawRenderer {
                 target.pitch,
                 target.offset,
                 0,
-                0,
+                self.tile_index.tiles,
             ],
             wgpu::BufferUsages::UNIFORM,
         );
         if let Some(assets) = &assets {
             self.counters.asset_upload_bytes += assets.len() as u64 * 4;
         }
-        self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4;
+        self.counters.command_upload_bytes +=
+            (words.len() + self.tile_index.data().len()) as u64 * 4;
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered drawing batch"),
             layout: &self.compute.get_bind_group_layout(0),
@@ -1100,49 +1107,141 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     }
 }
 
-fn bin_commands(words: &[u32], width: u32, height: u32, limit: usize) -> Result<Vec<u32>> {
-    let columns = width.div_ceil(16);
-    let rows = height.div_ceil(16);
-    let mut lists = vec![Vec::new(); (columns * rows) as usize];
-    let mut length = lists.len() * 2;
-    for (index, command) in words.as_chunks::<RECORD_WORDS>().0.iter().enumerate() {
-        let x0 = (command[4] as i32)
-            .max(command[8] as i32)
-            .max(0)
-            .min(width as i32) as u32;
-        let y0 = (command[5] as i32)
-            .max(command[9] as i32)
-            .max(0)
-            .min(height as i32) as u32;
-        let x1 = (command[6] as i32)
-            .min(command[10] as i32)
-            .max(0)
-            .min(width as i32) as u32;
-        let y1 = (command[7] as i32)
-            .min(command[11] as i32)
-            .max(0)
-            .min(height as i32) as u32;
-        if x0 >= x1 || y0 >= y1 {
-            continue;
-        }
-        let count = (x1.div_ceil(16) - x0 / 16) as usize * (y1.div_ceil(16) - y0 / 16) as usize;
-        length = length
-            .checked_add(count)
-            .context("tile list length overflow")?;
-        ensure!(length <= limit / 4, "tile lists exceed storage limit");
-        for y in y0 / 16..y1.div_ceil(16) {
-            for x in x0 / 16..x1.div_ceil(16) {
-                lists[(y * columns + x) as usize].push(index as u32);
+/// One ascending per-tile list of record indices for the whole frame, built by a
+/// counting sort into buffers the renderer keeps. `segments` are the exclusive
+/// record ends of the raster passes the frame is cut into; the uploaded index is
+/// `segments + 1` rows of per-tile range starts followed by the entries, so pass
+/// `s` reads `[row[s][tile], row[s + 1][tile])` and the passes together iterate
+/// each tile list exactly once.
+#[derive(Default)]
+pub(super) struct TileIndex {
+    counts: Vec<u32>,
+    cursors: Vec<u32>,
+    packed: Vec<u32>,
+    length: usize,
+    header: usize,
+    tiles: u32,
+    allocations: u64,
+}
+
+fn tile_span(
+    command: &[u32; RECORD_WORDS],
+    width: u32,
+    height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let x0 = (command[4] as i32)
+        .max(command[8] as i32)
+        .max(0)
+        .min(width as i32) as u32;
+    let y0 = (command[5] as i32)
+        .max(command[9] as i32)
+        .max(0)
+        .min(height as i32) as u32;
+    let x1 = (command[6] as i32)
+        .min(command[10] as i32)
+        .max(0)
+        .min(width as i32) as u32;
+    let y1 = (command[7] as i32)
+        .min(command[11] as i32)
+        .max(0)
+        .min(height as i32) as u32;
+    if x0 >= x1 || y0 >= y1 {
+        return None;
+    }
+    Some((x0 / 16, y0 / 16, x1.div_ceil(16), y1.div_ceil(16)))
+}
+
+fn grow(vec: &mut Vec<u32>, length: usize, allocations: &mut u64) {
+    if vec.len() >= length {
+        return;
+    }
+    let capacity = vec.capacity();
+    vec.resize(length, 0);
+    if vec.capacity() != capacity {
+        *allocations += 1;
+    }
+}
+
+impl TileIndex {
+    fn build(
+        &mut self,
+        counters: &mut Counters,
+        words: &[u32],
+        segments: &[usize],
+        width: u32,
+        height: u32,
+        limit: usize,
+    ) -> Result<()> {
+        let columns = width.div_ceil(16) as usize;
+        let tiles = columns * height.div_ceil(16) as usize;
+        let passes = segments.len().max(1);
+        self.tiles = u32::try_from(tiles).context("tile count overflow")?;
+        grow(&mut self.counts, passes * tiles, &mut self.allocations);
+        grow(&mut self.cursors, passes * tiles, &mut self.allocations);
+        self.counts[..passes * tiles].fill(0);
+        let records = words.as_chunks::<RECORD_WORDS>().0;
+        let header = (passes + 1) * tiles;
+        let mut length = header;
+        let mut pass = 0;
+        for (index, command) in records.iter().enumerate() {
+            while segments.get(pass).is_some_and(|end| index >= *end) {
+                pass += 1;
+            }
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+                continue;
+            };
+            let count = (x1 - x0) as usize * (y1 - y0) as usize;
+            length = length
+                .checked_add(count)
+                .context("tile list length overflow")?;
+            ensure!(length <= limit / 4, "tile lists exceed storage limit");
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    self.counts[pass * tiles + y as usize * columns + x as usize] += 1;
+                }
             }
         }
+        grow(&mut self.packed, length, &mut self.allocations);
+        self.length = length;
+        self.header = header;
+        let mut offset = header as u32;
+        for tile in 0..tiles {
+            for pass in 0..passes {
+                self.packed[pass * tiles + tile] = offset;
+                self.cursors[pass * tiles + tile] = offset;
+                offset += self.counts[pass * tiles + tile];
+            }
+            self.packed[passes * tiles + tile] = offset;
+        }
+        pass = 0;
+        for (index, command) in records.iter().enumerate() {
+            while segments.get(pass).is_some_and(|end| index >= *end) {
+                pass += 1;
+            }
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+                continue;
+            };
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let cursor =
+                        &mut self.cursors[pass * tiles + y as usize * columns + x as usize];
+                    self.packed[*cursor as usize] = index as u32;
+                    *cursor += 1;
+                }
+            }
+        }
+        counters.tile_allocations = self.allocations;
+        counters.tile_entries += self.entries();
+        Ok(())
     }
-    let mut packed = vec![0; lists.len() * 2];
-    for (tile, list) in lists.iter().enumerate() {
-        packed[tile * 2] = packed.len() as u32;
-        packed[tile * 2 + 1] = list.len() as u32;
-        packed.extend(list);
+
+    fn data(&self) -> &[u32] {
+        &self.packed[..self.length]
     }
-    Ok(packed)
+
+    fn entries(&self) -> u64 {
+        (self.length - self.header) as u64
+    }
 }
 
 #[cfg(test)]
@@ -1261,16 +1360,41 @@ mod tests {
             1 << 20,
         )
         .unwrap();
-        let tiles = bin_commands(&words, 32, 32, 1024).unwrap();
+        let mut index = TileIndex::default();
+        let mut counters = Counters::default();
+        index
+            .build(&mut counters, &words, &[commands.len()], 32, 32, 4096)
+            .unwrap();
+        let tiles = index.data();
         for (tile, expected) in [&[0, 1, 2][..], &[0, 1], &[0, 1], &[0, 1]]
             .iter()
             .enumerate()
         {
-            let offset = tiles[tile * 2] as usize;
-            let count = tiles[tile * 2 + 1] as usize;
-            assert_eq!(&tiles[offset..offset + count], *expected);
+            let begin = tiles[tile] as usize;
+            let end = tiles[tile + 4] as usize;
+            assert_eq!(&tiles[begin..end], *expected);
         }
-        assert!(bin_commands(&words, 32, 32, 8 * 4).is_err());
+        assert_eq!(counters.tile_entries, 9);
+        let allocations = counters.tile_allocations;
+        index
+            .build(&mut counters, &words, &[commands.len()], 32, 32, 4096)
+            .unwrap();
+        assert_eq!(
+            counters.tile_allocations, allocations,
+            "a rebuilt index of the same shape must not allocate"
+        );
+        // Segment ends split the same lists without reordering or duplicating entries.
+        index
+            .build(&mut counters, &words, &[1, commands.len()], 32, 32, 4096)
+            .unwrap();
+        let split = index.data();
+        assert_eq!(&split[split[0] as usize..split[8] as usize], &[0, 1, 2]);
+        assert_eq!(&split[split[0] as usize..split[4] as usize], &[0]);
+        assert!(
+            index
+                .build(&mut counters, &words, &[commands.len()], 32, 32, 8 * 4)
+                .is_err()
+        );
     }
 
     fn renderer() -> (crate::gpu::Renderer, DrawRenderer) {

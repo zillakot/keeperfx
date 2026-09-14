@@ -148,7 +148,15 @@ impl DrawRenderer {
             width.div_ceil(8) <= dispatch_limit && height.div_ceil(8) <= dispatch_limit,
             "snapshot drawing dispatch exceeds device limit"
         );
-        let tiles = bin_commands(&batch.words, width, height, self.storage_limit() as usize)?;
+        let limit = self.storage_limit() as usize;
+        self.tile_index.build(
+            &mut self.counters,
+            &batch.words,
+            &[commands.len()],
+            width,
+            height,
+            limit,
+        )?;
         self.checkpoint_target(target)?;
         let (assets, base) = if self.arena.enabled() {
             self.arena.begin_batch();
@@ -187,7 +195,7 @@ impl DrawRenderer {
             &self.device,
             &mut self.counters,
             "snapshot image tile lists",
-            &tiles,
+            self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
         let parameters = buffer(
@@ -202,7 +210,7 @@ impl DrawRenderer {
                 self.targets[&target].pitch,
                 self.targets[&target].offset,
                 0,
-                0,
+                self.tile_index.tiles,
             ],
             wgpu::BufferUsages::UNIFORM,
         );
@@ -259,7 +267,8 @@ impl DrawRenderer {
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
         self.counters.asset_upload_bytes += uploaded;
-        self.counters.command_upload_bytes += (batch.words.len() + tiles.len()) as u64 * 4;
+        self.counters.command_upload_bytes +=
+            (batch.words.len() + self.tile_index.data().len()) as u64 * 4;
         self.target_resource_counters.sampling_copy_bytes += copied;
         Ok(())
     }

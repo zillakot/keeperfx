@@ -94,7 +94,14 @@ impl DrawRenderer {
         if commands.is_empty() {
             return Ok(());
         }
-        let tiles = bin_commands(&words, width, height, limit)?;
+        self.tile_index.build(
+            &mut self.counters,
+            &words,
+            &[commands.len()],
+            width,
+            height,
+            limit,
+        )?;
         let cb = buffer(
             &self.device,
             &mut self.counters,
@@ -106,7 +113,7 @@ impl DrawRenderer {
             &self.device,
             &mut self.counters,
             "snapshot triangle tiles",
-            &tiles,
+            self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
         let params = buffer(
@@ -121,7 +128,7 @@ impl DrawRenderer {
                 self.targets[&target].pitch,
                 self.targets[&target].offset,
                 0,
-                0,
+                self.tile_index.tiles,
             ],
             wgpu::BufferUsages::UNIFORM,
         );
@@ -138,7 +145,8 @@ impl DrawRenderer {
             uploaded += bytes.len() as u64;
         }
         self.counters.asset_upload_bytes += uploaded;
-        self.counters.command_upload_bytes += (words.len() + tiles.len()) as u64 * 4 + 20;
+        self.counters.command_upload_bytes +=
+            (words.len() + self.tile_index.data().len()) as u64 * 4 + 20;
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.compute.get_bind_group_layout(0),
