@@ -164,41 +164,49 @@ impl DrawRenderer {
             (words.len() + self.tile_index.data().len()) as u64 * 4 + 20;
         let pass = self.tile_index.passes()[0];
         let target_view = self.targets[&target].clone();
-        // The mask writes the resident slot the next shadow's chain reads, so it is
-        // recorded even when the triangles' own box leaves nothing to dispatch over.
-        if let Some(source) = mask {
-            self.record_shadow_mask(source, slot)?;
-        }
-        if let Some((params, span_x, span_y)) = self.pass_parameters(&target_view, &pass) {
-            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.compute.get_bind_group_layout(0),
-                entries: &[
-                    entry(0, &self.targets[&target].indices),
-                    entry(1, &cb),
-                    entry(2, &assets),
-                    entry(3, &params),
-                    entry(4, &tb),
-                    entry(5, self.terrain_rows_binding()),
-                    entry(6, self.shadow_slot_binding()),
-                    entry(7, self.status_binding()),
-                ],
-            });
-            let stamp = self.stamp(PASS_TARGET_TRIG);
-            let compute = self.compute.clone();
-            {
-                let encoder = self.frame_encoder();
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("shadow-masked target triangles"),
-                    timestamp_writes: stamp.compute(),
-                });
-                pass.set_pipeline(&compute);
-                pass.set_bind_group(0, &group, &[]);
-                pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
+        // The mask opens another packer before an encoder may exist. Keep its
+        // pending triangle readers pinned across that batch and any headroom submit.
+        self.arena.hold();
+        let recorded = (|| -> Result<()> {
+            // The mask writes the resident slot the next shadow's chain reads, so it is
+            // recorded even when the triangles' own box leaves nothing to dispatch over.
+            if let Some(source) = mask {
+                self.record_shadow_mask(source, slot)?;
             }
-            self.counters.dispatches += 1;
-            self.pass_boundary();
-        }
+            if let Some((params, span_x, span_y)) = self.pass_parameters(&target_view, &pass) {
+                let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &self.compute.get_bind_group_layout(0),
+                    entries: &[
+                        entry(0, &self.targets[&target].indices),
+                        entry(1, &cb),
+                        entry(2, &assets),
+                        entry(3, &params),
+                        entry(4, &tb),
+                        entry(5, self.terrain_rows_binding()),
+                        entry(6, self.shadow_slot_binding()),
+                        entry(7, self.status_binding()),
+                    ],
+                });
+                let stamp = self.stamp(PASS_TARGET_TRIG);
+                let compute = self.compute.clone();
+                {
+                    let encoder = self.frame_encoder();
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("shadow-masked target triangles"),
+                        timestamp_writes: stamp.compute(),
+                    });
+                    pass.set_pipeline(&compute);
+                    pass.set_bind_group(0, &group, &[]);
+                    pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
+                }
+                self.counters.dispatches += 1;
+                self.pass_boundary();
+            }
+            Ok(())
+        })();
+        self.arena.release_hold();
+        recorded?;
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;

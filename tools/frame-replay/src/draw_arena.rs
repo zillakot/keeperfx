@@ -501,8 +501,12 @@ mod tests {
                 last_used: 0,
             },
         );
+        arena.lru.insert((0, 7));
         arena.counters.live_bytes = 1024;
         arena.pinned.insert(7);
+        arena.begin_batch();
+        assert!(arena.pinned.contains(&7));
+        assert!(!arena.evict());
         arena.release(7);
         assert!(arena.residency.is_empty());
         assert!(arena.missing.is_empty());
