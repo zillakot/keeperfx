@@ -131,13 +131,14 @@ impl DrawRenderer {
             self.effects = Some(pipeline);
         }
         let limit = self.storage_limit() as usize;
+        self.open_batch();
         let bytes = &self.resources[&command.source].bytes;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &mut self.tail,
+            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -163,7 +164,7 @@ impl DrawRenderer {
             &[target.width, target.pitch, target.offset, base],
             wgpu::BufferUsages::UNIFORM,
         );
-        let pipeline = self.effects.as_ref().unwrap();
+        let pipeline = self.effects.clone().unwrap();
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native lens"),
             layout: &pipeline.get_bind_group_layout(0),
@@ -173,13 +174,14 @@ impl DrawRenderer {
                 entry(2, &view),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = self.begin_encoder();
+        let stamp = self.stamp(PASS_LENS);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("native lens pixel production"),
-                timestamp_writes: None,
+                timestamp_writes: stamp.compute(),
             });
-            pass.set_pipeline(pipeline);
+            pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &binding, &[]);
             pass.dispatch_workgroups(dispatch[0], dispatch[1], 1);
         }

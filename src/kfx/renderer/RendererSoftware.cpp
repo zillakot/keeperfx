@@ -289,6 +289,10 @@ void RendererSoftware::report_drawing()
         gpu.arena_evictions, gpu.arena_overflows, gpu.arena_bytes_uploaded,
         gpu.tile_allocations, gpu.tile_entries,
         counts.bridge_target_flushes, counts.bridge_target_runs,
+        gpu.terrain_tile_entries, gpu.prepared_row_words, gpu.prepared_row_allocations,
+        gpu.pass_ns[0], gpu.pass_ns[1], gpu.pass_ns[2], gpu.pass_ns[3],
+        gpu.pass_ns[4], gpu.pass_ns[5], gpu.pass_ns[6], gpu.pass_ns[7],
+        gpu.timed_passes, gpu.untimed_passes,
         gpu.host_staged_asset_bytes, gpu.arena_bytes_resident};
     performance_drawing_frame(&sample);
     const char* path = SDL_getenv("KFX_WGPU_DRAW_STATS");
@@ -308,6 +312,14 @@ void RendererSoftware::report_drawing()
                 "\"arena_bytes_uploaded\":%llu,\"arena_bytes_resident\":%llu,"
                 "\"bridge_solo_batches\":%llu,\"bridge_target_flushes\":%llu,"
                 "\"bridge_target_runs\":%llu,\"tile_allocations\":%llu,\"tile_entries\":%llu,"
+                "\"terrain_tile_entries\":%llu,"
+                "\"prepared_row_words\":%llu,\"prepared_row_allocations\":%llu,"
+                "\"gpu_raster_ns\":%llu,"
+                "\"gpu_terrain_prepare_ns\":%llu,"
+                "\"gpu_shadow_mask_ns\":%llu,\"gpu_target_trig_ns\":%llu,"
+                "\"gpu_ordered_sprite_ns\":%llu,\"gpu_minimap_ns\":%llu,"
+                "\"gpu_lens_ns\":%llu,\"gpu_present_ns\":%llu,"
+                "\"gpu_timed_passes\":%llu,\"gpu_untimed_passes\":%llu,"
                 "\"rejected_commands\":%llu,\"rejected_spans\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
@@ -360,6 +372,19 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(counts.bridge_target_runs),
                 static_cast<unsigned long long>(gpu.tile_allocations),
                 static_cast<unsigned long long>(gpu.tile_entries),
+                static_cast<unsigned long long>(gpu.terrain_tile_entries),
+                static_cast<unsigned long long>(gpu.prepared_row_words),
+                static_cast<unsigned long long>(gpu.prepared_row_allocations),
+                static_cast<unsigned long long>(gpu.pass_ns[0]),
+                static_cast<unsigned long long>(gpu.pass_ns[1]),
+                static_cast<unsigned long long>(gpu.pass_ns[2]),
+                static_cast<unsigned long long>(gpu.pass_ns[3]),
+                static_cast<unsigned long long>(gpu.pass_ns[4]),
+                static_cast<unsigned long long>(gpu.pass_ns[5]),
+                static_cast<unsigned long long>(gpu.pass_ns[6]),
+                static_cast<unsigned long long>(gpu.pass_ns[7]),
+                static_cast<unsigned long long>(gpu.timed_passes),
+                static_cast<unsigned long long>(gpu.untimed_passes),
                 static_cast<unsigned long long>(counts.rejected_commands),
                 static_cast<unsigned long long>(counts.rejected_spans));
             fclose(output);

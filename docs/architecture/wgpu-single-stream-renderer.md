@@ -43,7 +43,7 @@ command-list iterations must stay within 5% of the single-pass count.
 
 | Criterion | Now 640x480 | Now 1920x1080 | Target |
 | --- | ---: | ---: | --- |
-| `queue.submit` calls | ~125 *derived* | ~125 *derived* | **1**, hard cap 2 |
+| `queue.submit` calls | ~125 *derived*; 83.9 → **45.2 measured** | ~125 *derived*; 76.1 → **39.1 measured** | **1**, hard cap 2 |
 | Blocking `device.poll(Wait)` | 25.7 | 18.9 | **0** |
 | Frame checkpoints | 11.8 | 9.6 | **0** |
 | GPU→GPU checkpoint copy bytes | 29.01 MB | 159.05 MB | **0** |
@@ -52,8 +52,10 @@ command-list iterations must stay within 5% of the single-pass count.
 | C-side resource copy bytes | 1.95 MB | 1.66 MB | **≤ 64 KB** |
 | Rust requested bytes per presentation | 98.2 MB | 120.1 MB | **≤ 512 KB** |
 | `create_buffer`, `create_buffer_init`, `create_bind_group` calls | ~500 each *derived* | ~500 each *derived* | **≤ 8** each |
-| Full-target compute dispatches | ~86 *derived* | ~86 *derived* | **≤ 4** typical, hard cap 16 |
-| Terrain inner-loop iterations | 308 M *derived* | 2,065 M *derived* | **≤ 10 M / ≤ 25 M** |
+| Full-target compute dispatches | ~86 *derived*; total dispatches 128.7 → **59.1 measured** | ~86 *derived*; total dispatches 113.1 → **48.6 measured** | **≤ 4** typical, hard cap 16 |
+| Terrain inner-loop iterations | 308 M *derived* → **1.85 M measured** | 2,065 M *derived* → **7.85 M measured** | **≤ 10 M / ≤ 25 M** — met |
+| Terrain GPU time per frame | 5.24 ms → **0.04 ms** plus its share of the raster | 26.40 ms → **0.04 ms** plus its share of the raster | no separate pass |
+| Prepared terrain row arena | 12.6 MB → **0.68 MB** | 28.3 MB → **1.74 MB** | ≤ 4 MB |
 | Shadow mask readbacks / bytes | 14.0, 3.67 MB | 9.5, 2.49 MB | **0** |
 | Exact indexed parity | 76,859 verified batches, 0 failures | — | unchanged, plus the frame-order fixture |
 
@@ -109,7 +111,7 @@ existing kinds and run in the main raster. The families whose representation or 
 
 | Family | Producer | Stream representation | Pass |
 | --- | --- | --- | --- |
-| Terrain triangles | `WgpuTerrainBridge::DrawTriangle` via `kfx_gpoly_triangle_sink` | one `TERRAIN_TRI` per triangle, `aux_offset` its prepared-row base, bounds the CPU vertex box | prepare (head) + raster |
+| Terrain triangles | `WgpuTerrainBridge::DrawTriangle` via `kfx_gpoly_triangle_sink` | one `TERRAIN_TRI` per triangle: `source_offset`/`table_offset` its texture and fade arena offsets, `aux_offset` (word 15) its prepared-row base, bounds the clamped vertex box; words 16-24 unused | prepare, into the first raster segment's encoder, + raster |
 | Creature shadows | [`software/WgpuShadow.h`](../../src/kfx/renderer/software/WgpuShadow.h) | one mask record plus two `TRIG` records whose `aux_offset` is the shadow's mask slot | mask chain (head) + raster |
 | Ordered sprites (scaled solid horizontal flips) | `WgpuSprite.c`, `source_x` bit 3 | `SPRITE` with the serial flag | serial layer |
 | Minimap | [`frontmenu_ingame_map.c`](../../src/frontmenu_ingame_map.c) | modes 1–3 fold into `MINIMAP`; mode 0 reads the stored background from the arena; mode 4 records a copy | mode 4 = copy boundary, rest raster |
@@ -169,7 +171,7 @@ offset/pitch aliases sharing the root buffer.
 rectangle from pointer arithmetic against `m_frame_target.pixels` and `SubmissionTarget` caches the
 handle; keep that while C drawing exists, and pass view rectangles explicitly once it is retired. Other
 persistent buffers: command stream ring (8 MB), tile index (~1 MB at 1080p), prepared terrain rows
-(~0.8 MB at 1080p once compressed to covered rows), shadow scratch (256 KB), 16 mask slots of 256 KB,
+(~2 MB at 1080p once compressed to covered rows, at the measured triangle population), shadow scratch (256 KB), 16 mask slots of 256 KB,
 and a 4 × 256 B status and staging ring.
 
 ## Ordering semantics and pass boundaries
@@ -258,9 +260,10 @@ once per flush, on top of the per-batch flag readbacks outside a frame. What rep
    check that raised it. The tail copy clears it in the same encoder, so no clearing pass is needed.
 2. The general-triangle check moved *into* `draw.wgsl`: an out-of-range `trig_sample` skips the write
    for that command and raises the flag, and the dedicated `validate_trig` pass with its ~30 full-target
-   dispatches per frame is deleted. `draw_triangles.wgsl` `render` folds the same check per pixel; the
-   `validate` entry point stays, because it walks the whole prepared span and is therefore strictly
-   stricter than the per-pixel fold, and now writes the shared status word instead of a per-batch buffer.
+   dispatches per frame is deleted. The terrain check folds the same way. PR 8 deleted the
+   `validate` entry point and `draw_triangles.wgsl` with it: a per-span walk is only stricter than a
+   per-pixel fold if the raster visits fewer pixels than the span covers, and the conservative-box
+   proof below shows the two pixel sets are identical.
 3. `encoder.copy_buffer_to_buffer(status → staging_ring[cursor % 8])` at the tail, `map_async`, **no**
    blocking poll. A slot still mapped defers the publish and counts `status_stalls`; the flag stays in
    the status buffer until the next publish.
@@ -416,14 +419,14 @@ Each step is one PR and keeps every existing fixture green.
 
 | PR | Change | Acceptance counter it must move |
 | ---: | --- | --- |
-| 1 | **Instrumentation.** Route every `queue.submit` through one helper and every `create_buffer`/`create_buffer_init`/`create_bind_group` through helpers; add the new counters including `wait_ns` and `ordered_sprites`; time the three `device.poll(Wait)` sites; add a per-frame ring; expose the counters through [`performance_capture.cpp`](../../src/performance_capture.cpp) with window semantics and **no per-frame file I/O**; make `report_drawing` interval- or shutdown-driven; wire `kfx_wgpu_cursor_counters()` into the sidecar; optional `TIMESTAMP_QUERY`. | none directly; every *derived* row above becomes measured |
+| 1 | **Instrumentation** (`TIMESTAMP_QUERY` delivered in PR 8). Route every `queue.submit` through one helper and every `create_buffer`/`create_buffer_init`/`create_bind_group` through helpers; add the new counters including `wait_ns` and `ordered_sprites`; time the three `device.poll(Wait)` sites; add a per-frame ring; expose the counters through [`performance_capture.cpp`](../../src/performance_capture.cpp) with window semantics and **no per-frame file I/O**; make `report_drawing` interval- or shutdown-driven; wire `kfx_wgpu_cursor_counters()` into the sidecar; optional `TIMESTAMP_QUERY`. | none directly; every *derived* row above becomes measured |
 | 2 | **Free CPU wins.** `ResourceFor` → pointer+generation intern; `check_queued_target` → running byte total; `released_resources` → `HashSet`; **and `create_resource`, which runs the identical O(resources) byte sum on every resource creation**; `DrawTriangle`'s 8 KiB array → reused member scratch. | `resource_snapshot_bytes` 1.95 MB → ~0 |
 | 3 | **Bridge batching.** `SubmitNative` accumulates into `m_pending`; flush only at target change, shadow, transition, ordered sprite, snapshot or readback. | `gpu_batches` 139 → 10–20 |
 | 4 | **Persistent asset arena**, `u32` expansion kept, kernels unchanged. Delivered, GPU drawing behind the SDL presenter: asset plus command upload 28.78 MB → 15.14 MB per frame and Rust requested bytes 93.1 MB → 28.4 MB per presentation; the wgpu-presenter pair is outstanding. The ≤ 0.3 MB target needs PR 13 and emitters that stop baking position into the asset. |
 | 5 | **Shadow residency.** Delivered, GPU drawing behind the SDL presenter: persistent GPU scratch and two mask slots; CPU mirror, readback and snapshot dropped; each mask submitted immediately ahead of its `TRIG` pair, not hoisted. Checkpoints 9.4 → 1.0, blocking waits 29.8 → 2.9 and `shadow_scratch_readback_bytes` → 0; the wgpu-presenter pair is outstanding. |
 | 6 | **Non-blocking validation, no double copy.** Delivered, GPU drawing behind the SDL presenter: the flag lives in the raster kernels, a mapped ring reads it one or two frames later, batches write straight into the root and the transactional scratch and its snapshot rollback are gone. Blocking waits outside the CPU presenter's own readbacks and `frame_gpu_checkpoint_copy_bytes` are structurally 0; the wgpu-presenter pair is outstanding. |
 | 7 | **Single command stream, root space, one tile index.** Delivered, GPU drawing behind the SDL presenter: per-command view origins, counting-sort binning into renderer-owned scratch, one raster pass per serial segment sized to the tiles its records reach, and the bridge's target-change flushes removed. Tile-list allocations → 0, bridge target-change flushes 39.3 → 0, buffer allocations 198.5 → 161.3 and Rust allocator calls 30.0 M → 5.7 M per measured window; **Rust batches stayed ~73**, because ~38 creature shadows per frame each close a raster segment. CPU drawing and presentation improve; GPU blocking wait rises about 2 ms per frame and observed FPS falls 1–3. **That cost is unattributed.** Two candidates were measured and rejected: the record layout (above), and root-space tile misalignment — binning the same busy frame against each record's own view yields 117,693 entries against 121,849 in root space, 3.5%, which cannot account for a 20% wait. What did move with it is one dispatch and one submit per raster pass where the per-batch path merged them. The ~38 figure is shadow *submits*: consecutive shadows share one boundary, so the frame cuts fewer raster passes than that. Fixtures 1 and 2 landed. |
-| 8 | **Terrain triangles in the stream**, with tile binning, a prepared-row arena compressed to covered rows, and the separate validate pass deleted. | terrain iterations 308 M → ≤ 10 M and 2,065 M → ≤ 25 M; full-target dispatches ~86 → ~2 |
+| 8 | **Terrain triangles in the stream.** Delivered, on the wgpu presenter with GPU drawing: one `TERRAIN_TRI` record per triangle binned by its conservative box, a prepared-row arena compressed to covered rows in a renderer-owned buffer, the separate validate pass deleted under the superset proof, the bridge's 128-triangle cap removed, and opt-in per-pass GPU timestamps so the terrain share is attributed rather than inferred. Measured terrain iterations **1.85 M at 640x480** and **7.85 M at 1920x1080** (`terrain_tile_entries` 7,230 and 30,660, times 256), against derived 308 M and 2,065 M. Per-frame GPU time 14.00 → 9.29 ms at 640x480 and 88.07 → 87.81 ms at 1080p; dispatches 128.7 → 59.1 and 113.1 → 48.6; submits 83.9 → 45.2 and 76.1 → 39.1. Presentation 16.26 → 5.71 ms and observed FPS 54.95 → 60.00 at 640x480, at 20.03 turns/s; 103.16 → 76.83 ms and 9.52 → 12.65 FPS at 1080p, where turns/s rose 9.57 → 13.98 but is still dragged below 20. Prepared rows 0.68 MB and 1.74 MB against 12.6 MB and 28.3 MB uncompressed, with zero arena growths after warm-up. **The 1080p GPU total did not fall**: terrain's 26.40 ms became 12.0 ms of extra raster time and the rest was taken back by the minimap and ordered-sprite passes, whose own times rose. Full-target dispatches do not reach ~2; that needs PRs 9, 11 and 12. |
 | 9 | **Ordered sprites into layers.** One dispatch of *M* workgroups per disjoint layer. | per-sprite submits → 0; sized by PR 1's `ordered_sprites` |
 | 10 | **Cursor at the tail of one encoder.** Delivered: target snapshots, target images and the palette render pass record into a present tail that `kfx_wgpu_present` submits, the acquisition-skip path finishes, and every other submit is ordered behind. `LbMouseOnEndSwap` runs before the present call so the restore joins it. **The checkpoint inside `PerfPresentation` does not go here.** It is not the cursor: `lbPointerAdvancedDraw` is never set, so `OnBeginSwap` draws the direct scaled sprite into the frame stream and `OnEndSwap` does nothing, and the measured 1.0 is `ResidentTarget`'s own terminal `frame_flush`. Hoisting `ResidentTarget` above `LbMouseOnBeginSwap` would leave the direct cursor to reopen the queued frame and make `present_into` flush it a second time — 2.0 checkpoints per frame, not 0. Measured on a matched busy 640x480 triple: checkpoints 1.00 → 1.00, submits 77.4 → 77.2, buffers 168.5 → 166.1, all inside run-to-run spread. | the advanced-draw swap: six submissions → one |
 | 11 | **Fold lens and minimap.** Non-alias lens and minimap modes 1–3 become stream kinds. | two fewer pipelines and their per-call buffers |
@@ -433,6 +436,15 @@ Each step is one PR and keeps every existing fixture green.
 
 ## Decisions
 
+- **Binning terrain by the conservative box is exact, and that is what lets the span-validation pass
+  go.** `gpoly_prepare.wgsl` sorts by y, starts at the lowest vertex, breaks at the highest or at the
+  view edge, and writes no row below zero, so every written row's `y` lies in the clamped vertex y
+  range. Its x accumulators are anchored at a vertex and advanced by a slope truncated toward zero
+  (`slope` at `gpoly_prepare.wgsl:70`), and the `clipped` branch only narrows the interval, so every
+  covered pixel's `x` lies in the clamped vertex x range. The box therefore contains every written row
+  and every covered pixel, the raster's own bounds test is the row guard, and the raster visits exactly
+  the set the per-span pass walked. The proof, not the assertion, is what the deletion rests on, and
+  `gpoly_gpu.rs` fails if any native row falls outside a triangle's extent.
 - **Resolution target.** The 60 FPS target applies to a **1920x1080 logical framebuffer**, not only a
   1920x1080 output of a 640x480 framebuffer. The 2026-09-14 measurement confirmed the engine honours a
   1920x1080 logical framebuffer with logical size equal to physical output, and that the software path

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use keeperfx_frame_replay::gpoly::{GpolyPreparer, Triangle, Vertex};
+use keeperfx_frame_replay::gpoly::{GpolyPreparer, RowLayout, Triangle, Vertex, row_layout};
 use wgpu::util::DeviceExt;
 
 fn bytes(words: &[u32]) -> Vec<u8> {
@@ -89,6 +89,12 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
         }))?;
     let limited_preparer = GpolyPreparer::new(&limited_device);
     let mut limited_encoder = limited_device.create_command_encoder(&Default::default());
+    let spacious = limited_device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 1024,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
     for (count, rows, message) in [
         (1, 33, "allocation limit"),
         (11, 1, "allocation limit"),
@@ -96,13 +102,23 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
         (6, 1, "storage limit"),
         (65, 1, "dispatch"),
     ] {
+        let limited_layout: Vec<_> = (0..count as u32)
+            .map(|index| RowLayout {
+                base: index * rows,
+                y_lo: 0,
+                rows,
+                width,
+                height: rows,
+            })
+            .collect();
         let error = limited_preparer
             .encode(
                 &limited_device,
                 &mut limited_encoder,
                 &triangles[..count],
-                width,
-                rows,
+                &limited_layout,
+                &spacious,
+                None,
             )
             .err()
             .context("oversized triangle batch was accepted")?;
@@ -110,35 +126,101 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     }
     let preparer = GpolyPreparer::new(&device);
     let mut encoder = device.create_command_encoder(&Default::default());
+    let extents = vec![(width, height); triangles.len()];
+    let (layout, total_rows) = row_layout(&triangles, &extents);
+    let arena = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(total_rows) * 32,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
     assert!(
         preparer
-            .encode(&device, &mut encoder, &[], width, height)
+            .encode(&device, &mut encoder, &[], &[], &arena, None)
             .is_err()
     );
+    let wide = vec![(32768, height); triangles.len()];
+    let (wide_layout, _) = row_layout(&triangles, &wide);
     assert!(
         preparer
-            .encode(&device, &mut encoder, &triangles, 32768, height)
+            .encode(
+                &device,
+                &mut encoder,
+                &triangles,
+                &wide_layout,
+                &arena,
+                None
+            )
             .is_err()
     );
     let mut unsupported = triangles[0];
     unsupported.vertices[0].x = 32768;
     assert!(
         preparer
-            .encode(&device, &mut encoder, &[unsupported], width, height)
+            .encode(
+                &device,
+                &mut encoder,
+                &[unsupported],
+                &layout[..1],
+                &arena,
+                None
+            )
             .is_err()
     );
-    let prepared = preparer.encode(&device, &mut encoder, &triangles, width, height)?;
-    assert_eq!(
-        (prepared.width, prepared.height, prepared.triangle_count),
-        (width, height, count)
-    );
+    preparer.encode(&device, &mut encoder, &triangles, &layout, &arena, None)?;
     let rows_readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: prepared.rows.size(),
+        size: arena.size(),
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    encoder.copy_buffer_to_buffer(&prepared.rows, 0, &rows_readback, 0, prepared.rows.size());
+    encoder.copy_buffer_to_buffer(&arena, 0, &rows_readback, 0, arena.size());
+    queue.submit([encoder.finish()]);
+    let compressed = readback(&device, &rows_readback).context("read GPU triangle setup")?;
+    // The arena is read exactly the way the raster kernel addresses it, and every row the
+    // native oracle produced outside a triangle's layout extent must be empty, so a layout
+    // that is not a superset of what the setup kernel writes fails here rather than
+    // silently dropping pixels.
+    let mut actual_spans = vec![0u32; expected_spans.len()];
+    let mut outside = 0;
+    for (triangle, entry) in layout.iter().enumerate() {
+        let rows = (triangle * height as usize * 8)..((triangle + 1) * height as usize * 8);
+        for y in 0..height as usize {
+            let expected = &expected_spans[rows.start + y * 8..rows.start + y * 8 + 8];
+            if y < entry.y_lo as usize || y >= (entry.y_lo + entry.rows) as usize {
+                outside += usize::from(expected.iter().any(|word| *word != 0));
+                continue;
+            }
+            let at = (entry.base as usize + y - entry.y_lo as usize) * 8;
+            actual_spans[rows.start + y * 8..rows.start + y * 8 + 8]
+                .copy_from_slice(&compressed[at..at + 8]);
+        }
+    }
+    ensure!(
+        outside == 0,
+        "{outside} native rows fall outside the layout extent"
+    );
+    let mut mismatches = 0;
+    for (i, (actual, expected)) in actual_spans.iter().zip(&expected_spans).enumerate() {
+        if actual != expected {
+            if mismatches < 10 {
+                eprintln!(
+                    "span mismatch triangle={} row={} word={} actual={actual:08x} expected={expected:08x}",
+                    i / (height as usize * 8),
+                    i / 8 % height as usize,
+                    i % 8
+                );
+            }
+            mismatches += 1;
+        }
+    }
+    ensure!(mismatches == 0, "{mismatches} GPU setup word mismatches");
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let spans = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: &bytes(&actual_spans),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("gpoly fixture pixels"),
         source: wgpu::ShaderSource::Wgsl(include_str!("gpoly_pixels.wgsl").into()),
@@ -179,7 +261,7 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: prepared.rows.as_entire_binding(),
+                resource: spans.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
@@ -203,23 +285,6 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     }
     encoder.copy_buffer_to_buffer(&pixels, 0, &pixels_readback, 0, pixels.size());
     queue.submit([encoder.finish()]);
-    let actual_spans = readback(&device, &rows_readback).context("read GPU triangle setup")?;
-    assert_eq!(actual_spans.len(), expected_spans.len());
-    let mut mismatches = 0;
-    for (i, (actual, expected)) in actual_spans.iter().zip(&expected_spans).enumerate() {
-        if actual != expected {
-            if mismatches < 10 {
-                eprintln!(
-                    "span mismatch triangle={} row={} word={} actual={actual:08x} expected={expected:08x}",
-                    i / (height as usize * 8),
-                    i / 8 % height as usize,
-                    i % 8
-                );
-            }
-            mismatches += 1;
-        }
-    }
-    ensure!(mismatches == 0, "{mismatches} GPU setup word mismatches");
     let actual_pixels = readback(&device, &pixels_readback).context("read GPU triangle pixels")?;
     assert_eq!(actual_pixels.len(), expected_pixels.len());
     for (i, (actual, expected)) in actual_pixels.iter().zip(&expected_pixels).enumerate() {

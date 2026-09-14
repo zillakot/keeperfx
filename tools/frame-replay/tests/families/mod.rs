@@ -379,6 +379,22 @@ pub fn shadow_command(a: &Assets, width: u32, height: u32) -> Command {
     }
 }
 
+pub fn terrain_at(a: &Assets, points: [(i32, i32); 3], shade: i64) -> TriangleCommand {
+    TriangleCommand {
+        abi_version: ABI_VERSION,
+        reserved: 0,
+        source: a.terrain,
+        table: a.terrain_fade,
+        vertices: points.map(|(x, y)| Vertex {
+            x,
+            y,
+            u: i64::from(x) << 16,
+            v: i64::from(y) << 16,
+            shade,
+        }),
+    }
+}
+
 pub fn terrain_triangle(a: &Assets, shade: i64) -> TriangleCommand {
     TriangleCommand {
         abi_version: ABI_VERSION,

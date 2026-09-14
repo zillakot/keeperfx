@@ -87,14 +87,14 @@ int main()
         bridge.Flush();
         const auto before = bridge.GetCounters();
         assert(actual == initial && actual != expected);
-        assert(before.gpu_triangles == 300 && before.resident_batches == 3);
+        assert(before.gpu_triangles == 300 && before.resident_batches == 1);
         assert(before.bridge_initial_index_bytes == 83 * 60 + 79);
-        assert(before.bridge_readbacks == (verify ? 3 : 0));
+        assert(before.bridge_readbacks == (verify ? 1 : 0));
         assert(before.native_copy_bytes == 0);
         bridge.Boundary(false);
         assert(actual == expected && bridge.FrameValid() && !bridge.Failed());
         assert(bridge.GetCounters().barrier_readbacks == 1);
-        std::printf("Resident native vertices: verify=%d, triangles=300, batches=3, initial_indices=%llu, final_materializations=1, diagnostic_readbacks=%llu\n",
+        std::printf("Resident native vertices: verify=%d, triangles=300, batches=1, initial_indices=%llu, final_materializations=1, diagnostic_readbacks=%llu\n",
             verify, static_cast<unsigned long long>(before.bridge_initial_index_bytes),
             static_cast<unsigned long long>(before.verification_readbacks));
     }

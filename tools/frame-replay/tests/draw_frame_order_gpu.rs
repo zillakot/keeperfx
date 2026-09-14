@@ -43,13 +43,14 @@ fn plan(steps: usize) -> Vec<Step> {
     plan
 }
 
-/// Raster passes the stream must cut: one per non-empty run of raster steps.
+/// Raster passes the stream must cut: one per non-empty run of raster steps. Terrain
+/// triangles are ordinary binned records, so they extend a run instead of cutting it.
 fn boundaries(plan: &[Step]) -> u64 {
     let mut passes = 0;
     let mut open = false;
     for step in plan {
         match step {
-            Step::Raster(..) => open = true,
+            Step::Raster(..) | Step::Terrain(..) => open = true,
             _ => {
                 passes += u64::from(open);
                 open = false;
@@ -59,25 +60,11 @@ fn boundaries(plan: &[Step]) -> u64 {
     passes + u64::from(open)
 }
 
-/// Serial routes the stream must run: one per serial step, except that adjacent terrain
-/// steps against the same view with no record between them share a submission.
+/// Serial routes the stream must run: one per step the raster stream cannot absorb.
 fn serial_routes(plan: &[Step]) -> u64 {
-    let mut routes = 0;
-    let mut terrain = None;
-    for step in plan {
-        match step {
-            Step::Raster(..) => terrain = None,
-            Step::Terrain(view, _) => {
-                routes += u64::from(terrain != Some(*view));
-                terrain = Some(*view);
-            }
-            _ => {
-                routes += 1;
-                terrain = None;
-            }
-        }
-    }
-    routes
+    plan.iter()
+        .filter(|step| !matches!(step, Step::Raster(..) | Step::Terrain(..)))
+        .count() as u64
 }
 
 /// One frame of every family interleaved across three views in a seeded order,

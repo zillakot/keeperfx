@@ -178,11 +178,14 @@ one fewer counter frame than presentation sample. `wait_ns` is host time blocked
 inside device polls and is already contained in the enclosing `draw` and
 `presentation` wall-clock scopes; it must not be added to them.
 
-**GPU execution time is not implemented.** It was not attempted because the Metal
-adapter exposes `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a
-timestamp per submission cannot be recorded, and the copy-only submissions carry no
-pass for `timestamp_writes`. No counter here is a GPU timing and none may be read
-as one.
+**GPU execution time is opt-in and per pass.** With `KFX_WGPU_GPU_TIMING=1` on an
+adapter exposing `TIMESTAMP_QUERY`, each compute and render pass carries
+`timestamp_writes` and the `gpu_*_ns` counters report GPU duration per pass kind.
+`TIMESTAMP_QUERY_INSIDE_ENCODERS`, which this Metal adapter lacks, is needed only
+to stamp outside a pass, so copy-only submissions stay untimed. Every other counter
+here is host-side and none of them may be read as a GPU timing. `gpu_untimed_passes`
+is nonzero when the resolve ring was saturated, and the per-pass totals then
+under-report.
 
 Counters cover the drawing context the bridge owns. Surface acquisition,
 presentation by the Rust presenter, and a cursor that owns its own drawing context

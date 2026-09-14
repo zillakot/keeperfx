@@ -6,10 +6,12 @@ struct Vertex {
 }
 struct Triangle { a: Vertex, b: Vertex, c: Vertex }
 struct Span { bounds: vec4<u32>, accumulator: vec4<u32> }
-struct Parameters { width: u32, height: u32, count: u32, pad: u32 }
+struct Parameters { count: u32, pad0: u32, pad1: u32, pad2: u32 }
+struct Layout { base: u32, y_lo: u32, rows: u32, width: u32, height: u32 }
 @group(0) @binding(0) var<storage, read> triangles: array<Triangle>;
 @group(0) @binding(1) var<storage, read_write> spans: array<Span>;
 @group(0) @binding(2) var<uniform> parameters: Parameters;
+@group(0) @binding(3) var<storage, read> extents: array<Layout>;
 
 fn add96(a: vec3<u32>, b: vec3<u32>) -> vec3<u32> {
     let lo = a.x + b.x;
@@ -77,8 +79,11 @@ fn mapping(d: vec3<i32>, factor: i32) -> vec3<i32> {
 fn prepare(@builtin(global_invocation_id) gid: vec3<u32>) {
     let index = gid.x;
     if index >= parameters.count { return; }
-    let base = index * parameters.height;
-    for (var row = 0u; row < parameters.height; row++) {
+    let base = extents[index].base;
+    let y_lo = i32(extents[index].y_lo);
+    let width = extents[index].width;
+    let height = extents[index].height;
+    for (var row = 0u; row < extents[index].rows; row++) {
         spans[base + row] = Span(vec4(0u), vec4(0u));
     }
     var a = triangles[index].a;
@@ -115,18 +120,18 @@ fn prepare(@builtin(global_invocation_id) gid: vec3<u32>) {
     var x = a.xy.x;
     var y = a.xy.y;
     var coord = start(a);
-    let clipped = a.xy.x < 0 || a.xy.x > i32(parameters.width) ||
-        b.xy.x < 0 || b.xy.x > i32(parameters.width) || c.xy.x < 0 || c.xy.x > i32(parameters.width);
+    let clipped = a.xy.x < 0 || a.xy.x > i32(width) ||
+        b.xy.x < 0 || b.xy.x > i32(width) || c.xy.x < 0 || c.xy.x > i32(width);
     for (var half = 0u; half < 2u; half++) {
-        let end = min(select(b.xy.y, c.xy.y, half == 1u), i32(parameters.height));
+        let end = min(select(b.xy.y, c.xy.y, half == 1u), i32(height));
         loop {
             if y >= end { break; }
             if y >= 0 {
                 let l = select(xl >> 16u, max(xl >> 16u, 0), clipped);
-                let r = select(xr >> 16u, min(xr >> 16u, i32(parameters.width)), clipped);
+                let r = select(xr >> 16u, min(xr >> 16u, i32(width)), clipped);
                 if clipped { coord = add96(coord, scale96(exact_dx, l - x)); x = l; }
                 if r > l {
-                    spans[base + u32(y)] = Span(vec4(u32(l), u32(y), u32(r - l), 0u),
+                    spans[base + u32(y - y_lo)] = Span(vec4(u32(l), u32(y), u32(r - l), 0u),
                         vec4(coord.yz, rounded_dx.yz));
                 }
             }
