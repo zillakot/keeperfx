@@ -144,6 +144,7 @@ impl DrawRenderer {
                 entry(2, &assets),
                 entry(3, &params),
                 entry(4, &tb),
+                entry(5, self.terrain_rows_binding()),
                 entry(6, self.shadow_slot_binding()),
                 entry(7, self.status_binding()),
             ],

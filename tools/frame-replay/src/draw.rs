@@ -36,9 +36,10 @@ pub use triangles::TriangleCommand;
 pub mod timing;
 use timing::{
     PASS_KINDS, PASS_LENS, PASS_MINIMAP, PASS_ORDERED_SPRITES, PASS_PRESENT, PASS_RASTER,
-    PASS_SHADOW_MASK, PASS_TARGET_TRIG, PASS_TERRAIN_PREPARE, PASS_TERRAIN_RENDER, PassTimings,
+    PASS_SHADOW_MASK, PASS_TARGET_TRIG, PASS_TERRAIN_PREPARE, PASS_TERRAIN_VALIDATE, PassTimings,
 };
 
+use crate::gpoly;
 use anyhow::{Context, Result, ensure};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,6 +59,9 @@ pub const MOVIE: u32 = 13;
 pub const MAP_VIEW: u32 = 14;
 pub const BITMAP: u32 = 15;
 pub const TRANSITION: u32 = 16;
+/// Internal only: one terrain triangle, produced from `submit_triangles`. The C ABI
+/// cannot name it, so `packable` does not accept it.
+pub(crate) const TERRAIN_TRI: u32 = 17;
 pub const OPAQUE: u32 = 256;
 const DRAW_SHADER: &str = concat!(
     include_str!("draw.wgsl"),
@@ -141,6 +145,26 @@ impl Default for Command {
     }
 }
 
+/// One entry of the frame's ordered stream.
+pub(super) enum Record {
+    Command(Command),
+    Terrain(TriangleCommand),
+}
+
+pub(super) enum Entry<'a> {
+    Command(&'a Command),
+    Terrain(&'a TriangleCommand),
+}
+
+impl Record {
+    pub(super) fn entry(&self) -> Entry<'_> {
+        match self {
+            Self::Command(command) => Entry::Command(command),
+            Self::Terrain(triangle) => Entry::Terrain(triangle),
+        }
+    }
+}
+
 struct Resource {
     width: u32,
     height: u32,
@@ -173,6 +197,8 @@ pub struct Counters {
     pub buffer_bytes: u64,
     pub tile_allocations: u64,
     pub tile_entries: u64,
+    /// The terrain share of `tile_entries`; terrain inner-loop iterations are 256 times it.
+    pub terrain_tile_entries: u64,
     /// Rows the compressed prepared-terrain arena carried, and how often it grew.
     pub prepared_row_words: u64,
     pub prepared_row_allocations: u64,
@@ -192,6 +218,7 @@ pub struct DrawRenderer {
     shadow_scratch: Option<wgpu::Buffer>,
     shadow_slots: Option<wgpu::Buffer>,
     shadow_placeholder: wgpu::Buffer,
+    terrain_placeholder: wgpu::Buffer,
     shadow_next_slot: u32,
     minimap: Option<minimap::MinimapState>,
     triangles: Option<triangles::TrianglePipelines>,
@@ -291,6 +318,12 @@ impl DrawRenderer {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+        let terrain_placeholder = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unbound prepared terrain rows"),
+            size: 32,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let status = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame validation status"),
             size: frame_queue::STATUS_BYTES,
@@ -319,6 +352,7 @@ impl DrawRenderer {
             shadow_scratch: None,
             shadow_slots: None,
             shadow_placeholder,
+            terrain_placeholder,
             shadow_next_slot: 0,
             minimap: None,
             triangles: None,
@@ -412,6 +446,15 @@ impl DrawRenderer {
             timings.open(&self.device);
         }
         self.device.create_command_encoder(&Default::default())
+    }
+
+    /// The prepared-row arena as the raster kernel binds it; a placeholder until a
+    /// frame has carried terrain.
+    pub(super) fn terrain_rows_binding(&self) -> &wgpu::Buffer {
+        self.prepared_rows
+            .buffer
+            .as_ref()
+            .unwrap_or(&self.terrain_placeholder)
     }
 
     /// The renderer-owned prepared-row arena, grown in powers of two and reused.
@@ -653,6 +696,7 @@ impl DrawRenderer {
                 entry(2, &asset_buffer),
                 entry(3, &parameters),
                 entry(4, &tile_buffer),
+                entry(5, self.terrain_rows_binding()),
                 entry(6, self.shadow_slot_binding()),
                 entry(7, self.status_binding()),
             ],
@@ -714,15 +758,21 @@ impl DrawRenderer {
 
     /// One raster pass over one segment of the frame's stream; the segment's header in
     /// the shared tile index bounds both what each pixel iterates and the dispatch box.
+    /// The frame's terrain setup rides into the first segment's encoder, so the rows
+    /// are written by an earlier pass of the same submission than the one reading them.
     fn raster_segment(
         &mut self,
         target: &Target,
         buffers: &(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer),
         pass: &Pass,
         commands: usize,
+        prepare: &mut Option<PendingPrepare>,
     ) -> Result<()> {
         let (command_buffer, tile_buffer, asset_buffer) = buffers;
+        let mut encoder = self.begin_encoder();
+        self.record_prepare(&mut encoder, prepare)?;
         let Some((parameters, span_x, span_y)) = self.pass_parameters(target, pass) else {
+            self.submit_encoder(encoder);
             return Ok(());
         };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -734,11 +784,11 @@ impl DrawRenderer {
                 entry(2, asset_buffer),
                 entry(3, &parameters),
                 entry(4, tile_buffer),
+                entry(5, self.terrain_rows_binding()),
                 entry(6, self.shadow_slot_binding()),
                 entry(7, self.status_binding()),
             ],
         });
-        let mut encoder = self.begin_encoder();
         let stamp = self.stamp(PASS_RASTER);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -754,6 +804,69 @@ impl DrawRenderer {
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands as u64;
+        Ok(())
+    }
+
+    /// Records the frame's single terrain setup dispatch, once, into `encoder`.
+    pub(super) fn record_prepare(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        prepare: &mut Option<PendingPrepare>,
+    ) -> Result<()> {
+        let Some(pending) = prepare.take() else {
+            return Ok(());
+        };
+        self.triangles
+            .get_or_insert_with(|| triangles::TrianglePipelines::new(&self.device));
+        let stamp = self.stamp(PASS_TERRAIN_PREPARE);
+        let extents = self.triangles.as_ref().unwrap().prepare.encode(
+            &self.device,
+            encoder,
+            &pending.triangles,
+            &pending.layout,
+            &pending.rows,
+            stamp.compute(),
+        )?;
+        self.counters.dispatches += 1;
+        let count = pending.triangles.len() as u32;
+        let deepest = pending
+            .layout
+            .iter()
+            .map(|entry| entry.rows)
+            .max()
+            .unwrap_or(0);
+        if deepest == 0 {
+            return Ok(());
+        }
+        let parameters = buffer(
+            &self.device,
+            &mut self.counters,
+            "terrain batch dimensions",
+            &[count, 0, 0, 0],
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let stamp = self.stamp(PASS_TERRAIN_VALIDATE);
+        let pipelines = self.triangles.as_ref().unwrap();
+        let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("terrain span validation"),
+            layout: &pipelines.validate.get_bind_group_layout(0),
+            entries: &[
+                entry(0, &pending.rows),
+                entry(3, &parameters),
+                entry(5, &extents),
+                entry(6, &self.status),
+            ],
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("terrain span validation"),
+                timestamp_writes: stamp.compute(),
+            });
+            pass.set_pipeline(&pipelines.validate);
+            pass.set_bind_group(0, &binding, &[]);
+            pass.dispatch_workgroups(deepest.div_ceil(64), count, 1);
+        }
+        self.counters.dispatches += 1;
         Ok(())
     }
 
@@ -1140,18 +1253,86 @@ fn pack_commands(
 ) -> Result<Vec<u32>> {
     pack_records(
         packer,
-        commands.iter().map(|c| (c, view, 0)),
+        commands.iter().map(|c| (Entry::Command(c), view, 0)),
         commands.len(),
         resources,
+        &[],
         limit,
     )
 }
 
+/// One terrain record: its conservative box is the clamped vertex range, which the
+/// setup kernel provably never writes outside, so the raster's own bounds test is the
+/// row guard and binning by the box is exact.
+fn pack_terrain(
+    words: &mut Vec<u32>,
+    packer: &mut AssetPacker,
+    triangle: &TriangleCommand,
+    resources: &HashMap<u64, Resource>,
+    layout: &gpoly::RowLayout,
+    view: ViewSpace,
+    index: u32,
+) -> Result<()> {
+    ensure!(
+        triangle.abi_version == ABI_VERSION && triangle.reserved == 0,
+        "invalid triangle ABI"
+    );
+    let mut offsets = [0; 2];
+    for (slot, (handle, texture)) in [(triangle.source, true), (triangle.table, false)]
+        .into_iter()
+        .enumerate()
+    {
+        let resource = resources
+            .get(&handle)
+            .context("unknown triangle resource")?;
+        ensure!(
+            resource.pitch == 256
+                && resource.width == if texture { 32 } else { 256 }
+                && resource.height == if texture { 32 } else { 64 },
+            "invalid triangle resource dimensions"
+        );
+        let length = if texture { 7968 } else { 16384 };
+        ensure!(resource.bytes.len() >= length, "short triangle resource");
+        offsets[slot] = packer
+            .prefix(handle, &resource.bytes, length)
+            .context("triangle assets exceed buffer limit")?;
+    }
+    for vertex in triangle.vertices {
+        ensure!(
+            (-32768..=32767).contains(&vertex.x) && (-32768..=32767).contains(&vertex.y),
+            "vertex exceeds signed 16.16 coordinates"
+        );
+    }
+    let axis = |extent: u32, of: fn(&crate::gpoly::Vertex) -> i32| {
+        let edge = i64::from(extent);
+        let values = triangle
+            .vertices
+            .iter()
+            .map(|vertex| i64::from(of(vertex)).clamp(0, edge) as u32);
+        let (mut lo, mut hi) = (u32::MAX, 0);
+        for value in values {
+            lo = lo.min(value);
+            hi = hi.max(value);
+        }
+        (lo, hi)
+    };
+    let (x_lo, x_hi) = axis(view.width, |vertex| vertex.x);
+    let (y_lo, y_hi) = axis(view.height, |vertex| vertex.y);
+    words.extend([TERRAIN_TRI, 0, index, 0]);
+    words.extend(view.rebase([x_lo, y_lo, x_hi, y_hi]));
+    words.extend(view.clip([0, 0, view.width, view.height]));
+    words.extend([offsets[0], offsets[1], 0, layout.base]);
+    words.extend([0; 8]);
+    words.extend([OPAQUE, 0, 0, 0]);
+    Ok(())
+}
+
 fn pack_records<'a>(
     packer: &mut AssetPacker,
-    records: impl Iterator<Item = (&'a Command, ViewSpace, u32)>,
+    records: impl Iterator<Item = (Entry<'a>, ViewSpace, u32)>,
     count: usize,
     resources: &HashMap<u64, Resource>,
+    layout: &[gpoly::RowLayout],
     limit: usize,
 ) -> Result<Vec<u32>> {
     ensure!(
@@ -1159,7 +1340,17 @@ fn pack_records<'a>(
         "command batch exceeds limit"
     );
     let mut words = Vec::with_capacity(count * RECORD_WORDS);
-    for (c, view, index) in records {
+    let mut terrain = 0;
+    for (record, view, index) in records {
+        let c = match record {
+            Entry::Terrain(triangle) => {
+                let entry = layout.get(terrain).context("missing triangle row layout")?;
+                pack_terrain(&mut words, packer, triangle, resources, entry, view, index)?;
+                terrain += 1;
+                continue;
+            }
+            Entry::Command(command) => command,
+        };
         let (width, height) = (view.width, view.height);
         ensure!(
             c.abi_version == ABI_VERSION && c.reserved == [0; 3],
@@ -1306,6 +1497,13 @@ fn buffer(
     })
 }
 
+/// The frame's terrain setup, waiting for the first raster segment's encoder.
+pub(super) struct PendingPrepare {
+    pub(super) triangles: Vec<gpoly::Triangle>,
+    pub(super) layout: Vec<gpoly::RowLayout>,
+    pub(super) rows: wgpu::Buffer,
+}
+
 /// A reserved timestamp pair, empty when the run is not timing passes.
 pub(super) struct Stamp(Option<(wgpu::QuerySet, u32, u32)>);
 
@@ -1450,6 +1648,7 @@ impl TileIndex {
             pass.tiles = [u32::MAX, u32::MAX, 0, 0];
         }
         let mut entries = 0usize;
+        let mut terrain = 0usize;
         let mut at = 0;
         for (index, command) in records.iter().enumerate() {
             while segments.get(at).is_some_and(|end| index >= *end) {
@@ -1458,8 +1657,12 @@ impl TileIndex {
             let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
                 continue;
             };
+            let covered = (x1 - x0) as usize * (y1 - y0) as usize;
+            if command[0] == TERRAIN_TRI {
+                terrain += covered;
+            }
             entries = entries
-                .checked_add((x1 - x0) as usize * (y1 - y0) as usize)
+                .checked_add(covered)
                 .context("tile list length overflow")?;
             let box_of = &mut self.passes[at].tiles;
             box_of[0] = box_of[0].min(x0);
@@ -1541,6 +1744,7 @@ impl TileIndex {
             }
         }
         counters.tile_entries += entries as u64;
+        counters.terrain_tile_entries += terrain as u64;
         Ok(())
     }
 

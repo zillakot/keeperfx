@@ -314,7 +314,7 @@ void RendererSoftware::report_drawing()
                 "\"bridge_target_runs\":%llu,\"tile_allocations\":%llu,\"tile_entries\":%llu,"
                 "\"prepared_row_words\":%llu,\"prepared_row_allocations\":%llu,"
                 "\"gpu_raster_ns\":%llu,"
-                "\"gpu_terrain_prepare_ns\":%llu,\"gpu_terrain_render_ns\":%llu,"
+                "\"gpu_terrain_prepare_ns\":%llu,\"gpu_terrain_validate_ns\":%llu,"
                 "\"gpu_shadow_mask_ns\":%llu,\"gpu_target_trig_ns\":%llu,"
                 "\"gpu_ordered_sprite_ns\":%llu,\"gpu_minimap_ns\":%llu,"
                 "\"gpu_lens_ns\":%llu,\"gpu_present_ns\":%llu,"
