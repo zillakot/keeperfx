@@ -99,7 +99,9 @@ impl Presenter {
                 )
             })
             .context("surface has no display-byte unorm format")?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&crate::draw::timing::device_descriptor(&adapter)),
+        )?;
         let renderer = Renderer::with_format(device, queue, format)?;
         let present_mode = present_mode(&capabilities.present_modes, vsync)?;
         let verify = std::env::var("KFX_WGPU_VERIFY").is_ok_and(|value| value == "1");
@@ -1010,6 +1012,12 @@ pub struct DrawCounters {
     tile_entries: u64,
     ordered_sprite_layers: u64,
     ordered_sprite_passes: u64,
+    terrain_tile_entries: u64,
+    prepared_row_words: u64,
+    prepared_row_allocations: u64,
+    pass_ns: [u64; crate::draw::timing::PASS_KINDS],
+    timed_passes: u64,
+    untimed_passes: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1049,6 +1057,12 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 tile_entries: counters.tile_entries,
                 ordered_sprite_layers: counters.ordered_sprite_layers,
                 ordered_sprite_passes: counters.ordered_sprite_passes,
+                terrain_tile_entries: counters.terrain_tile_entries,
+                prepared_row_words: counters.prepared_row_words,
+                prepared_row_allocations: counters.prepared_row_allocations,
+                pass_ns: counters.pass_ns,
+                timed_passes: counters.timed_passes,
+                untimed_passes: counters.untimed_passes,
             });
             Ok(Some(1))
         });

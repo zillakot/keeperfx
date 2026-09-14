@@ -207,18 +207,21 @@ impl DrawRenderer {
         target_id: u64,
         commands: &[Command],
     ) -> Result<()> {
-        let target = self
-            .targets
-            .get(&target_id)
-            .context("unknown sprite target")?;
-        let (width, height) = (target.width, target.height);
+        let (width, height) = {
+            let target = self
+                .targets
+                .get(&target_id)
+                .context("unknown sprite target")?;
+            (target.width, target.height)
+        };
         let limit = self.storage_limit() as usize;
+        self.open_batch();
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &mut self.tail,
+            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -260,12 +263,13 @@ impl DrawRenderer {
             .context("unknown sprite target")?
             .clone();
         let limit = self.storage_limit() as usize;
+        self.open_batch();
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &mut self.tail,
+            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -326,7 +330,7 @@ impl DrawRenderer {
             ],
             wgpu::BufferUsages::UNIFORM,
         );
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = self.begin_encoder();
         let mut layer_buffers = Vec::with_capacity(layers.len());
         for layer in &layers {
             let indices = if layer.iter().enumerate().all(|(i, at)| *at as usize == i) {
@@ -352,10 +356,11 @@ impl DrawRenderer {
                     entry(5, &indices),
                 ],
             });
+            let stamp = self.stamp(PASS_ORDERED_SPRITES);
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("native sprite write and row-copy order"),
-                    timestamp_writes: None,
+                    timestamp_writes: stamp.compute(),
                 });
                 pass.set_pipeline(&self.compute_sprite_ordered);
                 pass.set_bind_group(0, &binding, &[]);

@@ -63,10 +63,12 @@ struct KfxWgpuDrawCommand {
     uint32_t transparent, reserved[3];
 };
 
+#define KFX_WGPU_DRAW_PASS_KINDS 8
+
 struct KfxWgpuDrawCounters {
     uint64_t batches, commands, asset_upload_bytes, command_upload_bytes, readback_bytes;
-    /* wait_ns is host stall time inside blocking device polls. No GPU execution
-     * time is collected; every counter here is host-side. */
+    /* wait_ns is host stall time inside blocking device polls; it is host-side.
+     * Only pass_ns below is GPU execution time, and only when timing is enabled. */
     uint64_t submits, dispatches, waits, wait_ns, buffers, buffer_bytes;
     uint64_t arena_evictions, arena_overflows, arena_bytes_uploaded;
     /* Host-side staged asset bytes the context holds, not GPU memory; a gauge.
@@ -77,6 +79,14 @@ struct KfxWgpuDrawCounters {
     /* One compute pass per layer of mutually disjoint ordered sprites, so the two are
      * equal by construction and a divergence is a bug. */
     uint64_t ordered_sprite_layers, ordered_sprite_passes;
+    /* The terrain share of tile_entries; terrain inner-loop iterations are 256 times it. */
+    uint64_t terrain_tile_entries;
+    /* Words the compressed prepared-terrain row arena carried, and its growths. */
+    uint64_t prepared_row_words, prepared_row_allocations;
+    /* Opt-in per-pass GPU execution time, in KFX_WGPU_DRAW_PASS_KINDS order; zero
+     * unless KFX_WGPU_GPU_TIMING=1 and the adapter supports timestamp queries. */
+    uint64_t pass_ns[KFX_WGPU_DRAW_PASS_KINDS];
+    uint64_t timed_passes, untimed_passes;
 };
 #pragma pack(pop)
 

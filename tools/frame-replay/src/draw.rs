@@ -32,7 +32,14 @@ mod sprites;
 #[path = "draw_triangles.rs"]
 mod triangles;
 pub use triangles::TriangleCommand;
+#[path = "draw_timing.rs"]
+pub mod timing;
+use timing::{
+    PASS_KINDS, PASS_LENS, PASS_MINIMAP, PASS_ORDERED_SPRITES, PASS_PRESENT, PASS_RASTER,
+    PASS_SHADOW_MASK, PASS_TARGET_TRIG, PASS_TERRAIN_PREPARE, PassTimings,
+};
 
+use crate::gpoly;
 use anyhow::{Context, Result, ensure};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,6 +59,9 @@ pub const MOVIE: u32 = 13;
 pub const MAP_VIEW: u32 = 14;
 pub const BITMAP: u32 = 15;
 pub const TRANSITION: u32 = 16;
+/// Internal only: one terrain triangle, produced from `submit_triangles`. The C ABI
+/// cannot name it, so `packable` does not accept it.
+pub(crate) const TERRAIN_TRI: u32 = 17;
 pub const OPAQUE: u32 = 256;
 const DRAW_SHADER: &str = concat!(
     include_str!("draw.wgsl"),
@@ -135,6 +145,26 @@ impl Default for Command {
     }
 }
 
+/// One entry of the frame's ordered stream.
+pub(super) enum Record {
+    Command(Command),
+    Terrain(TriangleCommand),
+}
+
+pub(super) enum Entry<'a> {
+    Command(&'a Command),
+    Terrain(&'a TriangleCommand),
+}
+
+impl Record {
+    pub(super) fn entry(&self) -> Entry<'_> {
+        match self {
+            Self::Command(command) => Entry::Command(command),
+            Self::Terrain(triangle) => Entry::Terrain(triangle),
+        }
+    }
+}
+
 struct Resource {
     width: u32,
     height: u32,
@@ -171,6 +201,15 @@ pub struct Counters {
     /// One pass per layer, so a divergence is a bug.
     pub ordered_sprite_layers: u64,
     pub ordered_sprite_passes: u64,
+    /// The terrain share of `tile_entries`; terrain inner-loop iterations are 256 times it.
+    pub terrain_tile_entries: u64,
+    /// Rows the compressed prepared-terrain arena carried, and how often it grew.
+    pub prepared_row_words: u64,
+    pub prepared_row_allocations: u64,
+    /// GPU time per pass kind, in `timing::PASS_NAMES` order; zero unless timing is on.
+    pub pass_ns: [u64; PASS_KINDS],
+    pub timed_passes: u64,
+    pub untimed_passes: u64,
 }
 
 pub struct DrawRenderer {
@@ -186,9 +225,11 @@ pub struct DrawRenderer {
     shadow_scratch: Option<wgpu::Buffer>,
     shadow_slots: Option<wgpu::Buffer>,
     shadow_placeholder: wgpu::Buffer,
+    terrain_placeholder: wgpu::Buffer,
     shadow_next_slot: u32,
     minimap: Option<minimap::MinimapState>,
     triangles: Option<triangles::TrianglePipelines>,
+    timings: Option<PassTimings>,
     status: wgpu::Buffer,
     status_ring: [wgpu::Buffer; frame_queue::STATUS_RING],
     status_pending: [Option<frame_queue::StatusReceiver>; frame_queue::STATUS_RING],
@@ -213,10 +254,13 @@ pub struct DrawRenderer {
     tile_index: TileIndex,
     stream_commands: PersistentBuffer,
     stream_tiles: PersistentBuffer,
+    prepared_rows: PersistentBuffer,
     asset_generation: u64,
     /// Work recorded after the frame's last flush: the cursor backup, compose and
     /// restore around the palette pass. Submitted once by `kfx_wgpu_present`.
     tail: Option<wgpu::CommandEncoder>,
+    timing_slot: Option<usize>,
+    tail_timing: Option<usize>,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -286,6 +330,12 @@ impl DrawRenderer {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+        let terrain_placeholder = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unbound prepared terrain rows"),
+            size: 32,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let status = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame validation status"),
             size: frame_queue::STATUS_BYTES,
@@ -303,6 +353,7 @@ impl DrawRenderer {
             })
         });
         let limits = device.limits();
+        let timings = PassTimings::new(&device, &queue);
         Ok(Self {
             device,
             queue,
@@ -314,9 +365,11 @@ impl DrawRenderer {
             shadow_scratch: None,
             shadow_slots: None,
             shadow_placeholder,
+            terrain_placeholder,
             shadow_next_slot: 0,
             minimap: None,
             triangles: None,
+            timings,
             status,
             status_ring,
             status_pending: [const { None }; frame_queue::STATUS_RING],
@@ -345,8 +398,11 @@ impl DrawRenderer {
             tile_index: TileIndex::default(),
             stream_commands: PersistentBuffer::default(),
             stream_tiles: PersistentBuffer::default(),
+            prepared_rows: PersistentBuffer::default(),
             asset_generation: 1,
             tail: None,
+            timing_slot: None,
+            tail_timing: None,
             failure: renderer.failure.clone(),
         })
     }
@@ -354,7 +410,8 @@ impl DrawRenderer {
     pub fn headless() -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&timing::device_descriptor(&adapter)))?;
         let renderer = crate::gpu::Renderer::new(device, queue)?;
         Self::new(&renderer, wgpu::TextureFormat::Rgba8Unorm)
     }
@@ -373,8 +430,20 @@ impl DrawRenderer {
             .min(limits.max_buffer_size)
     }
 
+    /// Fixture hook: with binning off every record reaches every tile its clip covers,
+    /// so the binned and unbinned rasters can be compared on the same geometry.
+    pub fn bin_records(&mut self, binning: bool) {
+        self.tile_index.set_binning(binning);
+    }
+
     pub fn counters(&self) -> Counters {
-        self.counters
+        let mut counters = self.counters;
+        if let Some(timings) = &self.timings {
+            counters.pass_ns = timings.ns;
+            counters.timed_passes = timings.passes;
+            counters.untimed_passes = timings.dropped;
+        }
+        counters
     }
 
     pub fn arena_counters(&self) -> ArenaCounters {
@@ -393,11 +462,95 @@ impl DrawRenderer {
         self.resource_bytes as u64
     }
 
+    /// Opens an encoder and, when GPU timing is on, the ring slot its passes stamp into.
+    pub(super) fn begin_encoder(&mut self) -> wgpu::CommandEncoder {
+        if let Some(timings) = &mut self.timings {
+            if let Some(slot) = self.timing_slot.take() {
+                timings.release(slot);
+            }
+            self.timing_slot = timings.open(&self.device);
+        }
+        self.device.create_command_encoder(&Default::default())
+    }
+
+    /// The prepared-row arena as the raster kernel binds it; a placeholder until a
+    /// frame has carried terrain.
+    pub(super) fn terrain_rows_binding(&self) -> &wgpu::Buffer {
+        self.prepared_rows
+            .buffer
+            .as_ref()
+            .unwrap_or(&self.terrain_placeholder)
+    }
+
+    /// The renderer-owned prepared-row arena, grown in powers of two and reused.
+    pub(super) fn prepared_rows(&mut self, rows: u64) -> wgpu::Buffer {
+        let words = rows.max(1) * 8;
+        self.counters.prepared_row_words += words;
+        if self.prepared_rows.words < words {
+            self.counters.prepared_row_allocations += 1;
+            let size = words.next_power_of_two().max(1024) * 4;
+            self.counters.buffers += 1;
+            self.counters.buffer_bytes += size;
+            self.prepared_rows.buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("GPU prepared gpoly rows"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }));
+            self.prepared_rows.words = size / 4;
+        }
+        self.prepared_rows.buffer.clone().unwrap()
+    }
+
+    /// Closes the present tail before a batch recycles arena scratch, keeping the
+    /// tail's own timestamps with the submission that recorded them.
+    pub(super) fn open_batch(&mut self) {
+        if self.arena.enabled() {
+            self.tail_submit();
+        }
+    }
+
+    pub(super) fn stamp(&mut self, kind: usize) -> Stamp {
+        let slot = self.timing_slot;
+        Stamp(
+            self.timings
+                .as_mut()
+                .zip(slot)
+                .and_then(|(timings, slot)| timings.reserve(slot, kind)),
+        )
+    }
+
+    /// The present tail records into its own long-lived encoder, so it keeps its own
+    /// ring slot rather than the one the current encoder holds.
+    pub(super) fn tail_stamp(&mut self, kind: usize) -> Stamp {
+        self.tail_encoder();
+        if self.tail_timing.is_none()
+            && let Some(timings) = &mut self.timings
+        {
+            self.tail_timing = timings.open(&self.device);
+        }
+        let slot = self.tail_timing;
+        Stamp(
+            self.timings
+                .as_mut()
+                .zip(slot)
+                .and_then(|(timings, slot)| timings.reserve(slot, kind)),
+        )
+    }
+
     /// Submits the present tail first, so no encoder opened after it can reach the
     /// queue ahead of work the tail already recorded.
-    pub(super) fn submit_encoder(&mut self, encoder: wgpu::CommandEncoder) {
+    pub(super) fn submit_encoder(&mut self, mut encoder: wgpu::CommandEncoder) {
         self.tail_submit();
+        let closed = self
+            .timings
+            .as_mut()
+            .zip(self.timing_slot.take())
+            .and_then(|(timings, slot)| timings.close(slot, &mut encoder));
         self.submit_one(encoder);
+        if let Some(slot) = closed {
+            self.timings.as_mut().unwrap().map(slot);
+        }
     }
 
     fn submit_one(&mut self, encoder: wgpu::CommandEncoder) {
@@ -418,8 +571,16 @@ impl DrawRenderer {
     /// Finishes the present tail. Every queue read of the root must precede it with
     /// this, because the tail is recorded after the work it reads.
     pub fn tail_submit(&mut self) {
-        if let Some(encoder) = self.tail.take() {
+        if let Some(mut encoder) = self.tail.take() {
+            let closed = self
+                .timings
+                .as_mut()
+                .zip(self.tail_timing.take())
+                .and_then(|(timings, slot)| timings.close(slot, &mut encoder));
             self.submit_one(encoder);
+            if let Some(slot) = closed {
+                self.timings.as_mut().unwrap().map(slot);
+            }
         }
     }
 
@@ -544,12 +705,13 @@ impl DrawRenderer {
         }
         let (target_width, target_height) = self.target_dimensions(target)?;
         let limit = self.storage_limit() as usize;
+        self.open_batch();
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &mut self.tail,
+            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -623,15 +785,17 @@ impl DrawRenderer {
                 entry(2, &asset_buffer),
                 entry(3, &parameters),
                 entry(4, &tile_buffer),
+                entry(5, self.terrain_rows_binding()),
                 entry(6, self.shadow_slot_binding()),
                 entry(7, self.status_binding()),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = self.begin_encoder();
+        let stamp = self.stamp(PASS_RASTER);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("exclusive destination pixel ownership"),
-                timestamp_writes: None,
+                timestamp_writes: stamp.compute(),
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &binding, &[]);
@@ -683,15 +847,21 @@ impl DrawRenderer {
 
     /// One raster pass over one segment of the frame's stream; the segment's header in
     /// the shared tile index bounds both what each pixel iterates and the dispatch box.
+    /// The frame's terrain setup rides into the first segment's encoder, so the rows
+    /// are written by an earlier pass of the same submission than the one reading them.
     fn raster_segment(
         &mut self,
         target: &Target,
         buffers: &(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer),
         pass: &Pass,
         commands: usize,
+        prepare: &mut Option<PendingPrepare>,
     ) -> Result<()> {
         let (command_buffer, tile_buffer, asset_buffer) = buffers;
+        let mut encoder = self.begin_encoder();
+        self.record_prepare(&mut encoder, prepare)?;
         let Some((parameters, span_x, span_y)) = self.pass_parameters(target, pass) else {
+            self.submit_encoder(encoder);
             return Ok(());
         };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -703,15 +873,16 @@ impl DrawRenderer {
                 entry(2, asset_buffer),
                 entry(3, &parameters),
                 entry(4, tile_buffer),
+                entry(5, self.terrain_rows_binding()),
                 entry(6, self.shadow_slot_binding()),
                 entry(7, self.status_binding()),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let stamp = self.stamp(PASS_RASTER);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("exclusive destination pixel ownership"),
-                timestamp_writes: None,
+                timestamp_writes: stamp.compute(),
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &binding, &[]);
@@ -722,6 +893,30 @@ impl DrawRenderer {
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands as u64;
+        Ok(())
+    }
+
+    /// Records the frame's single terrain setup dispatch, once, into `encoder`.
+    pub(super) fn record_prepare(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        prepare: &mut Option<PendingPrepare>,
+    ) -> Result<()> {
+        let Some(pending) = prepare.take() else {
+            return Ok(());
+        };
+        self.triangles
+            .get_or_insert_with(|| triangles::TrianglePipelines::new(&self.device));
+        let stamp = self.stamp(PASS_TERRAIN_PREPARE);
+        self.triangles.as_ref().unwrap().prepare.encode(
+            &self.device,
+            encoder,
+            &pending.triangles,
+            &pending.layout,
+            &pending.rows,
+            stamp.compute(),
+        )?;
+        self.counters.dispatches += 1;
         Ok(())
     }
 
@@ -841,6 +1036,7 @@ impl DrawRenderer {
             ],
         });
         let present = self.present.clone();
+        let stamp = self.tail_stamp(PASS_PRESENT);
         let encoder = self.tail_encoder();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -855,7 +1051,7 @@ impl DrawRenderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: stamp.render(),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -919,21 +1115,22 @@ pub(super) enum AssetPacker<'a> {
 
 /// Opening a batch recycles arena scratch, and the uploads that follow are staged
 /// into the head of the next submission. A present tail already reading a recycled
-/// region would see them, so the tail is submitted before the batch opens.
+/// region would see them, so every caller submits the tail through `open_batch`
+/// before the batch opens.
 pub(super) fn asset_packer<'a>(
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     arena: &'a mut arena::Arena,
     counters: &'a mut Counters,
-    tail: &mut Option<wgpu::CommandEncoder>,
+    tail: &Option<wgpu::CommandEncoder>,
     generation: u64,
     limit: usize,
 ) -> AssetPacker<'a> {
     if arena.enabled() {
-        if let Some(encoder) = tail.take() {
-            counters.submits += 1;
-            queue.submit([encoder.finish()]);
-        }
+        debug_assert!(
+            tail.is_none(),
+            "the present tail must be submitted before a batch recycles arena scratch"
+        );
         arena.begin_batch();
         AssetPacker::Arena {
             device,
@@ -1118,18 +1315,86 @@ fn pack_commands(
 ) -> Result<Vec<u32>> {
     pack_records(
         packer,
-        commands.iter().map(|c| (c, view, 0)),
+        commands.iter().map(|c| (Entry::Command(c), view, 0)),
         commands.len(),
         resources,
+        &[],
         limit,
     )
 }
 
+/// One terrain record: its conservative box is the clamped vertex range, which the
+/// setup kernel provably never writes outside, so the raster's own bounds test is the
+/// row guard and binning by the box is exact.
+fn pack_terrain(
+    words: &mut Vec<u32>,
+    packer: &mut AssetPacker,
+    triangle: &TriangleCommand,
+    resources: &HashMap<u64, Resource>,
+    layout: &gpoly::RowLayout,
+    view: ViewSpace,
+    index: u32,
+) -> Result<()> {
+    ensure!(
+        triangle.abi_version == ABI_VERSION && triangle.reserved == 0,
+        "invalid triangle ABI"
+    );
+    let mut offsets = [0; 2];
+    for (slot, (handle, texture)) in [(triangle.source, true), (triangle.table, false)]
+        .into_iter()
+        .enumerate()
+    {
+        let resource = resources
+            .get(&handle)
+            .context("unknown triangle resource")?;
+        ensure!(
+            resource.pitch == 256
+                && resource.width == if texture { 32 } else { 256 }
+                && resource.height == if texture { 32 } else { 64 },
+            "invalid triangle resource dimensions"
+        );
+        let length = if texture { 7968 } else { 16384 };
+        ensure!(resource.bytes.len() >= length, "short triangle resource");
+        offsets[slot] = packer
+            .prefix(handle, &resource.bytes, length)
+            .context("triangle assets exceed buffer limit")?;
+    }
+    for vertex in triangle.vertices {
+        ensure!(
+            (-32768..=32767).contains(&vertex.x) && (-32768..=32767).contains(&vertex.y),
+            "vertex exceeds signed 16.16 coordinates"
+        );
+    }
+    let axis = |extent: u32, of: fn(&crate::gpoly::Vertex) -> i32| {
+        let edge = i64::from(extent);
+        let values = triangle
+            .vertices
+            .iter()
+            .map(|vertex| i64::from(of(vertex)).clamp(0, edge) as u32);
+        let (mut lo, mut hi) = (u32::MAX, 0);
+        for value in values {
+            lo = lo.min(value);
+            hi = hi.max(value);
+        }
+        (lo, hi)
+    };
+    let (x_lo, x_hi) = axis(view.width, |vertex| vertex.x);
+    let (y_lo, y_hi) = axis(view.height, |vertex| vertex.y);
+    words.extend([TERRAIN_TRI, 0, index, 0]);
+    words.extend(view.rebase([x_lo, y_lo, x_hi, y_hi]));
+    words.extend(view.clip([0, 0, view.width, view.height]));
+    words.extend([offsets[0], offsets[1], 0, layout.base]);
+    words.extend([0; 8]);
+    words.extend([OPAQUE, 0, 0, 0]);
+    Ok(())
+}
+
 fn pack_records<'a>(
     packer: &mut AssetPacker,
-    records: impl Iterator<Item = (&'a Command, ViewSpace, u32)>,
+    records: impl Iterator<Item = (Entry<'a>, ViewSpace, u32)>,
     count: usize,
     resources: &HashMap<u64, Resource>,
+    layout: &[gpoly::RowLayout],
     limit: usize,
 ) -> Result<Vec<u32>> {
     ensure!(
@@ -1137,7 +1402,17 @@ fn pack_records<'a>(
         "command batch exceeds limit"
     );
     let mut words = Vec::with_capacity(count * RECORD_WORDS);
-    for (c, view, index) in records {
+    let mut terrain = 0;
+    for (record, view, index) in records {
+        let c = match record {
+            Entry::Terrain(triangle) => {
+                let entry = layout.get(terrain).context("missing triangle row layout")?;
+                pack_terrain(&mut words, packer, triangle, resources, entry, view, index)?;
+                terrain += 1;
+                continue;
+            }
+            Entry::Command(command) => command,
+        };
         let (width, height) = (view.width, view.height);
         ensure!(
             c.abi_version == ABI_VERSION && c.reserved == [0; 3],
@@ -1284,6 +1559,38 @@ fn buffer(
     })
 }
 
+/// The frame's terrain setup, waiting for the first raster segment's encoder.
+pub(super) struct PendingPrepare {
+    pub(super) triangles: Vec<gpoly::Triangle>,
+    pub(super) layout: Vec<gpoly::RowLayout>,
+    pub(super) rows: wgpu::Buffer,
+}
+
+/// A reserved timestamp pair, empty when the run is not timing passes.
+pub(super) struct Stamp(Option<(wgpu::QuerySet, u32, u32)>);
+
+impl Stamp {
+    pub(super) fn compute(&self) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+        self.0
+            .as_ref()
+            .map(|(set, begin, end)| wgpu::ComputePassTimestampWrites {
+                query_set: set,
+                beginning_of_pass_write_index: Some(*begin),
+                end_of_pass_write_index: Some(*end),
+            })
+    }
+
+    pub(super) fn render(&self) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        self.0
+            .as_ref()
+            .map(|(set, begin, end)| wgpu::RenderPassTimestampWrites {
+                query_set: set,
+                beginning_of_pass_write_index: Some(*begin),
+                end_of_pass_write_index: Some(*end),
+            })
+    }
+}
+
 fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {
         binding,
@@ -1297,14 +1604,28 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 /// of `(offset, length)` pairs covering only the tiles its own records touch,
 /// followed by the shared entry array, so the passes together iterate each tile
 /// list exactly once and a pass costs nothing for tiles it never reaches.
-#[derive(Default)]
 pub(super) struct TileIndex {
+    binning: bool,
     counts: Vec<u32>,
     cursors: Vec<u32>,
     packed: Vec<u32>,
     passes: Vec<Pass>,
     length: usize,
     header: usize,
+}
+
+impl Default for TileIndex {
+    fn default() -> Self {
+        Self {
+            binning: true,
+            counts: Vec::new(),
+            cursors: Vec::new(),
+            packed: Vec::new(),
+            passes: Vec::new(),
+            length: 0,
+            header: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1346,24 +1667,30 @@ pub(super) fn pass_box(pass: &Pass, width: u32, height: u32) -> [u32; 4] {
     ]
 }
 
+/// Without binning a record reaches every tile its clip covers, which is what the
+/// kernel would iterate if there were no index; the per-record bounds test then does
+/// the whole rejection. Only the fixtures turn binning off.
 fn tile_span(
     command: &[u32; RECORD_WORDS],
     width: u32,
     height: u32,
+    binning: bool,
 ) -> Option<(u32, u32, u32, u32)> {
-    let x0 = (command[4] as i32)
+    let near = if binning { 4 } else { 8 };
+    let far = if binning { 6 } else { 10 };
+    let x0 = (command[near] as i32)
         .max(command[8] as i32)
         .max(0)
         .min(width as i32) as u32;
-    let y0 = (command[5] as i32)
+    let y0 = (command[near + 1] as i32)
         .max(command[9] as i32)
         .max(0)
         .min(height as i32) as u32;
-    let x1 = (command[6] as i32)
+    let x1 = (command[far] as i32)
         .min(command[10] as i32)
         .max(0)
         .min(width as i32) as u32;
-    let y1 = (command[7] as i32)
+    let y1 = (command[far + 1] as i32)
         .min(command[11] as i32)
         .max(0)
         .min(height as i32) as u32;
@@ -1385,6 +1712,10 @@ fn grow(vec: &mut Vec<u32>, length: usize, allocations: &mut u64) {
 }
 
 impl TileIndex {
+    pub(super) fn set_binning(&mut self, binning: bool) {
+        self.binning = binning;
+    }
+
     fn build(
         &mut self,
         counters: &mut Counters,
@@ -1403,16 +1734,21 @@ impl TileIndex {
             pass.tiles = [u32::MAX, u32::MAX, 0, 0];
         }
         let mut entries = 0usize;
+        let mut terrain = 0usize;
         let mut at = 0;
         for (index, command) in records.iter().enumerate() {
             while segments.get(at).is_some_and(|end| index >= *end) {
                 at += 1;
             }
-            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height, self.binning) else {
                 continue;
             };
+            let covered = (x1 - x0) as usize * (y1 - y0) as usize;
+            if command[0] == TERRAIN_TRI {
+                terrain += covered;
+            }
             entries = entries
-                .checked_add((x1 - x0) as usize * (y1 - y0) as usize)
+                .checked_add(covered)
                 .context("tile list length overflow")?;
             let box_of = &mut self.passes[at].tiles;
             box_of[0] = box_of[0].min(x0);
@@ -1456,7 +1792,7 @@ impl TileIndex {
             while segments.get(at).is_some_and(|end| index >= *end) {
                 at += 1;
             }
-            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height, self.binning) else {
                 continue;
             };
             let pass = self.passes[at];
@@ -1481,7 +1817,7 @@ impl TileIndex {
             while segments.get(at).is_some_and(|end| index >= *end) {
                 at += 1;
             }
-            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height, self.binning) else {
                 continue;
             };
             let pass = self.passes[at];
@@ -1494,6 +1830,7 @@ impl TileIndex {
             }
         }
         counters.tile_entries += entries as u64;
+        counters.terrain_tile_entries += terrain as u64;
         Ok(())
     }
 

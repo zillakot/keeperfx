@@ -205,6 +205,38 @@ evolved populations and host conditions differ. Continuous unobscured window
 visibility was not independently established. Three zero-presentation surface
 acquisition attempts were rejected and contribute no timing claims.
 
+#### Terrain binning, 2026-09-14
+
+Serial matched pairs on the wgpu presenter with `KFX_DRAW_BACKEND=wgpu`, busy scene,
+200 measured turns, VSync off and a 60 FPS cap, before and after terrain tile binning on
+the same host and assets. Per-pass GPU time is from `TIMESTAMP_QUERY`; every other figure
+is host wall clock. Simulation stayed at 0.343/0.317 ms and 0.325/0.312 ms across the
+pairs, so host contention did not move between runs.
+
+| | 640x480 before | 640x480 after | 1080p before | 1080p after |
+| --- | ---: | ---: | ---: | ---: |
+| GPU raster | 4.489 ms | 4.437 ms | 44.891 ms | 56.890 ms |
+| GPU terrain setup | 1.164 ms | 0.042 ms | 1.737 ms | 0.036 ms |
+| GPU terrain raster | 4.076 ms | folded | 24.656 ms | folded |
+| GPU all passes | 14.005 ms | 9.292 ms | 88.070 ms | 87.807 ms |
+| Terrain iterations | 308 M *derived* | 1.85 M | 2,065 M *derived* | 7.85 M |
+| Dispatches / submits | 128.7 / 83.9 | 59.1 / 45.2 | 113.1 / 76.1 | 48.6 / 39.1 |
+| Draw mean | 1.550 ms | 1.484 ms | 1.409 ms | 1.332 ms |
+| Presentation mean | 16.258 ms | 5.706 ms | 103.163 ms | 76.825 ms |
+| Frame interval / FPS | 18.197 ms / 54.95 | 16.667 ms / 60.00 | 105.046 ms / 9.52 | 79.030 ms / 12.65 |
+| Turns/s over the window | 20.02 | 20.03 | 9.57 | 13.98 |
+
+A quiet 1080p pair on the same builds: GPU all passes 76.05 → 59.57 ms, presentation
+91.66 → 62.06 ms, 10.74 → 15.75 FPS and 10.79 → 15.83 turns/s, with `terrain_tile_entries` 33,588, i.e. 8.60 M
+iterations. Terrain is a larger share of a quiet scene, so it gains more there.
+
+640x480 reaches the 60 FPS cap with 20.03 turns/s. 1080p gains a third but stays 4.7x
+short. The 1080p GPU total did not fall: the terrain pass's 26.4 ms became about 12 ms of
+extra raster time, and the minimap and ordered-sprite passes took the rest back — those
+passes are unchanged by this work, so the shift is either scheduling or an effect of the
+halved submission count, and it is not explained here. Per-pass GPU windows include time a
+pass spends stalled on its dependencies, so they attribute cost rather than decompose it.
+
 #### HD measurement
 
 The same binary, presenter and settings, capped host-wall timing at a 1920×1080
@@ -347,17 +379,17 @@ ownership, synchronization, counters and failure behavior.
 
 | Gate | Status | Evidence and remaining work |
 | --- | --- | --- |
-| Inventory and measurement | Partial | Clean 640×480 measurements exposed the synchronous prototype regression: software drawing about 1.3–1.5 ms versus GPU drawing about 129–131 ms, with verifiers disabled. Full-frame readback dominated the separate stack sample. Queued frames are now measured at 640×480 and 1920×1080 (see the status section); the front-view matrix remains open. |
+| Inventory and measurement | Partial | Per-pass GPU execution time is now collected on request (`KFX_WGPU_GPU_TIMING=1`, `profile-game.py --gpu-timing`), so the terrain, raster, shadow, trig, sprite, minimap, lens and present shares are attributed rather than inferred. Clean 640×480 measurements exposed the synchronous prototype regression: software drawing about 1.3–1.5 ms versus GPU drawing about 129–131 ms, with verifiers disabled. Full-frame readback dominated the separate stack sample. Queued frames are now measured at 640×480 and 1920×1080 (see the status section); the front-view matrix remains open. |
 | Extract commands | Partial | [Gpoly capture](../../src/kfx/renderer/GpolyCapture.h) owns span/resource snapshots; reviewed CPU oracle at `beec45800`: 615 fixtures and 20,389 spans matched native indices. Original-vertex native routing at `17e993a84` copies vertices before CPU setup and retains immutable texture/fade versions. Other families need immutable commands. |
 | Implement GPU drawing | Partial | [Indexed backend](../../tools/frame-replay/src/draw.rs) and [C ABI](../../src/kfx/renderer/WgpuDraw.h) cover the implemented families below. General triangles have all 27 kernels and deterministic thin-triangle setup. Queued frames, alias views, resource ownership and borrowed cursor integration are implemented; final combined runtime and performance evidence must match their exact source. |
 | Cover every drawing path | Open | Accepted original-vertex terrain bypasses CPU setup and rasterization; bounded 2D hooks suppress selected CPU pixel loops. The remaining families below and routine upload/readback bridges prevent complete GPU coverage. |
-| Native validation | Partial | Exact `e19ff26f7` sessions passed gameplay, parchment, save/reload and compound-lens possession, with 788 surface-verified presentations and no drawing failures. A real parchment oracle-recursion crash was fixed and retested. Later queued-frame source requires its own acceptance; complete views, languages, assets and failure coverage remain open. |
-| Performance and delivery | Open | The single command stream is in place and its structural counters moved, but it does not yet pay for itself: observed FPS fell about 2 at busy 640x480 while CPU drawing and presentation improved. The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
+| Native validation | Partial | The terrain-binning build passed an isolated native session on busy level 20 through `game-control.py` — camera movement, parchment open and return, pause and resume, two resizes and a clean quit, every state predicate reached, 2,424 GPU terrain batches and no failure, invalid frame or fallback — and a separate `KFX_WGPU_DRAW_VERIFY=1` run against the CPU oracle with 5,986 verified batches and 21,223 verified triangles at zero failures. Exact `e19ff26f7` sessions passed gameplay, parchment, save/reload and compound-lens possession, with 788 surface-verified presentations and no drawing failures. A real parchment oracle-recursion crash was fixed and retested. Later queued-frame source requires its own acceptance; complete views, languages, assets and failure coverage remain open. |
+| Performance and delivery | Open | Terrain binning is the first step that pays: on the wgpu presenter with GPU drawing, observed FPS rose 54.95 → 60.00 at busy 640x480, hitting the cap, and 9.52 → 12.65 at 1920x1080, with per-frame GPU time 14.00 → 9.29 ms and 88.07 → 87.81 ms. 1080p is still 4.7x off the target. The single command stream before it moved its structural counters without paying for itself: observed FPS fell about 2 at busy 640x480 while CPU drawing and presentation improved. The synchronous prototype is unsuitable for regular play. Queued native drawing replaces per-command framebuffer transfers; verify the actual improvement with clean matched runs and active GPU counters. No complete-renderer or speedup claim follows from fixtures. The foundation merges opt-in with the software path default; the single-stream restructure and its acceptance metrics gate any default switch. Exact-head CI and merge verification remain required for each PR. |
 
 | Drawing family and source boundary | Implemented coverage | Remaining GPU work / validation |
 | --- | --- | --- |
-| Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Original vertices → GPU setup, clipping, scan conversion and texture/shade stores; general-triangle kernels cover the other implemented modes | Broader scene/resource and allocation/alias coverage; full offscreen possession target ownership |
-| Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` original-vertex terrain batching is wired | Independent front-view runtime proof; sprites and interleaved overlays |
+| Dungeon/possession terrain: [world dispatch](../../src/engine_render.c), [gpoly](../../src/kfx/renderer/software/bflib_render_gpoly.c) | Original vertices → GPU setup, clipping, scan conversion and texture/shade stores; every triangle is a binned stream record sharing one raster pass with the other families, with setup into a compressed renderer-owned row arena; general-triangle kernels cover the other implemented modes | Broader scene/resource and allocation/alias coverage; full offscreen possession target ownership |
+| Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` original-vertex terrain batching is wired and inherits binning through the same sink | Independent front-view runtime proof and its own `terrain_tile_entries` read; sprites and interleaved overlays |
 | General triangles: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | Original vertices feed GPU kernels for modes 0–26; native adapter covers 26 modes and dedicated shadows provide mode10 | Allocation/alias fallback, combined-head native coverage and resident target integration |
 | Creature shadows: [shadow adapter](../../src/kfx/renderer/software/WgpuShadow.h), world dispatch | Original RLE/frame metadata → GPU silhouette in a resident 256x256 scratch → one of two resident mask slots → both native-order mode10 triangles in the next submission; partial scratch clear preserved | The resident chain and the shared `big_scratch` are unreconciled in both directions, measured by `shadow_prior_divergence` under verification; scratch-alias residency, broader assets and combined-head gameplay |
 | World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores. Consecutive ordered sprites with disjoint scaling-range rectangles share one dispatch of *M* workgroups, reported by `ordered_sprite_layers` and `ordered_sprite_passes` | Ordered GPU run copies cover solid scaled-up horizontal flips, including native alignment/chunk behavior; asset/destination aliases and custom-asset/gameplay coverage remain open. Layering measured 2.68 layers against 2.69 ordered sprites on a busy 640x480 pair, so it pays nothing today: ordered sprites almost never land consecutively in the stream |

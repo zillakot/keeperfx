@@ -11,6 +11,8 @@ struct Command {
 @group(0) @binding(1) var<storage, read> commands: array<Command>;
 @group(0) @binding(2) var<storage, read> assets: array<u32>;
 @group(0) @binding(4) var<storage, read> tiles: array<u32>;
+struct Span { bounds: vec4<u32>, accumulator: vec4<u32> }
+@group(0) @binding(5) var<storage, read> rows: array<Span>;
 // x/y are the target extent; w is the pass's tile columns; base/box bound its dispatch.
 struct DrawParameters {
     x: u32, y: u32, box_x: u32, w: u32, pitch: u32, offset: u32,
@@ -20,6 +22,7 @@ struct DrawParameters {
 @group(0) @binding(7) var<storage, read_write> status: array<atomic<u32>, 8>;
 const STATUS_FRAME: u32 = 0u;
 const STATUS_TRIG_LOOKUP: u32 = 1u;
+const STATUS_TERRAIN_SHADE: u32 = 2u;
 fn raise(cause: u32) { atomicStore(&status[STATUS_FRAME], 1u); atomicStore(&status[cause], 1u); }
 fn pixel_address(i: u32) -> u32 { return parameters.offset + (i / parameters.x) * parameters.pitch + i % parameters.x; }
 // The frame's views live at the head of the tile buffer, four words each: a record names
@@ -43,6 +46,21 @@ fn mul_high(a: u32, b: u32) -> u32 {
     let t = a1 * b0 + ((a0 * b0) >> 16u);
     let u = a0 * b1 + (t & 65535u);
     return a1 * b1 + (t >> 16u) + (u >> 16u);
+}
+
+// One terrain triangle's row, addressed by the record's arena base and the offset of
+// this pixel inside the record's conservative box. 256 means the row does not cover
+// this pixel; 257 means the shade left the fade table.
+fn terrain_sample(c: Command, viewed: vec2<u32>, pixel: vec2<i32>) -> u32 {
+    let row = rows[c.assets.w + u32(pixel.y - c.bounds.y)];
+    if viewed.x < row.bounds.x || viewed.x - row.bounds.x >= row.bounds.z { return 256u; }
+    let offset = viewed.x - row.bounds.x;
+    let low = row.accumulator.x + row.accumulator.z * offset;
+    if (low & 0xff00u) >= 16384u { return 257u; }
+    let high = row.accumulator.y + row.accumulator.w * offset
+        + mul_high(row.accumulator.z, offset) + u32(low < row.accumulator.x);
+    let uv = ((high << 8u) | (high >> 24u)) & 0x1f1fu;
+    return assets[c.assets.y + (assets[c.assets.x + uv] | (low & 0xff00u))];
 }
 
 fn circle_octants(p: vec2<i32>, a: i32, b: i32) -> u32 {
@@ -138,6 +156,13 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
             if c.operation.x == 9u {
                 let sampled = trig_sample(c, local_pixel, destination);
                 if sampled == 257u { raise(STATUS_TRIG_LOOKUP); continue; }
+                destination = sampled;
+                continue;
+            }
+            if c.operation.x == 17u {
+                let sampled = terrain_sample(c, viewed, pixel);
+                if sampled == 256u { continue; }
+                if sampled == 257u { raise(STATUS_TERRAIN_SHADE); continue; }
                 destination = sampled;
                 continue;
             }

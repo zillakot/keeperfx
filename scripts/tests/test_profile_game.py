@@ -160,7 +160,7 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(drawing["per_frame"]["ordered_sprites"]["min"],
                              profile.DRAWING_COUNTERS.index("ordered_sprites"))
             self.assertTrue(any("not GPU execution time" in item for item in report["limitations"]))
-            self.assertTrue(any("GPU execution time is not implemented" in item
+            self.assertTrue(any("Only the gpu_*_ns counters are GPU execution time" in item
                                 for item in report["limitations"]))
 
     def test_drawing_counters_reject_window_and_metadata_mismatches(self):
