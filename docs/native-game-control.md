@@ -96,6 +96,12 @@ Only the isolated control session ignores physical keyboard/mouse events receive
 by its window and avoids grabbing/warping the host cursor. Native close, focus and
 window lifecycle events remain active. Control requests run on the main thread;
 there is one bounded command queue and one API client. Commands are never retried.
+In control mode, a new connection replaces the previous client, even if its EOF
+has not been read yet. Replacement clears subscriptions and partial requests and
+cancels held input; do not run concurrent control clients. Socket writes suppress
+SIGPIPE, and a failed write drops the client. This also covers reconnects after a
+video-mode switch delays API polling. Window recreation does not restart the API
+listener or change the port, token or session identifier; reuse the same descriptor.
 The CLI may retry only the initial read-only identity handshake while the previous
 connection closes. Disconnect, cancellation and a 15-second action deadline release
 held keys/buttons. Idle connections expire after three seconds; each frame accepts
@@ -107,6 +113,9 @@ remains unchanged when control is disabled.
 
 ```sh
 python3 -m unittest discover -s scripts/tests -p 'test_game_control.py'
+cmake -S tests/api -B out/api-tests
+cmake --build out/api-tests
+ctest --test-dir out/api-tests --output-on-failure
 python3 scripts/game-control.py launch --out out/control-test --level 1
 KFX_CONTROL_TEST_SESSION=out/control-test/session.json python3 -m unittest discover -s scripts/tests -p 'test_game_control_integration.py'
 python3 scripts/game-control.py quit --session out/control-test/session.json
@@ -115,6 +124,22 @@ python3 scripts/game-control.py quit --session out/control-test/session.json
 The opt-in integration tests execute the engine's authentication and framing,
 input cancellation and subscription cleanup. They require unpaused gameplay and
 move the isolated camera during the held-input cancellation check.
+
+For the mode-switch reconnect regression, launch a fresh session with the rebuilt
+engine, then issue separate commands without delays:
+
+```sh
+python3 scripts/game-control.py launch --out out/control-reconnect --level 1 --backend wgpu --draw-backend wgpu --verify
+python3 scripts/game-control.py cycle-mode --until fullscreen=true --session out/control-reconnect/session.json
+python3 scripts/game-control.py state --session out/control-reconnect/session.json
+python3 scripts/game-control.py state --session out/control-reconnect/session.json
+python3 scripts/game-control.py state --session out/control-reconnect/session.json
+python3 scripts/game-control.py quit --session out/control-reconnect/session.json
+```
+
+Every command must succeed; `quit` must report `exit.returncode: 0` and
+`exit.timed_out: false`. The C socket fixture covers closed-peer writes with the
+default SIGPIPE disposition and replacement cleanup without launching the game.
 
 Screenshots plus state predicates establish UI outcomes. For rendering experiments,
 record the executable hash and final Rust verification counts; run performance

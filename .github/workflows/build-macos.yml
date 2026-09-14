@@ -31,6 +31,11 @@ jobs:
           cmake -S . -B out/macos -DKFX_SOUND_REGISTRY_TESTS=ON
           cmake --build out/macos --target sound_manager_registry_test --parallel 3
           ctest --test-dir out/macos --output-on-failure -R '^sound_manager_registry$'
+      - name: Check API socket reconnects and closed-peer writes
+        run: |
+          cmake -S tests/api -B out/api-tests
+          cmake --build out/api-tests --parallel 2
+          ctest --test-dir out/api-tests --output-on-failure
       - name: Check and link optional live Rust presenter
         run: |
           rustup update stable

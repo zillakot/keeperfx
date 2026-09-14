@@ -45,6 +45,11 @@ jobs:
           cmake -S tests/performance -B out/performance-tests
           cmake --build out/performance-tests --parallel 2
           ctest --test-dir out/performance-tests --output-on-failure
+      - name: Check API socket reconnects and closed-peer writes
+        run: |
+          cmake -S tests/api -B out/api-tests
+          cmake --build out/api-tests --parallel 2
+          ctest --test-dir out/api-tests --output-on-failure
       - name: Check native drawing bridge ordering, batching and recovery
         run: |
           cmake -S tests/terrain-bridge -B out/terrain-bridge-tests

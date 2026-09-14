@@ -179,10 +179,6 @@ size_t get_max_flags()
     return num;
 }
 
-/**
- * Send raw bytes over the active client socket (blocking until all sent or error).
- * Replaces SDLNet_TCP_Send().
- */
 static void api_send(const char *data, int len)
 {
     if (api.activeSocket == KFX_INVALID_SOCKET || len <= 0)
@@ -190,7 +186,11 @@ static void api_send(const char *data, int len)
     int sent = 0;
     while (sent < len)
     {
+#ifdef MSG_NOSIGNAL
+        int r = (int)send(api.activeSocket, data + sent, len - sent, MSG_NOSIGNAL);
+#else
         int r = (int)send(api.activeSocket, data + sent, len - sent, 0);
+#endif
         if (r > 0)
         {
             sent += r;
@@ -199,8 +199,10 @@ static void api_send(const char *data, int len)
         if (r < 0)
         {
 #ifdef _WIN32
+            if (WSAGetLastError() == WSAEINTR) continue;
             if (WSAGetLastError() == WSAEWOULDBLOCK)
 #else
+            if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK)
 #endif
             {
@@ -211,11 +213,9 @@ static void api_send(const char *data, int len)
                 if (select((int)(api.activeSocket + 1), NULL, &wfds, NULL,
                     game_control_enabled() ? &timeout : NULL) > 0)
                     continue;
-                if (game_control_enabled()) {
-                    api_drop_client();
-                }
             }
         }
+        api_drop_client();
         break;
     }
 }
@@ -1669,8 +1669,23 @@ void api_update_server()
         socklen_t addr_len = sizeof(client_addr);
 #endif
         kfx_socket_t client = accept(api.serverSocket, (struct sockaddr*)&client_addr, &addr_len);
+#ifdef SO_NOSIGPIPE
         if (client != KFX_INVALID_SOCKET)
         {
+            int no_sigpipe = 1;
+            if (setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE,
+                (const char*)&no_sigpipe, sizeof(no_sigpipe)) != 0)
+            {
+                kfx_closesocket(client);
+                client = KFX_INVALID_SOCKET;
+                WARNLOG("Could not disable SIGPIPE on API connection");
+            }
+        }
+#endif
+        if (client != KFX_INVALID_SOCKET)
+        {
+            if (game_control_enabled() && api.activeSocket != KFX_INVALID_SOCKET)
+                api_drop_client();
             if (api.activeSocket != KFX_INVALID_SOCKET)
             {
                 // Already have a client — reject the second one
