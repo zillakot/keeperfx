@@ -72,6 +72,8 @@ struct KfxWgpuDrawCounters {
     /* Host-side staged asset bytes the context holds, not GPU memory; a gauge.
      * arena_bytes_resident is the suballocated GPU arena extent, also a gauge. */
     uint64_t host_staged_asset_bytes, arena_bytes_resident;
+    /* tile_allocations counts growths of the persistent binning scratch; zero after warm-up. */
+    uint64_t tile_allocations, tile_entries;
 };
 #pragma pack(pop)
 

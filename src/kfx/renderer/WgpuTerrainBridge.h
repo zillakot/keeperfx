@@ -57,7 +57,7 @@ public:
         uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
         uint64_t shadow_prior_divergence = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
-        uint64_t bridge_solo_batches = 0;
+        uint64_t bridge_solo_batches = 0, bridge_target_flushes = 0, bridge_target_runs = 0;
         uint64_t rejected_commands = 0, rejected_spans = 0;
     };
     WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify = false, bool resident = false);
@@ -138,6 +138,7 @@ private:
     bool PendingIsReplayable() const;
     static bool OrderedSprite(const KfxWgpuDrawCommand& command);
     bool PendingTargetChanged(const KfxGpolyTarget& target) const;
+    static bool SameRun(const KfxGpolyTarget& a, const KfxGpolyTarget& b);
     void AppendCommand(const KfxWgpuDrawCommand& command, uint64_t source);
     void AppendTriangle(const KfxWgpuTriangle& triangle);
     // Releases owned per-command sources, then drops every pending record.
@@ -151,7 +152,7 @@ private:
     bool ExecutePending(KfxWgpuNativeOracle oracle = nullptr, void* oracle_context = nullptr);
     bool SameTarget(const KfxGpolyTarget& target) const;
     bool FrameView(const KfxGpolyTarget& target, uint32_t& x, uint32_t& y) const;
-    uint64_t SubmissionTarget();
+    uint64_t SubmissionTarget(const KfxGpolyTarget& native);
     void ReleaseViews();
     size_t ExpectedOffset() const;
     bool Materialize();
@@ -176,7 +177,7 @@ private:
     KfxGpolyTarget m_native_target = {};
     // One run per contiguous same-route stretch; the three vectors are read in run order.
     enum RunKind : uint8_t { kRunCommands, kRunTriangles, kRunShadow };
-    struct PendingRun { RunKind kind; uint32_t count; };
+    struct PendingRun { RunKind kind; uint32_t count; KfxGpolyTarget target; };
     std::vector<KfxWgpuDrawCommand> m_pending;
     std::vector<uint64_t> m_pending_sources;
     std::vector<KfxWgpuTriangle> m_triangles;
