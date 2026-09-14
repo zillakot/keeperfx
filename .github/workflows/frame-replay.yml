@@ -27,6 +27,7 @@ jobs:
       KFX_TRIG_FIXTURE: ${{ github.workspace }}/out/trig-tests/trig.bin
       KFX_LENS_FIXTURE: ${{ github.workspace }}/out/lens-tests/lenses.bin
       KFX_PRIMITIVE_FIXTURE: ${{ github.workspace }}/out/primitive-tests/primitives.bin
+      KFX_BITMAP_FIXTURE: ${{ github.workspace }}/out/bitmap-tests/bitmaps.bin
     steps:
       - uses: actions/checkout@v4
       - name: Install software Vulkan driver
@@ -87,6 +88,13 @@ jobs:
             -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
           cmake --build out/sprite-tests --parallel 2
           ctest --test-dir out/sprite-tests --output-on-failure
+      - name: Compare huge bitmap sprites and glyphs with native drawing
+        run: |
+          cmake -S tests/bitmaps -B out/bitmap-tests -DKFX_BITMAP_ASAN=ON \
+            -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
+          cmake --build out/bitmap-tests --parallel 2
+          ctest --test-dir out/bitmap-tests --output-on-failure
+          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_bitmap_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare minimap terrain with native drawing
         run: |
           cmake -S tests/minimap -B out/minimap-tests
@@ -149,6 +157,19 @@ jobs:
             -DKFX_GPU_LIBRARY="$CARGO_TARGET_DIR/debug/libkeeperfx_frame_replay.a"
           cmake --build out/transition-bridge-tests --target transition_bridge --parallel 2
           ctest --test-dir out/transition-bridge-tests -R transition_bridge --output-on-failure
+      - name: Verify original vertex residency through the real drawing C ABI
+        run: |
+          cmake -S tests/terrain-vertices -B out/terrain-vertices-tests \
+            -DKFX_GPU_LIBRARY="$CARGO_TARGET_DIR/debug/libkeeperfx_frame_replay.a" \
+            -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
+          cmake --build out/terrain-vertices-tests --parallel 2
+          ctest --test-dir out/terrain-vertices-tests --output-on-failure
+      - name: Verify GPU target resource ownership through the real drawing C ABI
+        run: |
+          cmake -S tests/target-resources -B out/target-resource-tests \
+            -DKFX_GPU_LIBRARY="$CARGO_TARGET_DIR/debug/libkeeperfx_frame_replay.a"
+          cmake --build out/target-resource-tests --parallel 2
+          ctest --test-dir out/target-resource-tests --output-on-failure
       - name: Verify GPU target snapshots and ordered sampling
         run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_target_resources_gpu -- --ignored --nocapture --test-threads=1
       - name: Replay synthetic frames and sequences
