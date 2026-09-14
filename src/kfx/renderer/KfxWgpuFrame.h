@@ -6,10 +6,14 @@ extern "C" {
 #endif
 
 /* Views retain the canonical target's storage. Coordinates remain view-relative.
- * During an active frame submit copies commands and accepts them for validation.
- * Flush/end validate and commit atomically; failure preserves the prior checkpoint.
- * An invalid frame requires abort. Resource releases retain queued versions.
- * Readback and GPU snapshot operations are explicit checkpoints. */
+ * During an active frame submit copies commands and appends them to the frame's stream;
+ * accepted commands write the canonical target as the frame is recorded, with no
+ * intermediate copy. Host validation still rejects a batch before any target write, and
+ * a frame it invalidates requires abort. A lookup the GPU finds out of range skips its
+ * own write, leaves earlier writes intact and raises a frame flag; the frame presents as
+ * drawn, kfx_wgpu_draw_frame_status reports the flag without blocking within two frames,
+ * and recovery is a full redraw, not a rollback. Resource releases retain queued versions.
+ * Readback and GPU snapshot operations flush the frame's recorded work. */
 uint64_t kfx_wgpu_draw_target_view(void *drawing, uint64_t parent,
     uint32_t x, uint32_t y, uint32_t width, uint32_t height, char *error, size_t capacity);
 int32_t kfx_wgpu_draw_frame_begin(void *drawing, uint64_t root, char *error, size_t capacity);

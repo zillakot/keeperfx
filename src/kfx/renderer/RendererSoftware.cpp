@@ -282,6 +282,7 @@ void RendererSoftware::report_drawing()
     const PerformanceDrawingCounters sample = {
         gpu.submits, gpu.dispatches, gpu.waits, gpu.wait_ns,
         frame.checkpoints, frame.checkpoint_copy_bytes, frame.validation_waits,
+        frame.invalid_frames, frame.status_stalls,
         gpu.asset_upload_bytes + gpu.command_upload_bytes, gpu.readback_bytes,
         counts.bridge_readbacks, counts.gpu_readback_bytes,
         gpu.buffers, gpu.buffer_bytes, gpu.batches, gpu.commands, counts.gpu_ordered_sprites,

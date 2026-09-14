@@ -21,6 +21,7 @@ enum PerformanceScope {
 struct PerformanceDrawingCounters {
     unsigned long long submits, dispatches, waits, wait_ns;
     unsigned long long checkpoints, checkpoint_copy_bytes, validation_waits;
+    unsigned long long flagged_invalid_frames, status_stalls;
     unsigned long long upload_bytes, readback_bytes, full_readbacks, full_readback_bytes;
     unsigned long long buffers, buffer_bytes, batches, commands, ordered_sprites;
     unsigned long long arena_evictions, arena_overflows, arena_bytes_uploaded;

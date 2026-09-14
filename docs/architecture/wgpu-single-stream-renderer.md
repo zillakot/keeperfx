@@ -249,25 +249,30 @@ Palette expansion is unchanged in substance: `present_into` is one fullscreen re
 palette buffer, an 8-word parameter buffer and one bind group. Those buffers become persistent, the bind
 group is rebuilt only when the target or surface format changes, and the pass joins the frame encoder.
 
-**Validation without blocking.** Today `validate_frame_status` allocates a staging buffer, copies every
-per-batch status word into it, submits, `map_async`, and blocks in `device.poll(Wait)` — 9–12 times per
-frame, each draining the whole queue. The presentation-side flush wait alone is 40.5% of main-thread
-samples at 1080p, and the four-byte triangle shade validation another 8.4%. Replacement:
+**Validation without blocking.** Landed in PR 6. `validate_frame_status` used to allocate a staging
+buffer, copy every per-batch status word into it, submit, `map_async`, and block in `device.poll(Wait)`
+once per flush, on top of the per-batch flag readbacks outside a frame. What replaced it:
 
-1. A persistent `status` buffer of 64 `u32` slots, zeroed by a one-thread pass at the head of the encoder.
-2. Validation moves *into* the raster kernels: where a lookup would be out of range, the invocation
-   writes `1` into its status slot and **skips the write** for that command. The dedicated
-   `validate_trig_batch` pass and the `draw_triangles.wgsl` `validate` entry point are deleted, removing
-   ~30 further full-target dispatches per frame.
-3. `encoder.copy_buffer_to_buffer(status → staging_ring[frame % 4])` at the tail, `map_async`, **no** poll.
-4. The result is read one or two frames later inside `frame_begin`, after the non-blocking
-   `device.poll(Poll)` that `acquire` already performs, and surfaced through `kfx_wgpu_draw_frame_status`.
+1. A persistent `status` buffer of 8 `u32` words: word 0 is the frame flag, the rest name the kernel
+   check that raised it. The tail copy clears it in the same encoder, so no clearing pass is needed.
+2. The general-triangle check moved *into* `draw.wgsl`: an out-of-range `trig_sample` skips the write
+   for that command and raises the flag, and the dedicated `validate_trig` pass with its ~30 full-target
+   dispatches per frame is deleted. `draw_triangles.wgsl` `render` folds the same check per pixel; the
+   `validate` entry point stays, because it walks the whole prepared span and is therefore strictly
+   stricter than the per-pixel fold, and now writes the shared status word instead of a per-batch buffer.
+3. `encoder.copy_buffer_to_buffer(status → staging_ring[cursor % 8])` at the tail, `map_async`, **no**
+   blocking poll. A slot still mapped defers the publish and counts `status_stalls`; the flag stays in
+   the status buffer until the next publish.
+4. The result is read one or two frames later inside `frame_begin` and surfaced through
+   `kfx_wgpu_draw_frame_status`. The drain runs the non-blocking `device.poll(Poll)` itself so the
+   mechanism does not depend on which presenter is running.
 
 **Invalid frames.** With validation in the kernel there is no pre-write rejection: an invalid command
 writes nothing, the frame presents as drawn, the flag reaches the CPU one or two frames later, and the
-bridge calls `InvalidateFrame()` → `FullRedraw()`, the recovery protocol that already exists.
-`frame_flush`'s rollback of `minimap.background` and `target_snapshots` must be preserved explicitly or
-dropped explicitly; today it is a side effect of the transactional scratch and easy to lose silently.
+bridge counts the frame and calls `FullRedraw()`, the recovery protocol that already exists. Host
+validation still rejects a batch before any target write, but batches accepted earlier in the same frame
+stay in the root: an aborted frame is redrawn, not rolled back. `frame_flush`'s rollback of
+`minimap.background` and `target_snapshots` was dropped explicitly with the transactional scratch.
 Device loss is unchanged: `check_status()` reads `Renderer::failure` without blocking, the bridge's `Fail`
 marks the frame invalid and attempts `ReplayPending` CPU reconstruction for the families that have a CPU
 rasterizer (terrain spans and triangles only), and `RendererSoftware` falls back to SDL.
@@ -285,7 +290,7 @@ unchanged: `kfx_wgpu_draw_target_create/release`, `_target_view`, `_submit`, `_s
 
 | Entry point | Was | Becomes |
 | --- | --- | --- |
-| `kfx_wgpu_draw_frame_flush` | replay all queued batches into a fresh scratch, aggregate-validate with a blocking wait, copy back | finish the current encoder and submit; used only by readback, screenshot and verify paths |
+| `kfx_wgpu_draw_frame_flush` | replay all queued batches into a fresh scratch, aggregate-validate with a blocking wait, copy back | landed: replay straight into the root and publish the status word; still on the production path until `ResidentTarget` stops calling it |
 | `kfx_wgpu_draw_frame_end` | flush then clear the frame | build the encoder, record every pass, submit once |
 | `kfx_wgpu_draw_target_snapshot` | implicit checkpoint of the target | record a copy at the current stream position into an arena slot |
 | `kfx_wgpu_draw_submit_target_images` | own dispatch, own submit, checkpoints the root | append `IMAGE`/`TRANSITION` records |
@@ -377,10 +382,14 @@ New fixtures required for parity:
 5. **Arena residency and eviction.** Forces eviction mid-frame; asserts identical pixels, a generation
    bump producing a new upload, and that a stale generation never aliases.
 6. **Byte-packed assets** (phase 2), re-running every family fixture with unaligned asset offsets.
-7. **Non-blocking status.** Injects an invalid lookup; asserts the flag surfaces within two frames and
-   that `FullRedraw` recovers.
+7. **Non-blocking status.** Landed as [`draw_status_gpu.rs`](../../tools/frame-replay/tests/draw_status_gpu.rs)
+   and the flagged-frame block of [`bridge_test.cpp`](../../tests/terrain-vertices/bridge_test.cpp):
+   an injected invalid lookup surfaces within two frames, the frame presents as drawn, and the bridge
+   recovers through `FullRedraw` without failing.
 8. **Structural counters.** `submits == 1`, `wait_count == 0`, `checkpoints == 0`,
    `buffers_created <= 8` on a synthetic full frame; this is what stops the structure regressing.
+   Partly landed with PR 6: `draw_status_gpu.rs` asserts zero blocking waits, zero validation waits and
+   zero checkpoint copy bytes over a steady frame sequence. `submits` and `checkpoints` land with PR 12.
 
 Existing fixtures must stay green at every step: all thirteen `tools/frame-replay/tests/draw_*_gpu.rs`
 and `gpoly_gpu.rs`, the CMake oracle generators under `tests/`, the `tests/cursor` native lifecycle test
@@ -399,7 +408,7 @@ Each step is one PR and keeps every existing fixture green.
 | 3 | **Bridge batching.** `SubmitNative` accumulates into `m_pending`; flush only at target change, shadow, transition, ordered sprite, snapshot or readback. | `gpu_batches` 139 → 10–20 |
 | 4 | **Persistent asset arena**, `u32` expansion kept, kernels unchanged. Delivered, GPU drawing behind the SDL presenter: asset plus command upload 28.78 MB → 15.14 MB per frame and Rust requested bytes 93.1 MB → 28.4 MB per presentation; the wgpu-presenter pair is outstanding. The ≤ 0.3 MB target needs PR 13 and emitters that stop baking position into the asset. |
 | 5 | **Shadow residency.** Delivered, GPU drawing behind the SDL presenter: persistent GPU scratch and two mask slots; CPU mirror, readback and snapshot dropped; each mask submitted immediately ahead of its `TRIG` pair, not hoisted. Checkpoints 9.4 → 1.0, blocking waits 29.8 → 2.9 and `shadow_scratch_readback_bytes` → 0; the wgpu-presenter pair is outstanding. |
-| 6 | **Non-blocking validation, no double copy.** Fold the flag into the raster kernels, ring-read the status, write straight into the root, delete the transactional scratch, settle the snapshot rollback explicitly. | waits → 0; `frame_gpu_checkpoint_copy_bytes` → 0; `PerfPresentation` falls toward `PerfPresentWait` |
+| 6 | **Non-blocking validation, no double copy.** Delivered, GPU drawing behind the SDL presenter: the flag lives in the raster kernels, a mapped ring reads it one or two frames later, batches write straight into the root and the transactional scratch and its snapshot rollback are gone. Blocking waits outside the CPU presenter's own readbacks and `frame_gpu_checkpoint_copy_bytes` are structurally 0; the wgpu-presenter pair is outstanding. |
 | 7 | **Single command stream, root space, one tile index.** Counting-sort binning with persistent scratch; one raster dispatch per serial segment. Terrain still separate. | Rust batches → ~4; tile-list allocations → 0; fixtures 1 and 2 land here |
 | 8 | **Terrain triangles in the stream**, with tile binning, a prepared-row arena compressed to covered rows, and the separate validate pass deleted. | terrain iterations 308 M → ≤ 10 M and 2,065 M → ≤ 25 M; full-target dispatches ~86 → ~2 |
 | 9 | **Ordered sprites into layers.** One dispatch of *M* workgroups per disjoint layer. | per-sprite submits → 0; sized by PR 1's `ordered_sprites` |
