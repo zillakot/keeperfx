@@ -198,6 +198,11 @@ impl DrawRenderer {
             self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
+        let pass = self.tile_index.passes()[0];
+        let target_view = self.targets[&target].clone();
+        let Some((parameters, span_x, span_y)) = self.pass_parameters(&target_view, &pass) else {
+            return Ok(());
+        };
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let mut copied = 0;
         for (&id, &offset) in &batch.snapshots {
@@ -223,11 +228,6 @@ impl DrawRenderer {
                 .write_buffer(&assets, u64::from(base + offset) * 4, &bytes);
             uploaded += bytes.len() as u64;
         }
-        let pass = self.tile_index.passes()[0];
-        let target_view = self.targets[&target].clone();
-        let Some((parameters, span_x, span_y)) = self.pass_parameters(&target_view, &pass) else {
-            return Ok(());
-        };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered GPU snapshot sampling"),
             layout: &self.compute.get_bind_group_layout(0),

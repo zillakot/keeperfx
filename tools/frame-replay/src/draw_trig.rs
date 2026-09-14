@@ -90,6 +90,7 @@ impl DrawRenderer {
             limit,
         )?;
         packer.finish();
+        let entries = self.counters.tile_entries;
         self.tile_index.build(
             &mut self.counters,
             &words,
@@ -98,6 +99,8 @@ impl DrawRenderer {
             (width, height),
             limit,
         )?;
+        // The preflight only proves the limits; its index is never uploaded.
+        self.counters.tile_entries = entries;
         Ok(())
     }
 }

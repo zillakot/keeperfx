@@ -198,6 +198,7 @@ pub struct DrawRenderer {
     target_resource_counters: TargetResourceCounters,
     counters: Counters,
     frame: Option<frame_queue::QueuedFrame>,
+    frame_buffers: Option<frame_queue::FrameBuffers>,
     frame_counters: FrameCounters,
     replaying: bool,
     deferred_snapshot_releases: Vec<u64>,
@@ -321,6 +322,7 @@ impl DrawRenderer {
             target_resource_counters: TargetResourceCounters::default(),
             counters: Counters::default(),
             frame: None,
+            frame_buffers: None,
             frame_counters: FrameCounters::default(),
             replaying: false,
             deferred_snapshot_releases: Vec::new(),
@@ -977,10 +979,12 @@ pub(super) struct ViewSpace {
 }
 
 impl ViewSpace {
+    /// Four words per view: origin, then the extent, which the kernel does not read but
+    /// which lets the index be compared against a view-space binning of the same frame.
     pub(super) fn table(views: &[Self]) -> Vec<u32> {
         views
             .iter()
-            .flat_map(|view| [view.origin_x, view.origin_y, view.width, 0])
+            .flat_map(|view| [view.origin_x, view.origin_y, view.width, view.height])
             .collect()
     }
 
@@ -1252,7 +1256,6 @@ pub(super) struct TileIndex {
     passes: Vec<Pass>,
     length: usize,
     header: usize,
-    allocations: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1380,9 +1383,21 @@ impl TileIndex {
             .checked_add(entries)
             .context("tile list length overflow")?;
         ensure!(length <= limit / 4, "tile lists exceed storage limit");
-        grow(&mut self.counts, cells.max(1), &mut self.allocations);
-        grow(&mut self.cursors, cells.max(1), &mut self.allocations);
-        grow(&mut self.packed, length.max(1), &mut self.allocations);
+        grow(
+            &mut self.counts,
+            cells.max(1),
+            &mut counters.tile_allocations,
+        );
+        grow(
+            &mut self.cursors,
+            cells.max(1),
+            &mut counters.tile_allocations,
+        );
+        grow(
+            &mut self.packed,
+            length.max(1),
+            &mut counters.tile_allocations,
+        );
         self.counts[..cells].fill(0);
         self.packed[..views.len()].copy_from_slice(views);
         self.length = length;
@@ -1429,7 +1444,6 @@ impl TileIndex {
                 }
             }
         }
-        counters.tile_allocations = self.allocations;
         counters.tile_entries += entries as u64;
         Ok(())
     }

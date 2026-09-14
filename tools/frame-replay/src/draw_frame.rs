@@ -30,6 +30,9 @@ pub(super) enum Serial {
     Shadow(u64, u64, u32, Vec<Command>),
 }
 
+/// The record buffers a retired frame leaves behind for the next one.
+pub(super) type FrameBuffers = (Vec<(u32, Command)>, Vec<ViewSpace>, Vec<(usize, Serial)>);
+
 pub(super) struct QueuedFrame {
     root: u64,
     /// Every rasterizable command of the frame in order, each naming the view it was
@@ -174,11 +177,15 @@ impl DrawRenderer {
         ensure!(self.frame.is_none(), "frame already active");
         let target = self.targets.get(&root).context("unknown frame target")?;
         ensure!(target.root == root, "frame target must be canonical");
+        let (mut stream, mut views, mut serials) = self.frame_buffers.take().unwrap_or_default();
+        stream.clear();
+        views.clear();
+        serials.clear();
         self.frame = Some(QueuedFrame {
             root,
-            stream: Vec::new(),
-            views: Vec::new(),
-            serials: Vec::new(),
+            stream,
+            views,
+            serials,
             count: 0,
             released_resources: std::collections::HashSet::new(),
             released_targets: Vec::new(),
@@ -441,12 +448,23 @@ impl DrawRenderer {
         }
         self.replaying = true;
         let root = frame.root;
-        let stream = std::mem::take(&mut frame.stream);
-        let views = std::mem::take(&mut frame.views);
-        let serials = std::mem::take(&mut frame.serials);
-        let mut result = self.replay_stream(root, &stream, &views, serials);
+        let mut stream = std::mem::take(&mut frame.stream);
+        let mut views = std::mem::take(&mut frame.views);
+        let mut serials = std::mem::take(&mut frame.serials);
+        // The whole stream is packed before the serial routes between its raster passes
+        // open batches of their own, so its residents stay pinned until the last dispatch.
+        self.arena.hold();
+        let mut result = self.replay_stream(root, &stream, &views, &mut serials);
         self.arena.release_hold();
         self.replaying = false;
+        // The buffers go back to the frame emptied, so a frame's records grow their capacity
+        // once rather than reallocating through it again on the next one.
+        stream.clear();
+        views.clear();
+        serials.clear();
+        frame.stream = stream;
+        frame.views = views;
+        frame.serials = serials;
         if result.is_ok() {
             result = self.check_status();
         }
@@ -474,7 +492,7 @@ impl DrawRenderer {
         root: u64,
         stream: &[(u32, Command)],
         views: &[ViewSpace],
-        serials: Vec<(usize, Serial)>,
+        serials: &mut Vec<(usize, Serial)>,
     ) -> Result<()> {
         self.check_status()?;
         let limit = self.storage_limit() as usize;
@@ -491,7 +509,7 @@ impl DrawRenderer {
         );
         let mut boundaries = Vec::new();
         let mut prior = 0;
-        for (at, _) in &serials {
+        for (at, _) in serials.iter() {
             if *at > prior {
                 boundaries.push(*at);
                 prior = *at;
@@ -502,7 +520,6 @@ impl DrawRenderer {
         }
         let mut raster = None;
         if !boundaries.is_empty() {
-            self.arena.hold();
             let mut packer = asset_packer(
                 &self.device,
                 &self.queue,
@@ -568,7 +585,7 @@ impl DrawRenderer {
         }
         let mut segment = 0;
         let mut prior = 0;
-        for (at, serial) in serials {
+        for (at, serial) in serials.drain(..) {
             if at > prior {
                 let (buffers, passes) = raster.as_ref().unwrap();
                 let (buffers, pass) = (buffers.clone(), passes[segment]);
@@ -592,16 +609,28 @@ impl DrawRenderer {
         Ok(())
     }
 
+    /// Parks a retired frame's record buffers so the next frame reuses their capacity.
+    fn retire(&mut self, frame: &mut QueuedFrame) {
+        self.frame_buffers = Some((
+            std::mem::take(&mut frame.stream),
+            std::mem::take(&mut frame.views),
+            std::mem::take(&mut frame.serials),
+        ));
+    }
+
     pub fn frame_end(&mut self) -> Result<()> {
         ensure!(self.frame.is_some(), "no active frame");
         self.frame_flush()?;
-        self.frame = None;
+        if let Some(mut frame) = self.frame.take() {
+            self.retire(&mut frame);
+        }
         Ok(())
     }
 
     pub fn frame_abort(&mut self) -> Result<()> {
         if let Some(mut frame) = self.frame.take() {
             self.drain_releases(&mut frame);
+            self.retire(&mut frame);
         }
         self.frame_flags = 0;
         self.invalidate_assets();
