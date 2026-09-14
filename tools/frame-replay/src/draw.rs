@@ -46,6 +46,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use wgpu::util::DeviceExt;
 
 pub const ABI_VERSION: u32 = 1;
+/// A debug bound on what one command buffer carries; a busy frame records ~114.
+const MAX_ENCODER_PASSES: u64 = 4096;
 pub const CLEAR: u32 = 0;
 pub const RECT: u32 = 1;
 pub const IMAGE: u32 = 2;
@@ -272,11 +274,11 @@ pub struct DrawRenderer {
     stream_tiles: PersistentBuffer,
     prepared_rows: PersistentBuffer,
     asset_generation: u64,
-    /// Work recorded after the frame's last flush: the cursor backup, compose and
-    /// restore around the palette pass. Submitted once by `kfx_wgpu_present`.
-    tail: Option<wgpu::CommandEncoder>,
+    /// Every pass of the frame, from the first record after a submit to the palette
+    /// pass and the cursor restore. Submitted once, by `kfx_wgpu_present`.
+    encoder: Option<wgpu::CommandEncoder>,
+    encoder_passes: u64,
     timing_slot: Option<usize>,
-    tail_timing: Option<usize>,
     serialize_passes: bool,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
@@ -419,9 +421,9 @@ impl DrawRenderer {
             stream_tiles: PersistentBuffer::default(),
             prepared_rows: PersistentBuffer::default(),
             asset_generation: 1,
-            tail: None,
+            encoder: None,
+            encoder_passes: 0,
             timing_slot: None,
-            tail_timing: None,
             serialize_passes,
             failure: renderer.failure.clone(),
         })
@@ -495,15 +497,20 @@ impl DrawRenderer {
         self.resource_bytes as u64
     }
 
-    /// Opens an encoder and, when GPU timing is on, the ring slot its passes stamp into.
-    pub(super) fn begin_encoder(&mut self) -> wgpu::CommandEncoder {
-        if let Some(timings) = &mut self.timings {
-            if let Some(slot) = self.timing_slot.take() {
-                timings.release(slot);
+    /// The frame's single encoder, opened on the first record after a submit together
+    /// with the arena pin scope and, when GPU timing is on, the ring slot its passes
+    /// stamp into. Every pass of the frame is recorded into it.
+    pub(super) fn frame_encoder(&mut self) -> &mut wgpu::CommandEncoder {
+        if self.encoder.is_none() {
+            if let Some(timings) = &mut self.timings {
+                self.timing_slot = timings.open(&self.device);
             }
-            self.timing_slot = timings.open(&self.device);
+            self.arena.hold();
+            self.arena.lock(true);
+            self.encoder_passes = 0;
+            self.encoder = Some(self.device.create_command_encoder(&Default::default()));
         }
-        self.device.create_command_encoder(&Default::default())
+        self.encoder.as_mut().unwrap()
     }
 
     /// The prepared-row arena as the raster kernel binds it; a placeholder until a
@@ -535,15 +542,10 @@ impl DrawRenderer {
         self.prepared_rows.buffer.clone().unwrap()
     }
 
-    /// Closes the present tail before a batch recycles arena scratch, keeping the
-    /// tail's own timestamps with the submission that recorded them.
-    pub(super) fn open_batch(&mut self) {
-        if self.arena.enabled() {
-            self.tail_submit();
-        }
-    }
-
+    /// Reserves this pass's timestamp pair, opening the frame encoder so the pair
+    /// belongs to the submission that will carry the pass.
     pub(super) fn stamp(&mut self, kind: usize) -> Stamp {
+        self.frame_encoder();
         let slot = self.timing_slot;
         Stamp(
             self.timings
@@ -553,38 +555,102 @@ impl DrawRenderer {
         )
     }
 
-    /// The present tail records into its own long-lived encoder, so it keeps its own
-    /// ring slot rather than the one the current encoder holds.
-    pub(super) fn tail_stamp(&mut self, kind: usize) -> Stamp {
-        self.tail_encoder();
-        if self.tail_timing.is_none()
-            && let Some(timings) = &mut self.timings
-        {
-            self.tail_timing = timings.open(&self.device);
+    /// A real serial dependency between two passes of the frame. wgpu inserts the
+    /// usage-transition barriers between passes of one encoder, so inside a frame this
+    /// only counts the pass. Outside one there is nothing to hold the encoder open for,
+    /// and holding it would freeze the arena against growth for an unbounded run of
+    /// batches, so a batch submits as it did before. `KFX_WGPU_GPU_TIMING=2` submits
+    /// here too, because per-pass windows are exclusive only across submissions.
+    pub(super) fn pass_boundary(&mut self) {
+        self.encoder_passes += 1;
+        debug_assert!(
+            self.encoder_passes <= MAX_ENCODER_PASSES,
+            "a frame recorded more passes than one command buffer should carry"
+        );
+        if self.serialize_passes || !self.frame_open() {
+            self.close_encoder();
         }
-        let slot = self.tail_timing;
-        Stamp(
-            self.timings
-                .as_mut()
-                .zip(slot)
-                .and_then(|(timings, slot)| timings.reserve(slot, kind)),
-        )
     }
 
-    /// Submits the present tail first, so no encoder opened after it can reach the
-    /// queue ahead of work the tail already recorded.
-    pub(super) fn submit_encoder(&mut self, mut encoder: wgpu::CommandEncoder) {
-        self.tail_submit();
+    /// Reserves arena capacity for the batch about to be packed, submitting the
+    /// frame's recording first when growth is needed. Growth replaces the buffer the
+    /// open encoder's bind groups name, and its forward copy would be overtaken by
+    /// every staged write of that submission, so it can only happen between them.
+    /// Every live resource plus `extra` bounds what one batch can need, so a batch
+    /// that passes here cannot be refused inside the frame.
+    pub(super) fn arena_headroom(&mut self, extra: u64) -> Result<()> {
+        let words = self.resource_bytes as u64 + extra;
+        if self.arena.fits(words) {
+            return Ok(());
+        }
+        self.frame_submit()?;
+        self.arena
+            .grow_to(&self.device, &self.queue, &mut self.counters, words);
+        Ok(())
+    }
+
+    /// Whether a queued frame owns the encoder. `frame_flush` takes the frame out of
+    /// its slot for the length of the replay, which is where most of a frame's passes
+    /// are recorded, so the replay flag is part of the answer.
+    fn frame_open(&self) -> bool {
+        self.frame.is_some() || self.replaying
+    }
+
+    /// Publishes the status word into the frame's encoder and submits it. The one
+    /// submit of a production frame; a no-op when nothing was recorded.
+    pub fn frame_submit(&mut self) -> Result<()> {
+        let Some(mut encoder) = self.encoder.take() else {
+            return Ok(());
+        };
+        let slot = self.status_record(&mut encoder);
+        self.encoder = Some(encoder);
+        self.close_encoder();
+        if let Some(slot) = slot {
+            self.status_map(slot);
+        }
+        Ok(())
+    }
+
+    /// Drops a half-recorded frame. Dropping a `CommandEncoder` without finishing it
+    /// discards its recording, which is what an abort or a terminal failure wants.
+    pub fn frame_discard(&mut self) {
+        if self.encoder.take().is_none() {
+            return;
+        }
+        if let Some(slot) = self.timing_slot.take()
+            && let Some(timings) = &mut self.timings
+        {
+            timings.release(slot);
+        }
+        self.end_encoder_scope();
+    }
+
+    fn close_encoder(&mut self) {
+        let Some(mut encoder) = self.encoder.take() else {
+            return;
+        };
         let closed = self
             .timings
             .as_mut()
             .zip(self.timing_slot.take())
             .and_then(|(timings, slot)| timings.close(slot, &mut encoder));
-        self.submit_one(encoder);
+        self.counters.submits += 1;
+        self.queue.submit([encoder.finish()]);
+        self.end_encoder_scope();
         if let Some(slot) = closed {
             self.timings.as_mut().unwrap().map(slot);
             self.serialize_timed_submission();
         }
+    }
+
+    /// The arena pin scope and the stream ring's bump cursor both end with the
+    /// encoder, because that is the submission whose head every staged write reaches.
+    fn end_encoder_scope(&mut self) {
+        self.arena.lock(false);
+        self.arena.release_hold();
+        self.stream_commands.reset();
+        self.stream_tiles.reset();
+        self.encoder_passes = 0;
     }
 
     /// `KFX_WGPU_GPU_TIMING=2` only: draining between timed submissions removes the
@@ -592,38 +658,6 @@ impl DrawRenderer {
     fn serialize_timed_submission(&mut self) {
         if self.serialize_passes {
             let _ = self.wait_for_queue();
-        }
-    }
-
-    fn submit_one(&mut self, encoder: wgpu::CommandEncoder) {
-        self.counters.submits += 1;
-        self.queue.submit([encoder.finish()]);
-    }
-
-    /// The encoder the present tail records into, opened on first use.
-    pub(super) fn tail_encoder(&mut self) -> &mut wgpu::CommandEncoder {
-        self.tail
-            .get_or_insert_with(|| self.device.create_command_encoder(&Default::default()))
-    }
-
-    pub(super) fn tail_open(&self) -> bool {
-        self.tail.is_some()
-    }
-
-    /// Finishes the present tail. Every queue read of the root must precede it with
-    /// this, because the tail is recorded after the work it reads.
-    pub fn tail_submit(&mut self) {
-        if let Some(mut encoder) = self.tail.take() {
-            let closed = self
-                .timings
-                .as_mut()
-                .zip(self.tail_timing.take())
-                .and_then(|(timings, slot)| timings.close(slot, &mut encoder));
-            self.submit_one(encoder);
-            if let Some(slot) = closed {
-                self.timings.as_mut().unwrap().map(slot);
-                self.serialize_timed_submission();
-            }
         }
     }
 
@@ -748,13 +782,12 @@ impl DrawRenderer {
         }
         let (target_width, target_height) = self.target_dimensions(target)?;
         let limit = self.storage_limit() as usize;
-        self.open_batch();
+        self.arena_headroom(0)?;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -839,19 +872,20 @@ impl DrawRenderer {
                 entry(7, self.status_binding()),
             ],
         });
-        let mut encoder = self.begin_encoder();
         let stamp = self.stamp(PASS_RASTER);
+        let compute = self.compute.clone();
         {
+            let encoder = self.frame_encoder();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("exclusive destination pixel ownership"),
                 timestamp_writes: stamp.compute(),
             });
-            pass.set_pipeline(&self.compute);
+            pass.set_pipeline(&compute);
             pass.set_bind_group(0, &binding, &[]);
             pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
-        self.submit_encoder(encoder);
+        self.pass_boundary();
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
@@ -901,16 +935,14 @@ impl DrawRenderer {
     fn raster_segment(
         &mut self,
         target: &Target,
-        buffers: &(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer),
+        buffers: &(Region, Region, wgpu::Buffer),
         pass: &Pass,
         commands: usize,
         prepare: &mut Option<PendingPrepare>,
     ) -> Result<()> {
         let (command_buffer, tile_buffer, asset_buffer) = buffers;
-        let mut encoder = self.begin_encoder();
-        self.record_prepare(&mut encoder, prepare)?;
+        self.record_prepare(prepare)?;
         let Some((parameters, span_x, span_y)) = self.pass_parameters(target, pass) else {
-            self.submit_encoder(encoder);
             return Ok(());
         };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -918,54 +950,58 @@ impl DrawRenderer {
             layout: &self.compute.get_bind_group_layout(0),
             entries: &[
                 entry(0, &target.indices),
-                entry(1, command_buffer),
+                command_buffer.entry(1),
                 entry(2, asset_buffer),
                 entry(3, &parameters),
-                entry(4, tile_buffer),
+                tile_buffer.entry(4),
                 entry(5, self.terrain_rows_binding()),
                 entry(6, self.shadow_slot_binding()),
                 entry(7, self.status_binding()),
             ],
         });
         let stamp = self.stamp(PASS_RASTER);
+        let compute = self.compute.clone();
         {
+            let encoder = self.frame_encoder();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("exclusive destination pixel ownership"),
                 timestamp_writes: stamp.compute(),
             });
-            pass.set_pipeline(&self.compute);
+            pass.set_pipeline(&compute);
             pass.set_bind_group(0, &binding, &[]);
             pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
-        self.submit_encoder(encoder);
+        self.pass_boundary();
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands as u64;
         Ok(())
     }
 
-    /// Records the frame's single terrain setup dispatch, once, into `encoder`.
-    pub(super) fn record_prepare(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        prepare: &mut Option<PendingPrepare>,
-    ) -> Result<()> {
+    /// Records the frame's single terrain setup dispatch, once, ahead of the first
+    /// raster pass that reads the rows it writes.
+    pub(super) fn record_prepare(&mut self, prepare: &mut Option<PendingPrepare>) -> Result<()> {
         let Some(pending) = prepare.take() else {
             return Ok(());
         };
         self.triangles
             .get_or_insert_with(|| triangles::TrianglePipelines::new(&self.device));
         let stamp = self.stamp(PASS_TERRAIN_PREPARE);
-        self.triangles.as_ref().unwrap().prepare.encode(
-            &self.device,
-            encoder,
+        let pipelines = self.triangles.take().unwrap();
+        let device = self.device.clone();
+        let recorded = pipelines.prepare.encode(
+            &device,
+            self.frame_encoder(),
             &pending.triangles,
             &pending.layout,
             &pending.rows,
             stamp.compute(),
-        )?;
+        );
+        self.triangles = Some(pipelines);
+        recorded?;
         self.counters.dispatches += 1;
+        self.pass_boundary();
         Ok(())
     }
 
@@ -975,8 +1011,9 @@ impl DrawRenderer {
         Ok((target.width, target.height))
     }
 
+    /// Blocks on the queue, so it is off the production path; it records its copies
+    /// into the frame's encoder and submits that once rather than adding one.
     pub fn readback(&mut self, target: u64) -> Result<Vec<u8>> {
-        self.tail_submit();
         self.checkpoint_target(target)?;
         self.check_status()?;
         let target = self.targets.get(&target).context("unknown target")?.clone();
@@ -987,21 +1024,19 @@ impl DrawRenderer {
             mapped_at_creation: false,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        let status = self.status_record(&mut encoder);
-        for row in 0..target.height {
-            encoder.copy_buffer_to_buffer(
-                &target.indices,
-                u64::from(target.offset + row * target.pitch) * 4,
-                &staging,
-                u64::from(row * target.width) * 4,
-                u64::from(target.width) * 4,
-            );
+        {
+            let encoder = self.frame_encoder();
+            for row in 0..target.height {
+                encoder.copy_buffer_to_buffer(
+                    &target.indices,
+                    u64::from(target.offset + row * target.pitch) * 4,
+                    &staging,
+                    u64::from(row * target.width) * 4,
+                    u64::from(target.width) * 4,
+                );
+            }
         }
-        self.submit_encoder(encoder);
-        if let Some(slot) = status {
-            self.status_map(slot);
-        }
+        self.frame_submit()?;
         let (sender, receiver) = std::sync::mpsc::channel();
         staging
             .slice(..)
@@ -1024,8 +1059,8 @@ impl DrawRenderer {
         Ok(bytes)
     }
 
-    /// Records the palette pass into the present tail; the caller submits it with
-    /// `tail_submit` after the cursor restore is recorded.
+    /// Records the palette pass into the frame's encoder; the caller submits it with
+    /// `frame_submit` after the cursor restore is recorded.
     pub fn present_into(
         &mut self,
         target: u64,
@@ -1085,8 +1120,8 @@ impl DrawRenderer {
             ],
         });
         let present = self.present.clone();
-        let stamp = self.tail_stamp(PASS_PRESENT);
-        let encoder = self.tail_encoder();
+        let stamp = self.stamp(PASS_PRESENT);
+        let encoder = self.frame_encoder();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("GPU-owned presentation"),
@@ -1108,6 +1143,7 @@ impl DrawRenderer {
             pass.set_bind_group(0, &binding, &[]);
             pass.draw(0..3, 0..1);
         }
+        self.pass_boundary();
         Ok(())
     }
 }
@@ -1203,24 +1239,18 @@ pub(super) enum AssetPacker<'a> {
     },
 }
 
-/// Opening a batch recycles arena scratch, and the uploads that follow are staged
-/// into the head of the next submission. A present tail already reading a recycled
-/// region would see them, so every caller submits the tail through `open_batch`
-/// before the batch opens.
+/// Opening a batch ends the pinning scope unless the frame's encoder holds it; while
+/// it does, scratch regions accumulate instead of being recycled under a pass that
+/// already reads them.
 pub(super) fn asset_packer<'a>(
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     arena: &'a mut arena::Arena,
     counters: &'a mut Counters,
-    tail: &Option<wgpu::CommandEncoder>,
     generation: u64,
     limit: usize,
 ) -> AssetPacker<'a> {
     if arena.enabled() {
-        debug_assert!(
-            tail.is_none(),
-            "the present tail must be submitted before a batch recycles arena scratch"
-        );
         arena.begin_batch();
         AssetPacker::Arena {
             device,
@@ -1356,12 +1386,62 @@ impl ViewSpace {
     }
 }
 
-/// A renderer-owned buffer reused across frames, grown in powers of two.
+/// A storage binding that may be a sub-range of a renderer-owned ring; the kernels
+/// index from zero either way, because the range is bound rather than offset in the
+/// shader.
+#[derive(Clone)]
+pub(super) struct Region {
+    buffer: wgpu::Buffer,
+    offset: u64,
+    size: u64,
+}
+
+impl Region {
+    pub(super) fn whole(buffer: wgpu::Buffer) -> Self {
+        let size = buffer.size();
+        Self {
+            buffer,
+            offset: 0,
+            size,
+        }
+    }
+
+    pub(super) fn entry(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
+        wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &self.buffer,
+                offset: self.offset,
+                size: std::num::NonZeroU64::new(self.size),
+            }),
+        }
+    }
+}
+
+/// Storage bindings start on this word boundary, which covers every device's
+/// `min_storage_buffer_offset_alignment`.
+const REGION_ALIGN_WORDS: u64 = 64;
+
+/// A renderer-owned buffer reused across frames, bump-allocated within the open
+/// encoder. A frame that replays more than once therefore writes each region at its
+/// own offset, which is what keeps the staged writes — all of which land before the
+/// first pass of the submission — from overwriting bytes an earlier pass reads.
 #[derive(Default)]
 pub(super) struct PersistentBuffer {
     buffer: Option<wgpu::Buffer>,
     words: u64,
+    cursor: u64,
+    demand: u64,
     staging: Vec<u8>,
+}
+
+impl PersistentBuffer {
+    /// Ends the bump scope with the encoder and carries the frame's demand forward,
+    /// so the ring is sized between frames and never grows under a recorded pass.
+    pub(super) fn reset(&mut self) {
+        self.demand = self.demand.max(self.cursor);
+        self.cursor = 0;
+    }
 }
 
 fn persist(
@@ -1372,28 +1452,44 @@ fn persist(
     label: &str,
     words: &[u32],
     usage: wgpu::BufferUsages,
-) -> wgpu::Buffer {
+) -> Region {
     let needed = words.len().max(1) as u64;
-    if slot.words < needed {
-        let size = needed.next_power_of_two().max(1024) * 4;
-        counters.buffers += 1;
-        counters.buffer_bytes += size;
-        slot.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size,
-            usage: usage | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        slot.words = size / 4;
+    let start = slot.cursor.next_multiple_of(REGION_ALIGN_WORDS);
+    if slot.cursor == 0 {
+        let wanted = needed.max(slot.demand);
+        if slot.words < wanted {
+            let size = wanted.next_power_of_two().max(1024) * 4;
+            counters.buffers += 1;
+            counters.buffer_bytes += size;
+            slot.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            slot.words = size / 4;
+        }
+    }
+    if slot.buffer.is_none() || start + needed > slot.words {
+        // The ring cannot hold this region until the next frame sizes it, so the
+        // region becomes its own buffer, whose contents exist at creation.
+        slot.demand = slot.demand.max(start + needed);
+        let contents = if words.is_empty() { &[0][..] } else { words };
+        return Region::whole(buffer(device, counters, label, contents, usage));
     }
     let buffer = slot.buffer.clone().unwrap();
+    slot.cursor = start + needed;
     if !words.is_empty() {
         slot.staging.clear();
         slot.staging
             .extend(words.iter().flat_map(|word| word.to_le_bytes()));
-        queue.write_buffer(&buffer, 0, &slot.staging);
+        queue.write_buffer(&buffer, start * 4, &slot.staging);
     }
-    buffer
+    Region {
+        buffer,
+        offset: start * 4,
+        size: needed * 4,
+    }
 }
 
 fn pack_commands(
@@ -2276,7 +2372,7 @@ mod tests {
                 &texture.create_view(&Default::default()),
             )
             .unwrap();
-        drawing.tail_submit();
+        drawing.frame_submit().unwrap();
         drawing.release_target(target).unwrap();
         let staging = renderer.device().create_buffer(&wgpu::BufferDescriptor {
             label: None,

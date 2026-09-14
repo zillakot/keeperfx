@@ -217,7 +217,8 @@ fn interleaved_frame_shadow_chain() {
         assert_eq!(draw.frame_counters().checkpoints, checkpoints);
         draw.frame_end().unwrap();
         checkpoints = draw.frame_counters().checkpoints;
-        assert_eq!(checkpoints, frames);
+        assert_eq!(checkpoints, 0, "a flush is no longer a submission boundary");
+        assert!(frames > 0);
         assert_eq!(draw.frame_counters().validation_waits, 0);
         let last = chunk.last().unwrap();
         assert_eq!(draw.shadow_scratch_read().unwrap(), last.mask);
@@ -362,4 +363,61 @@ fn target_triangle_validation_and_resident_slots() {
     let result = draw.readback(target).unwrap();
     assert!(result.iter().any(|&p| p != 71));
     assert!(result.iter().all(|&p| p == 71 || p == 90));
+}
+
+/// The whole chain in one frame and one encoder against the same chain cut into one
+/// submission per shadow. Slot reuse rests on pass order inside the encoder, so mask
+/// *i+2* overwriting the slot `TRIG` *i* read must still be a barrier, not a race.
+#[test]
+#[ignore = "requires GPU and native shadow fixture"]
+fn the_whole_chain_in_one_encoder_matches_the_per_submit_replay() {
+    let (table_bytes, cases) = fixture();
+    let mut draw = drawing();
+    let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
+    let reset_at = cases.len() / 2;
+    let mut run = |per_submit: bool| -> (Vec<u8>, Vec<u8>, u64) {
+        let target = draw.create_target(79, 61).unwrap();
+        draw.shadow_scratch_reset().unwrap();
+        draw.frame_submit().unwrap();
+        let before = draw.counters().submits;
+        draw.frame_begin(target).unwrap();
+        clear(&mut draw, target);
+        for (at, c) in cases.iter().enumerate() {
+            if at == reset_at {
+                // A reset records straight into the encoder while shadows are queued,
+                // so the queued half has to be replayed before it or the clear would
+                // land ahead of the masks it is meant to follow.
+                draw.frame_flush().unwrap();
+                draw.shadow_scratch_reset().unwrap();
+            }
+            let source = draw.create_resource(&c.asset, 1, 1, 1).unwrap();
+            draw.submit_shadow(target, &shadow(source, table, c.colour))
+                .unwrap();
+            draw.release_resource(source).unwrap();
+            if per_submit {
+                draw.frame_flush().unwrap();
+                draw.frame_submit().unwrap();
+            }
+        }
+        draw.frame_end().unwrap();
+        let submits = draw.counters().submits - before;
+        let scratch = draw.shadow_scratch_read().unwrap();
+        let pixels = draw.readback(target).unwrap();
+        draw.frame_abort().unwrap();
+        draw.release_target(target).unwrap();
+        (scratch, pixels, submits)
+    };
+    let (stepped_scratch, stepped_pixels, stepped_submits) = run(true);
+    let (single_scratch, single_pixels, single_submits) = run(false);
+    assert_eq!(single_scratch, stepped_scratch, "the chain diverged");
+    assert_eq!(single_pixels, stepped_pixels, "the triangles diverged");
+    assert!(
+        stepped_submits > single_submits,
+        "the per-submit replay must cut the frame more than once"
+    );
+    assert_eq!(
+        single_submits, 1,
+        "the whole chain belongs to one command buffer"
+    );
+    assert_eq!(draw.frame_status().1, 0, "the chain raised a flag");
 }

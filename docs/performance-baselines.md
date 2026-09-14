@@ -171,7 +171,10 @@ far, including free-listed slots and power-of-two class padding, so it bounds th
 live working set rather than tracking it exactly and its window total is
 meaningless. It counts expanded arena bytes — one `u32` per source byte, the GPU
 footprint — so dividing by four gives the real asset bytes that the arena's
-source-byte capacity is stated in. `upload_bytes` still counts every asset write, arena or not.
+source-byte capacity is stated in. `arena_scratch_bytes_peak` is a third gauge: the
+widest extent the arena's transient regions reached inside one pinning scope, which
+one submit per frame makes a whole frame rather than a batch. `upload_bytes` still
+counts every asset write, arena or not.
 
 The first presentation only establishes the counter baseline, so there is exactly
 one fewer counter frame than presentation sample. `wait_ns` is host time blocked
@@ -375,8 +378,9 @@ is claimed**: the merged drawing work and a changed display configuration (two
 displays rather than one) are both candidates and were not separated.
 
 PR #35 (one encoder and one submit per frame) landed after these runs and
-supersedes them wherever its own body gives a figure, notably the 640×480
-GPU-drawing ceiling.
+supersedes them wherever its own body gives a figure: over three matched uncapped
+pairs it moves the busy 640×480 GPU-drawing ceiling from 141 to 190 FPS, with the
+1080p pair inside its run-to-run spread.
 
 Every figure here is uncapped host wall-clock timing on this host.
 

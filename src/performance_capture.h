@@ -40,7 +40,7 @@ struct PerformanceDrawingCounters {
      * only a KFX_WGPU_GPU_TIMING=2 run is. */
     unsigned long long gpu_pass_union_ns;
     /* Trailing gauges are stored as observed, not differenced. */
-    unsigned long long host_staged_asset_bytes, arena_bytes_resident;
+    unsigned long long host_staged_asset_bytes, arena_bytes_resident, arena_scratch_bytes_peak;
 };
 void performance_drawing_backend(const char* backend);
 void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulative);

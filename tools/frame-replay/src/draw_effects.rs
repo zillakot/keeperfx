@@ -131,14 +131,13 @@ impl DrawRenderer {
             self.effects = Some(pipeline);
         }
         let limit = self.storage_limit() as usize;
-        self.open_batch();
+        self.arena_headroom(0)?;
         let bytes = &self.resources[&command.source].bytes;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -174,9 +173,9 @@ impl DrawRenderer {
                 entry(2, &view),
             ],
         });
-        let mut encoder = self.begin_encoder();
         let stamp = self.stamp(PASS_LENS);
         {
+            let encoder = self.frame_encoder();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("native lens pixel production"),
                 timestamp_writes: stamp.compute(),
@@ -186,7 +185,7 @@ impl DrawRenderer {
             pass.dispatch_workgroups(dispatch[0], dispatch[1], 1);
         }
         self.counters.dispatches += 1;
-        self.submit_encoder(encoder);
+        self.pass_boundary();
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += 1;

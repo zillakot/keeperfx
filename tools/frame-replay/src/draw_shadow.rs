@@ -129,13 +129,10 @@ impl DrawRenderer {
         Ok(self.shadow.as_ref().unwrap())
     }
 
-    /// Records the mask into the resident scratch and the given slot; the caller submits.
-    pub(super) fn record_shadow_mask(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        source: u64,
-        slot: u32,
-    ) -> Result<()> {
+    /// Records the mask into the resident scratch and the given slot, ahead of the
+    /// triangles that read it. Slot reuse is safe because the mask and its triangles
+    /// are adjacent passes of one encoder, which wgpu orders with its own barriers.
+    pub(super) fn record_shadow_mask(&mut self, source: u64, slot: u32) -> Result<()> {
         let asset = self
             .resources
             .get(&source)
@@ -149,14 +146,13 @@ impl DrawRenderer {
         self.shadow_residency()?;
         self.shadow_pipeline()?;
         let limit = self.storage_limit() as usize;
-        self.open_batch();
+        self.arena_headroom(0)?;
         let bytes = &self.resources[&source].bytes;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
-            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -201,6 +197,7 @@ impl DrawRenderer {
         });
         let stamp = self.stamp(PASS_SHADOW_MASK);
         {
+            let encoder = self.frame_encoder();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("creature shadow mask"),
                 timestamp_writes: stamp.compute(),
@@ -210,6 +207,7 @@ impl DrawRenderer {
             pass.dispatch_workgroups(32, 32, 1);
         }
         self.counters.dispatches += 1;
+        self.pass_boundary();
         if let Some(values) = &values {
             self.counters.asset_upload_bytes += values.len() as u64 * 4;
         }
@@ -223,9 +221,7 @@ impl DrawRenderer {
         let Some(scratch) = self.shadow_scratch.clone() else {
             return Ok(());
         };
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        encoder.clear_buffer(&scratch, 0, None);
-        self.submit_encoder(encoder);
+        self.frame_encoder().clear_buffer(&scratch, 0, None);
         self.check_status()
     }
 
@@ -242,9 +238,11 @@ impl DrawRenderer {
             mapped_at_creation: false,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(&scratch, 0, &staging, 0, size);
-        self.submit_encoder(encoder);
+        self.frame_encoder()
+            .copy_buffer_to_buffer(&scratch, 0, &staging, 0, size);
+        // `KFX_WGPU_DRAW_VERIFY` only: a blocking read has to close the frame's
+        // encoder, so a verify run submits once per shadow as it did before.
+        self.frame_submit()?;
         let (sender, receiver) = std::sync::mpsc::channel();
         staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);

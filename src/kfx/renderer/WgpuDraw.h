@@ -98,6 +98,9 @@ struct KfxWgpuDrawCounters {
      * KFX_WGPU_GPU_TIMING=2 drains the queue after every timed submission, which does,
      * by serialising the frame. */
     uint64_t gpu_pass_union_ns;
+    /* Widest extent the arena's transient regions reached inside one pinning scope,
+     * which frame-scoped pinning makes a whole frame rather than a batch. */
+    uint64_t arena_scratch_bytes_peak;
 };
 #pragma pack(pop)
 

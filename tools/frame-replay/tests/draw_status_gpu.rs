@@ -260,8 +260,8 @@ fn a_production_frame_performs_no_blocking_wait() -> Result<()> {
         "a production frame blocked on the queue"
     );
     ensure!(
-        frame.checkpoints - before_frame.checkpoints == 8,
-        "one flush per frame"
+        frame.checkpoints - before_frame.checkpoints == 0,
+        "a flush is no longer a submission boundary"
     );
     ensure!(
         frame.validation_waits == 0 && frame.validation_bytes == 0,
@@ -280,8 +280,8 @@ fn a_production_frame_performs_no_blocking_wait() -> Result<()> {
         "a production frame read pixels back"
     );
     ensure!(
-        after.submits - before.submits <= 8 * 3,
-        "a frame submits more than its batches plus the status publish"
+        after.submits - before.submits == 8,
+        "a frame is one command buffer"
     );
     Ok(())
 }

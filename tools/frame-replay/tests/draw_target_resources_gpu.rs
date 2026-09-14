@@ -382,7 +382,7 @@ struct Cycle {
 }
 
 /// Backup, composition, palette pass and restore over a flushed frame, either
-/// recorded into one present tail or submitted a step at a time.
+/// recorded into one frame encoder or submitted a step at a time.
 fn cursor_cycle(
     renderer: &keeperfx_frame_replay::gpu::Renderer,
     draw: &mut DrawRenderer,
@@ -405,7 +405,7 @@ fn cursor_cycle(
             cursor_width,
         )
         .unwrap();
-    draw.tail_submit();
+    draw.frame_submit().unwrap();
     draw.frame_begin(root).unwrap();
     let rows: Vec<_> = (0..width * height)
         .map(|i| Command {
@@ -441,7 +441,7 @@ fn cursor_cycle(
     let checkpoints = draw.frame_counters().checkpoints;
     let step = |draw: &mut DrawRenderer| {
         if per_step {
-            draw.tail_submit();
+            draw.frame_submit().unwrap();
         }
     };
     let part = draw
@@ -481,7 +481,7 @@ fn cursor_cycle(
         ..image(backup, cursor_width, cursor_height)
     };
     draw.submit_target_images(root, &[restored]).unwrap();
-    draw.tail_submit();
+    draw.frame_submit().unwrap();
     let cycle = Cycle {
         submits: draw.counters().submits - submits,
         checkpoints: draw.frame_counters().checkpoints - checkpoints,
@@ -552,7 +552,7 @@ fn read_texture(
 
 #[test]
 #[ignore = "requires GPU adapter"]
-fn a_present_tail_matches_one_submit_per_step_and_adds_no_checkpoint() {
+fn one_frame_encoder_matches_one_submit_per_step_and_adds_no_checkpoint() {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
@@ -579,7 +579,7 @@ fn a_present_tail_matches_one_submit_per_step_and_adds_no_checkpoint() {
 
 #[test]
 #[ignore = "requires GPU adapter"]
-fn a_flush_under_an_open_tail_keeps_the_arena_region_the_tail_reads() {
+fn a_flush_under_an_open_encoder_keeps_the_arena_region_it_reads() {
     let mut draw = drawing(Default::default());
     let size = 8u32;
     let root = draw.create_target(size, size).unwrap();
@@ -595,7 +595,7 @@ fn a_flush_under_an_open_tail_keeps_the_arena_region_the_tail_reads() {
     draw.frame_begin(root).unwrap();
     draw.submit(root, &[painted(before)]).unwrap();
     draw.frame_flush().unwrap();
-    // The tail now holds a copy into an arena scratch region and a pass reading it.
+    // The encoder now holds a copy into an arena scratch region and a pass reading it.
     let snapshot = draw
         .create_target_snapshot(root, 0, 0, size, size, size)
         .unwrap();
@@ -605,7 +605,7 @@ fn a_flush_under_an_open_tail_keeps_the_arena_region_the_tail_reads() {
     // that region and stage its upload ahead of every command in the tail.
     draw.submit(root, &[painted(after)]).unwrap();
     draw.frame_flush().unwrap();
-    draw.tail_submit();
+    draw.frame_submit().unwrap();
     assert_eq!(draw.readback(background).unwrap(), first);
     assert_eq!(draw.readback(root).unwrap(), second);
     draw.release_target_snapshot(snapshot).unwrap();
