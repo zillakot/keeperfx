@@ -46,6 +46,7 @@ struct Slot {
     staging: wgpu::Buffer,
     base: u32,
     kinds: Vec<u8>,
+    reserved: bool,
     pending: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
 }
 
@@ -57,7 +58,6 @@ pub(super) struct PassTimings {
     slots: Vec<Slot>,
     cursor: usize,
     pairs: u32,
-    active: Option<usize>,
     pub(super) ns: [u64; PASS_KINDS],
     pub(super) passes: u64,
     pub(super) dropped: u64,
@@ -85,6 +85,7 @@ impl PassTimings {
                 }),
                 base: 0,
                 kinds: Vec::new(),
+                reserved: false,
                 pending: None,
             })
             .collect();
@@ -98,32 +99,40 @@ impl PassTimings {
             slots,
             cursor: 0,
             pairs: 0,
-            active: None,
             ns: [0; PASS_KINDS],
             passes: 0,
             dropped: 0,
         })
     }
 
-    pub(super) fn open(&mut self, device: &wgpu::Device) {
+    /// Reserves a ring slot for one encoder. An encoder holds its slot from the first
+    /// pass it stamps until its submission's readback completes.
+    pub(super) fn open(&mut self, device: &wgpu::Device) -> Option<usize> {
         self.drain(device);
         for step in 0..self.slots.len() {
             let index = (self.cursor + step) % self.slots.len();
-            if self.slots[index].pending.is_none() {
+            if !self.slots[index].reserved && self.slots[index].pending.is_none() {
                 self.slots[index].kinds.clear();
+                self.slots[index].reserved = true;
                 self.slots[index].base = self.pairs;
                 self.pairs = (self.pairs + SLOT_PAIRS) % PAIRS;
                 self.cursor = (index + 1) % self.slots.len();
-                self.active = Some(index);
-                return;
+                return Some(index);
             }
         }
         self.dropped += 1;
-        self.active = None;
+        None
     }
 
-    pub(super) fn reserve(&mut self, kind: usize) -> Option<(wgpu::QuerySet, u32, u32)> {
-        let index = self.active?;
+    pub(super) fn release(&mut self, index: usize) {
+        self.slots[index].reserved = false;
+    }
+
+    pub(super) fn reserve(
+        &mut self,
+        index: usize,
+        kind: usize,
+    ) -> Option<(wgpu::QuerySet, u32, u32)> {
         let slot = &mut self.slots[index];
         let pair = slot.kinds.len() as u32;
         if pair >= SLOT_PAIRS {
@@ -136,11 +145,15 @@ impl PassTimings {
     }
 
     /// Records the resolve and the staging copy into the encoder about to be submitted.
-    pub(super) fn close(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<usize> {
-        let index = self.active.take()?;
+    pub(super) fn close(
+        &mut self,
+        index: usize,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Option<usize> {
         let slot = &self.slots[index];
         let used = slot.kinds.len() as u32;
         if used == 0 {
+            self.slots[index].reserved = false;
             return None;
         }
         let first = slot.base * 2;
@@ -189,6 +202,7 @@ impl PassTimings {
                 }
                 _ => {}
             }
+            self.slots[index].reserved = false;
             self.slots[index].pending = None;
         }
     }

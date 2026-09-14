@@ -364,6 +364,9 @@ pub unsafe extern "C" fn kfx_wgpu_present(
             let presenter = &mut *handle.cast::<Presenter>();
             ensure!(!presenter.failed, "presenter is terminal");
             let frame = presenter.pending.take().context("no submitted frame")?;
+            if let Some(drawing) = presenter.drawing.as_mut() {
+                drawing.tail_submit();
+            }
             presenter.renderer.queue().present(frame);
             presenter.renderer.check_status()?;
             Ok(Some(1))
@@ -945,6 +948,9 @@ pub unsafe extern "C" fn kfx_wgpu_draw_prepare_present(
             let presenter = &mut *handle.cast::<Presenter>();
             presenter.drawing()?.target_dimensions(target)?;
             if !presenter.acquire(output_width, output_height, vsync != 0)? {
+                // The tail already holds the cursor backup and composition; dropping it
+                // would leave the cursor background one frame behind the root.
+                presenter.drawing()?.tail_submit();
                 return Ok(Some(0));
             }
             let view = presenter

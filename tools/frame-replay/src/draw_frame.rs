@@ -431,7 +431,18 @@ impl DrawRenderer {
         }
     }
 
+    /// Whether a flush would replay anything, and so whether the present tail has to
+    /// be submitted before the replay's batches recycle arena scratch under it.
+    pub(super) fn frame_pending(&self) -> bool {
+        self.frame
+            .as_ref()
+            .is_some_and(|frame| !frame.stream.is_empty() || !frame.serials.is_empty())
+    }
+
     pub fn frame_flush(&mut self) -> Result<()> {
+        if self.frame_pending() {
+            self.tail_submit();
+        }
         let Some(mut frame) = self.frame.take() else {
             return Ok(());
         };
@@ -519,11 +530,13 @@ impl DrawRenderer {
         let mut raster = None;
         let mut prepare = None;
         if !boundaries.is_empty() {
+            self.open_batch();
             let mut packer = asset_packer(
                 &self.device,
                 &self.queue,
                 &mut self.arena,
                 &mut self.counters,
+                &self.tail,
                 self.asset_generation,
                 limit,
             );
@@ -647,6 +660,7 @@ impl DrawRenderer {
     }
 
     pub fn frame_abort(&mut self) -> Result<()> {
+        self.tail = None;
         if let Some(mut frame) = self.frame.take() {
             self.drain_releases(&mut frame);
             self.retire(&mut frame);

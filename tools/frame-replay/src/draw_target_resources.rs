@@ -73,7 +73,7 @@ impl DrawRenderer {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let encoder = self.tail_encoder();
         for row in 0..height {
             encoder.copy_buffer_to_buffer(
                 &target.indices,
@@ -86,7 +86,6 @@ impl DrawRenderer {
                 u64::from(width) * 4,
             );
         }
-        self.submit_encoder(encoder);
         self.check_status()?;
         self.target_snapshots.insert(
             id,
@@ -158,6 +157,11 @@ impl DrawRenderer {
             limit,
         )?;
         self.checkpoint_target(target)?;
+        // `begin_batch` recycles scratch regions an already recorded pass may read, and a
+        // table upload lands at the head of the submission they share.
+        if self.tail_open() && !batch.tables.is_empty() {
+            self.tail_submit();
+        }
         let (assets, base) = if self.arena.enabled() {
             self.arena.begin_batch();
             let words =
@@ -203,20 +207,18 @@ impl DrawRenderer {
         let Some((parameters, span_x, span_y)) = self.pass_parameters(&target_view, &pass) else {
             return Ok(());
         };
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        let mut copied = 0;
-        for (&id, &offset) in &batch.snapshots {
-            let source = &self.target_snapshots[&id];
-            let size = u64::from(source.pitch) * u64::from(source.height) * 4;
-            encoder.copy_buffer_to_buffer(
-                &source.indices,
-                0,
-                &assets,
-                u64::from(base + offset) * 4,
-                size,
-            );
-            copied += size;
-        }
+        let copies: Vec<_> = batch
+            .snapshots
+            .iter()
+            .map(|(&id, &offset)| {
+                let source = &self.target_snapshots[&id];
+                (
+                    source.indices.clone(),
+                    u64::from(base + offset) * 4,
+                    u64::from(source.pitch) * u64::from(source.height) * 4,
+                )
+            })
+            .collect();
         let mut uploaded = 0;
         for (&id, &offset) in &batch.tables {
             let bytes: Vec<_> = self.resources[&id]
@@ -242,17 +244,23 @@ impl DrawRenderer {
                 entry(7, self.status_binding()),
             ],
         });
+        let compute = self.compute.clone();
+        let encoder = self.tail_encoder();
+        let mut copied = 0;
+        for (source, offset, size) in &copies {
+            encoder.copy_buffer_to_buffer(source, 0, &assets, *offset, *size);
+            copied += *size;
+        }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("immutable source overlapping destination images"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.compute);
+            pass.set_pipeline(&compute);
             pass.set_bind_group(0, &binding, &[]);
             pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
-        self.submit_encoder(encoder);
         self.check_status()?;
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;

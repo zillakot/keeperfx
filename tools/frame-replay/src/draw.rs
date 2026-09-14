@@ -249,6 +249,11 @@ pub struct DrawRenderer {
     stream_tiles: PersistentBuffer,
     prepared_rows: PersistentBuffer,
     asset_generation: u64,
+    /// Work recorded after the frame's last flush: the cursor backup, compose and
+    /// restore around the palette pass. Submitted once by `kfx_wgpu_present`.
+    tail: Option<wgpu::CommandEncoder>,
+    timing_slot: Option<usize>,
+    tail_timing: Option<usize>,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -387,6 +392,9 @@ impl DrawRenderer {
             stream_tiles: PersistentBuffer::default(),
             prepared_rows: PersistentBuffer::default(),
             asset_generation: 1,
+            tail: None,
+            timing_slot: None,
+            tail_timing: None,
             failure: renderer.failure.clone(),
         })
     }
@@ -449,7 +457,10 @@ impl DrawRenderer {
     /// Opens an encoder and, when GPU timing is on, the ring slot its passes stamp into.
     pub(super) fn begin_encoder(&mut self) -> wgpu::CommandEncoder {
         if let Some(timings) = &mut self.timings {
-            timings.open(&self.device);
+            if let Some(slot) = self.timing_slot.take() {
+                timings.release(slot);
+            }
+            self.timing_slot = timings.open(&self.device);
         }
         self.device.create_command_encoder(&Default::default())
     }
@@ -483,23 +494,85 @@ impl DrawRenderer {
         self.prepared_rows.buffer.clone().unwrap()
     }
 
+    /// Closes the present tail before a batch recycles arena scratch, keeping the
+    /// tail's own timestamps with the submission that recorded them.
+    pub(super) fn open_batch(&mut self) {
+        if self.arena.enabled() {
+            self.tail_submit();
+        }
+    }
+
     pub(super) fn stamp(&mut self, kind: usize) -> Stamp {
+        let slot = self.timing_slot;
         Stamp(
             self.timings
                 .as_mut()
-                .and_then(|timings| timings.reserve(kind)),
+                .zip(slot)
+                .and_then(|(timings, slot)| timings.reserve(slot, kind)),
         )
     }
 
+    /// The present tail records into its own long-lived encoder, so it keeps its own
+    /// ring slot rather than the one the current encoder holds.
+    pub(super) fn tail_stamp(&mut self, kind: usize) -> Stamp {
+        self.tail_encoder();
+        if self.tail_timing.is_none()
+            && let Some(timings) = &mut self.timings
+        {
+            self.tail_timing = timings.open(&self.device);
+        }
+        let slot = self.tail_timing;
+        Stamp(
+            self.timings
+                .as_mut()
+                .zip(slot)
+                .and_then(|(timings, slot)| timings.reserve(slot, kind)),
+        )
+    }
+
+    /// Submits the present tail first, so no encoder opened after it can reach the
+    /// queue ahead of work the tail already recorded.
     pub(super) fn submit_encoder(&mut self, mut encoder: wgpu::CommandEncoder) {
-        let slot = self
+        self.tail_submit();
+        let closed = self
             .timings
             .as_mut()
-            .and_then(|timings| timings.close(&mut encoder));
+            .zip(self.timing_slot.take())
+            .and_then(|(timings, slot)| timings.close(slot, &mut encoder));
+        self.submit_one(encoder);
+        if let Some(slot) = closed {
+            self.timings.as_mut().unwrap().map(slot);
+        }
+    }
+
+    fn submit_one(&mut self, encoder: wgpu::CommandEncoder) {
         self.counters.submits += 1;
         self.queue.submit([encoder.finish()]);
-        if let Some(slot) = slot {
-            self.timings.as_mut().unwrap().map(slot);
+    }
+
+    /// The encoder the present tail records into, opened on first use.
+    pub(super) fn tail_encoder(&mut self) -> &mut wgpu::CommandEncoder {
+        self.tail
+            .get_or_insert_with(|| self.device.create_command_encoder(&Default::default()))
+    }
+
+    pub(super) fn tail_open(&self) -> bool {
+        self.tail.is_some()
+    }
+
+    /// Finishes the present tail. Every queue read of the root must precede it with
+    /// this, because the tail is recorded after the work it reads.
+    pub fn tail_submit(&mut self) {
+        if let Some(mut encoder) = self.tail.take() {
+            let closed = self
+                .timings
+                .as_mut()
+                .zip(self.tail_timing.take())
+                .and_then(|(timings, slot)| timings.close(slot, &mut encoder));
+            self.submit_one(encoder);
+            if let Some(slot) = closed {
+                self.timings.as_mut().unwrap().map(slot);
+            }
         }
     }
 
@@ -624,11 +697,13 @@ impl DrawRenderer {
         }
         let (target_width, target_height) = self.target_dimensions(target)?;
         let limit = self.storage_limit() as usize;
+        self.open_batch();
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
+            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -844,6 +919,7 @@ impl DrawRenderer {
     }
 
     pub fn readback(&mut self, target: u64) -> Result<Vec<u8>> {
+        self.tail_submit();
         self.checkpoint_target(target)?;
         self.check_status()?;
         let target = self.targets.get(&target).context("unknown target")?.clone();
@@ -891,6 +967,8 @@ impl DrawRenderer {
         Ok(bytes)
     }
 
+    /// Records the palette pass into the present tail; the caller submits it with
+    /// `tail_submit` after the cursor restore is recorded.
     pub fn present_into(
         &mut self,
         target: u64,
@@ -949,8 +1027,9 @@ impl DrawRenderer {
                 entry(2, &parameters),
             ],
         });
-        let mut encoder = self.begin_encoder();
-        let stamp = self.stamp(PASS_PRESENT);
+        let present = self.present.clone();
+        let stamp = self.tail_stamp(PASS_PRESENT);
+        let encoder = self.tail_encoder();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("GPU-owned presentation"),
@@ -968,11 +1047,10 @@ impl DrawRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.present);
+            pass.set_pipeline(&present);
             pass.set_bind_group(0, &binding, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.submit_encoder(encoder);
         Ok(())
     }
 }
@@ -1027,15 +1105,24 @@ pub(super) enum AssetPacker<'a> {
     },
 }
 
+/// Opening a batch recycles arena scratch, and the uploads that follow are staged
+/// into the head of the next submission. A present tail already reading a recycled
+/// region would see them, so every caller submits the tail through `open_batch`
+/// before the batch opens.
 pub(super) fn asset_packer<'a>(
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     arena: &'a mut arena::Arena,
     counters: &'a mut Counters,
+    tail: &Option<wgpu::CommandEncoder>,
     generation: u64,
     limit: usize,
 ) -> AssetPacker<'a> {
     if arena.enabled() {
+        debug_assert!(
+            tail.is_none(),
+            "the present tail must be submitted before a batch recycles arena scratch"
+        );
         arena.begin_batch();
         AssetPacker::Arena {
             device,
@@ -2070,6 +2157,7 @@ mod tests {
                 &texture.create_view(&Default::default()),
             )
             .unwrap();
+        drawing.tail_submit();
         drawing.release_target(target).unwrap();
         let staging = renderer.device().create_buffer(&wgpu::BufferDescriptor {
             label: None,

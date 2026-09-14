@@ -149,12 +149,14 @@ impl DrawRenderer {
         self.shadow_residency()?;
         self.shadow_pipeline()?;
         let limit = self.storage_limit() as usize;
+        self.open_batch();
         let bytes = &self.resources[&source].bytes;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
+            &self.tail,
             self.asset_generation,
             limit,
         );

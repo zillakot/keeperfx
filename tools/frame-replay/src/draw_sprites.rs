@@ -109,17 +109,21 @@ impl DrawRenderer {
         target_id: u64,
         commands: &[Command],
     ) -> Result<()> {
-        let target = self
-            .targets
-            .get(&target_id)
-            .context("unknown sprite target")?;
-        let (width, height) = (target.width, target.height);
+        let (width, height) = {
+            let target = self
+                .targets
+                .get(&target_id)
+                .context("unknown sprite target")?;
+            (target.width, target.height)
+        };
         let limit = self.storage_limit() as usize;
+        self.open_batch();
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
             &mut self.arena,
             &mut self.counters,
+            &self.tail,
             self.asset_generation,
             limit,
         );
@@ -132,18 +136,20 @@ impl DrawRenderer {
         )?;
         packer.finish();
         for c in commands.iter().filter(|c| ordered(c)) {
-            validate_target(c, &self.resources[&c.source], target.width, target.height)?;
+            validate_target(c, &self.resources[&c.source], width, height)?;
         }
         for c in commands {
             if !ordered(c) {
                 self.submit(target_id, std::slice::from_ref(c))?;
                 continue;
             }
+            self.open_batch();
             let mut packer = asset_packer(
                 &self.device,
                 &self.queue,
                 &mut self.arena,
                 &mut self.counters,
+                &self.tail,
                 self.asset_generation,
                 limit,
             );
