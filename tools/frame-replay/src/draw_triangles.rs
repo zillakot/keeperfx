@@ -1,5 +1,5 @@
 use super::*;
-use crate::gpoly::{GpolyPreparer, Triangle, Vertex};
+use crate::gpoly::{GpolyPreparer, Triangle, Vertex, row_layout};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -112,14 +112,17 @@ impl DrawRenderer {
         let assets = packer.finish();
         self.triangles
             .get_or_insert_with(|| TrianglePipelines::new(&self.device));
+        let extents = vec![(target.width, target.height); triangles.len()];
+        let (layout, rows) = row_layout(&triangles, &extents);
+        let rows_buffer = self.prepared_rows(u64::from(rows));
         let mut encoder = self.begin_encoder();
         let stamp = self.stamp(PASS_TERRAIN_PREPARE);
-        let prepared = self.triangles.as_ref().unwrap().prepare.encode(
+        self.triangles.as_ref().unwrap().prepare.encode(
             &self.device,
             &mut encoder,
             &triangles,
-            target.width,
-            target.height,
+            &layout,
+            &rows_buffer,
             stamp.compute(),
         )?;
         let params = buffer(
@@ -144,7 +147,7 @@ impl DrawRenderer {
                 label: None,
                 layout: &pipelines.validate.get_bind_group_layout(0),
                 entries: &[
-                    entry(0, &prepared.rows),
+                    entry(0, &rows_buffer),
                     entry(3, &params),
                     entry(6, &self.status),
                 ],
@@ -182,7 +185,7 @@ impl DrawRenderer {
                 label: None,
                 layout: &pipelines.render.get_bind_group_layout(0),
                 entries: &[
-                    entry(0, &prepared.rows),
+                    entry(0, &rows_buffer),
                     entry(1, &asset_buffer),
                     entry(2, &target.indices),
                     entry(3, &params),

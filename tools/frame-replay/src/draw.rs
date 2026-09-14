@@ -217,6 +217,7 @@ pub struct DrawRenderer {
     tile_index: TileIndex,
     stream_commands: PersistentBuffer,
     stream_tiles: PersistentBuffer,
+    prepared_rows: PersistentBuffer,
     asset_generation: u64,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
@@ -347,6 +348,7 @@ impl DrawRenderer {
             tile_index: TileIndex::default(),
             stream_commands: PersistentBuffer::default(),
             stream_tiles: PersistentBuffer::default(),
+            prepared_rows: PersistentBuffer::default(),
             asset_generation: 1,
             failure: renderer.failure.clone(),
         })
@@ -407,6 +409,24 @@ impl DrawRenderer {
             timings.open(&self.device);
         }
         self.device.create_command_encoder(&Default::default())
+    }
+
+    /// The renderer-owned prepared-row arena, grown in powers of two and reused.
+    pub(super) fn prepared_rows(&mut self, rows: u64) -> wgpu::Buffer {
+        let words = rows.max(1) * 8;
+        if self.prepared_rows.words < words {
+            let size = words.next_power_of_two().max(1024) * 4;
+            self.counters.buffers += 1;
+            self.counters.buffer_bytes += size;
+            self.prepared_rows.buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("GPU prepared gpoly rows"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }));
+            self.prepared_rows.words = size / 4;
+        }
+        self.prepared_rows.buffer.clone().unwrap()
     }
 
     pub(super) fn stamp(&mut self, kind: usize) -> Stamp {

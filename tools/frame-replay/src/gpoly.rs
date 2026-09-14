@@ -17,12 +17,38 @@ pub struct Triangle {
 }
 
 /// Eight u32 words per row: x, y, count, zero, start low/high, step low/high.
-/// Rows are indexed by triangle * height + y; count zero means no coverage.
-pub struct PreparedTriangles {
-    pub rows: wgpu::Buffer,
-    pub triangle_count: u32,
+/// A count of zero means no coverage.
+///
+/// Where one triangle's rows live in the shared arena, and the view it was set up
+/// against. Row `y` of triangle `t` is at `layout[t].base + (y - layout[t].y_lo)`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RowLayout {
+    pub base: u32,
+    pub y_lo: u32,
+    pub rows: u32,
     pub width: u32,
     pub height: u32,
+    pad: [u32; 3],
+}
+
+/// A prefix sum over each triangle's covered row extent, with the total row count.
+pub fn row_layout(triangles: &[Triangle], extents: &[(u32, u32)]) -> (Vec<RowLayout>, u32) {
+    let mut layout = Vec::with_capacity(triangles.len());
+    let mut base = 0;
+    for (triangle, &(width, height)) in triangles.iter().zip(extents) {
+        let _ = triangle;
+        layout.push(RowLayout {
+            base,
+            y_lo: 0,
+            rows: height,
+            width,
+            height,
+            pad: [0; 3],
+        });
+        base += height;
+    }
+    (layout, base)
 }
 
 pub struct GpolyPreparer {
@@ -52,26 +78,36 @@ impl GpolyPreparer {
 
     /// Records GPU setup from immutable original 16.16 attributes and integer coordinates.
     /// Geometry outside the native signed 16.16 edge domain is rejected before encoding.
+    /// `rows` must hold `layout`'s total row count; the caller owns and reuses it.
     pub fn encode(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         triangles: &[Triangle],
-        width: u32,
-        height: u32,
+        layout: &[RowLayout],
+        rows: &wgpu::Buffer,
         stamp: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) -> Result<PreparedTriangles> {
+    ) -> Result<()> {
         ensure!(
-            width > 0 && height > 0 && width <= 32767 && height <= 32767,
-            "gpoly viewport exceeds signed 16.16 coordinates"
+            layout.len() == triangles.len(),
+            "triangle row layout does not match the batch"
         );
+        for entry in layout {
+            ensure!(
+                entry.width > 0
+                    && entry.height > 0
+                    && entry.width <= 32767
+                    && entry.height <= 32767,
+                "gpoly viewport exceeds signed 16.16 coordinates"
+            );
+        }
         ensure!(!triangles.is_empty(), "empty triangle batch");
         let count = u32::try_from(triangles.len())?;
         ensure!(
             count.div_ceil(64) <= device.limits().max_compute_workgroups_per_dimension,
             "triangle dispatch exceeds device limits"
         );
-        let size = u64::from(count) * u64::from(height) * 32;
+        let size = layout.iter().map(|e| u64::from(e.rows) * 32).sum::<u64>();
         ensure!(
             size <= device.limits().max_buffer_size
                 && u64::from(count) * 96 <= device.limits().max_buffer_size,
@@ -85,6 +121,7 @@ impl GpolyPreparer {
             u64::from(count) * 96 <= device.limits().max_storage_buffer_binding_size,
             "triangle inputs exceed device storage limit"
         );
+        ensure!(rows.size() >= size, "prepared row arena is too small");
         let mut words = Vec::with_capacity(triangles.len() * 24);
         for triangle in triangles {
             for vertex in triangle.vertices {
@@ -105,14 +142,26 @@ impl GpolyPreparer {
         });
         let parameters = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gpoly viewport"),
-            contents: &bytes(&[width, height, count, 0]),
+            contents: &bytes(&[count, 0, 0, 0]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let rows = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("GPU prepared gpoly rows"),
-            size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
+        let mut layout_words = Vec::with_capacity(layout.len() * 8);
+        for entry in layout {
+            layout_words.extend([
+                entry.base,
+                entry.y_lo,
+                entry.rows,
+                entry.width,
+                entry.height,
+                0,
+                0,
+                0,
+            ]);
+        }
+        let layout_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpoly row layout"),
+            contents: &bytes(&layout_words),
+            usage: wgpu::BufferUsages::STORAGE,
         });
         let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gpoly preparation"),
@@ -130,6 +179,10 @@ impl GpolyPreparer {
                     binding: 2,
                     resource: parameters.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: layout_buffer.as_entire_binding(),
+                },
             ],
         });
         {
@@ -141,11 +194,6 @@ impl GpolyPreparer {
             pass.set_bind_group(0, &bindings, &[]);
             pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
         }
-        Ok(PreparedTriangles {
-            rows,
-            triangle_count: count,
-            width,
-            height,
-        })
+        Ok(())
     }
 }
