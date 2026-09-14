@@ -181,8 +181,10 @@ fn palette() -> Vec<u8> {
 fn a_production_frame_is_one_command_buffer() {
     let mut scene = Scene::new();
     // The first frames warm the arena, the stream ring and every pipeline.
-    scene.present();
-    scene.present();
+    scene.record(true);
+    scene.draw.frame_end().unwrap();
+    scene.record(true);
+    scene.draw.frame_end().unwrap();
 
     let before = scene.draw.counters();
     let before_frame = scene.draw.frame_counters();
@@ -197,6 +199,24 @@ fn a_production_frame_is_one_command_buffer() {
     let frame = scene.draw.frame_counters();
 
     assert_eq!(after.submits - before.submits, 1, "submits");
+    assert_eq!(
+        after.target_trig_table_bytes - before.target_trig_table_bytes,
+        0
+    );
+    assert_eq!(
+        after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
+        480
+    );
+    assert_eq!(
+        after.target_trig_table_hits - before.target_trig_table_hits,
+        2
+    );
+    assert_eq!(after.target_trig_asset_buffers, 0);
+    assert_eq!(after.preparer_buffers - before.preparer_buffers, 3);
+    assert_eq!(
+        after.preparer_buffer_bytes - before.preparer_buffer_bytes,
+        132
+    );
     assert_eq!(after.waits - before.waits, 0, "wait_count");
     assert_eq!(after.wait_ns - before.wait_ns, 0, "wait_ns");
     assert_eq!(
@@ -368,4 +388,132 @@ fn an_unpresented_frame_is_neither_leaked_nor_submitted_twice() {
     );
     scene.draw.frame_abort().unwrap();
     scene.draw.check_status().unwrap();
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn shadow_table_versions_survive_serial_release_and_recovery() {
+    let mut scene = Scene::new();
+    let source = scene.a.shadow;
+    let draw = &mut scene.draw;
+    let root = draw.create_target(48, 16).unwrap();
+    let views: Vec<_> = (0..3)
+        .map(|i| draw.create_target_view(root, i * 16, 0, 16, 16).unwrap())
+        .collect();
+    let run = |draw: &mut DrawRenderer, stepped: bool| {
+        let before = draw.counters();
+        let mut tables: Vec<_> = [71, 93]
+            .iter()
+            .map(|&value| {
+                draw.create_resource(&vec![value; 81920], 256, 320, 256)
+                    .unwrap()
+            })
+            .collect();
+        draw.shadow_scratch_reset().unwrap();
+        draw.frame_submit().unwrap();
+        draw.frame_begin(root).unwrap();
+        draw.submit(
+            root,
+            &[Command {
+                kind: keeperfx_frame_replay::draw::CLEAR,
+                colour: 167,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        for i in 0..3 {
+            if i == 2 {
+                tables.push(
+                    draw.create_resource(&vec![117; 81920], 256, 320, 256)
+                        .unwrap(),
+                );
+            }
+            draw.submit_shadow(
+                views[i],
+                &Command {
+                    kind: keeperfx_frame_replay::draw::SHADOW,
+                    source,
+                    table: tables[i],
+                    colour: 17,
+                    width: 16,
+                    height: 16,
+                    clip_width: 16,
+                    clip_height: 16,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            draw.release_resource(tables[i]).unwrap();
+            if i == 1 {
+                let snapshot = draw.create_target_snapshot(root, 0, 0, 16, 16, 16).unwrap();
+                draw.release_target_snapshot(snapshot).unwrap();
+            }
+            if stepped {
+                draw.frame_flush().unwrap();
+                draw.frame_submit().unwrap();
+            }
+        }
+        draw.frame_end().unwrap();
+        let after = draw.counters();
+        assert_eq!(
+            after.target_trig_table_bytes - before.target_trig_table_bytes,
+            3 * 327680
+        );
+        assert_eq!(
+            after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
+            3 * 480
+        );
+        assert_eq!(
+            after.target_trig_table_hits - before.target_trig_table_hits,
+            3
+        );
+        assert_eq!(
+            after.target_trig_table_misses - before.target_trig_table_misses,
+            3
+        );
+        assert_eq!(after.target_trig_asset_buffers, 0);
+        draw.readback(root).unwrap()
+    };
+    let expected = run(draw, true);
+    let actual = run(draw, false);
+    assert_eq!(actual, expected);
+    for (view, colour) in [71, 93, 117].into_iter().enumerate() {
+        let pixels: Vec<_> = actual
+            .chunks_exact(48)
+            .flat_map(|row| row[view * 16..view * 16 + 16].iter().copied())
+            .collect();
+        assert!(pixels.contains(&colour));
+        assert!(pixels.iter().all(|&pixel| pixel == colour || pixel == 167));
+    }
+    let table = draw
+        .create_resource(&vec![71; 81920], 256, 320, 256)
+        .unwrap();
+    let command = Command {
+        kind: keeperfx_frame_replay::draw::SHADOW,
+        source,
+        table,
+        colour: 17,
+        width: 16,
+        height: 16,
+        clip_width: 16,
+        clip_height: 16,
+        ..Default::default()
+    };
+    draw.frame_begin(root).unwrap();
+    draw.submit_shadow(views[0], &command).unwrap();
+    draw.frame_flush().unwrap();
+    let before = draw.arena_counters();
+    draw.frame_abort().unwrap();
+    draw.frame_begin(root).unwrap();
+    draw.submit_shadow(views[0], &command).unwrap();
+    draw.frame_end().unwrap();
+    let after = draw.arena_counters();
+    assert_eq!(after.misses_generation - before.misses_generation, 2);
+    assert_eq!(
+        after.miss_generation_bytes - before.miss_generation_bytes,
+        327680 + 164 * 4
+    );
+    assert_eq!(draw.readback(root).unwrap(), expected);
+    assert_eq!(draw.frame_status().1, 0);
+    draw.release_resource(table).unwrap();
 }

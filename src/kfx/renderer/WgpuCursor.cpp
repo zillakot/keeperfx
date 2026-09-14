@@ -167,6 +167,26 @@ struct WgpuCursor::State {
             COLLECT(command_upload_bytes); COLLECT(readback_bytes);
             COLLECT(submits); COLLECT(dispatches); COLLECT(waits); COLLECT(wait_ns);
             COLLECT(buffers); COLLECT(buffer_bytes);
+            COLLECT(target_trig_geometry_bytes);
+            COLLECT(target_trig_table_bytes);
+            COLLECT(other_asset_upload_bytes);
+            COLLECT(target_trig_table_hits);
+            COLLECT(target_trig_table_misses);
+            COLLECT(target_trig_asset_buffers);
+            COLLECT(shadow_pairs);
+            COLLECT(preparer_buffers);
+            COLLECT(preparer_buffer_bytes);
+            COLLECT(arena_misses_new_id);
+            COLLECT(arena_misses_forget);
+            COLLECT(arena_misses_size_class);
+            COLLECT(arena_misses_generation);
+            COLLECT(arena_misses_eviction);
+            COLLECT(arena_miss_new_id_bytes);
+            COLLECT(arena_miss_forget_bytes);
+            COLLECT(arena_miss_size_class_bytes);
+            COLLECT(arena_miss_generation_bytes);
+            COLLECT(arena_miss_eviction_bytes);
+            COLLECT(arena_explicit_forgets);
             COLLECT(arena_evictions); COLLECT(arena_overflows); COLLECT(arena_bytes_uploaded);
 #undef COLLECT
             reported = c;

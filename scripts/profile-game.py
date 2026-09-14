@@ -45,8 +45,36 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
                     "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
                     "gpu_timed_passes", "gpu_untimed_passes", "gpu_pass_union_ns",
-                    "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak")
-DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak")
+                    "target_trig_geometry_bytes",
+                    "target_trig_table_bytes",
+                    "other_asset_upload_bytes",
+                    "target_trig_table_hits",
+                    "target_trig_table_misses",
+                    "target_trig_asset_buffers",
+                    "shadow_pairs",
+                    "preparer_buffers",
+                    "preparer_buffer_bytes",
+                    "arena_misses_new_id",
+                    "arena_misses_forget",
+                    "arena_misses_size_class",
+                    "arena_misses_generation",
+                    "arena_misses_eviction",
+                    "arena_miss_new_id_bytes",
+                    "arena_miss_forget_bytes",
+                    "arena_miss_size_class_bytes",
+                    "arena_miss_generation_bytes",
+                    "arena_miss_eviction_bytes",
+                    "arena_explicit_forgets",
+                    "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
+                    "arena_capacity_bytes",
+                    "arena_live_bytes",
+                    "arena_retired_bytes",
+                    "arena_growth_peak_bytes")
+DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
+                  "arena_capacity_bytes",
+                  "arena_live_bytes",
+                  "arena_retired_bytes",
+                  "arena_growth_peak_bytes")
 SETTINGS = {
     "DELTA_TIME": "ON", "TURNS_PER_SECOND": "20", "FRAMES_PER_SECOND": "60", "VSYNC": "OFF",
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
@@ -455,8 +483,13 @@ def summarize_drawing(drawing, presentations):
             or not drawing["backend"]:
         raise RuntimeError("invalid drawing counter availability or backend")
     names = tuple(drawing.get("counters", ()))
-    legacy = tuple(name for name in DRAWING_COUNTERS if name not in ("asset_upload_bytes", "command_upload_bytes"))
-    if names not in (DRAWING_COUNTERS, legacy):
+    additions = {name for name in DRAWING_COUNTERS if name.startswith(("target_trig_", "preparer_", "arena_miss"))}
+    additions.update(("other_asset_upload_bytes", "shadow_pairs", "arena_explicit_forgets",
+                      "arena_capacity_bytes", "arena_live_bytes", "arena_retired_bytes", "arena_growth_peak_bytes"))
+    schemas = [tuple(name for name in DRAWING_COUNTERS if name not in omitted)
+               for omitted in (set(), additions, {"asset_upload_bytes", "command_upload_bytes"},
+                               additions | {"asset_upload_bytes", "command_upload_bytes"})]
+    if names not in schemas:
         raise RuntimeError("drawing counter names do not match this profiler")
     rows = drawing.get("per_frame")
     if not isinstance(rows, list) or drawing.get("frames") != len(rows):
@@ -474,7 +507,7 @@ def summarize_drawing(drawing, presentations):
         return result
     if len(rows) != presentations - 1:
         raise RuntimeError("drawing counter frames must cover every measured presentation but the first")
-    if tuple(drawing.get("gauges", ())) != DRAWING_GAUGES:
+    if tuple(drawing.get("gauges", ())) != tuple(name for name in DRAWING_GAUGES if name in names):
         raise RuntimeError("drawing gauge names do not match this profiler")
     result["per_frame"] = {name: drawing_distribution([row[index] for row in rows],
                                                       name in DRAWING_GAUGES)

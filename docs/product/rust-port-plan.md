@@ -246,6 +246,14 @@ the mean and native surface/drawing gates pass. Uncapped 197.98/195.08 FPS
 establishes no ceiling increase. Replay’s roughly 11 MB/frame asset uploads
 (P3) and 0.58–0.78 ms host submission remain the next costs to address.
 
+**Presenter cost, P3 slice 1.** Shadow target triangles now pack their immutable
+geometry and content-interned tables through the existing asset arena, retaining
+the low-limit fallback, mask order and recovery epoch. Route upload/reuse counters,
+arena miss causes and allocation gauges, and separate gpoly setup-buffer counters
+make the expected table-upload removal measurable. Host numbers and acceptance
+remain pending the matched baseline/branch schedule and drawing/surface oracles;
+no replay-time, uncapped-throughput or peak-memory improvement is claimed yet.
+
 Next, in order:
 
 1. **Presenter cost, remaining.** Cut the roughly 11 MB/frame asset uploads

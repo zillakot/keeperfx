@@ -186,6 +186,28 @@ class ProfileTests(unittest.TestCase):
             self.assertIn("upload_bytes", report["drawing"]["per_frame"])
             self.assertNotIn("asset_upload_bytes", report["drawing"]["per_frame"])
 
+    def test_asset_route_counters_and_memory_gauges(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            engine_output(output)
+            metadata = drawing_metadata(output, 19)
+            fields = ('target_trig_geometry_bytes', 'target_trig_table_bytes', 'other_asset_upload_bytes', 'target_trig_table_hits', 'target_trig_table_misses', 'target_trig_asset_buffers', 'shadow_pairs', 'preparer_buffers', 'preparer_buffer_bytes', 'arena_misses_new_id', 'arena_misses_forget', 'arena_misses_size_class', 'arena_misses_generation', 'arena_misses_eviction', 'arena_miss_new_id_bytes', 'arena_miss_forget_bytes', 'arena_miss_size_class_bytes', 'arena_miss_generation_bytes', 'arena_miss_eviction_bytes', 'arena_explicit_forgets', 'arena_capacity_bytes', 'arena_live_bytes', 'arena_retired_bytes', 'arena_growth_peak_bytes')
+            report = profile.summarize(output, arguments())
+            values = report["drawing"]["per_frame"]
+            for field in fields:
+                self.assertIn(field, values)
+                self.assertEqual(values[field]["total"] is None, field in profile.DRAWING_GAUGES)
+            for field in fields:
+                index = metadata["drawing"]["counters"].index(field)
+                metadata["drawing"]["counters"].pop(index)
+                for row in metadata["drawing"]["per_frame"]:
+                    row.pop(index)
+            metadata["drawing"]["gauges"] = [name for name in metadata["drawing"]["gauges"] if name not in fields]
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            old = profile.summarize(output, arguments())["drawing"]["per_frame"]
+            self.assertIn("asset_upload_bytes", old)
+            self.assertNotIn("target_trig_table_bytes", old)
+
     def test_draw_breakdown_is_nested_and_reports_per_frame_remainder(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)

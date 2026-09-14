@@ -211,6 +211,37 @@ presentation by the Rust presenter, and a cursor that owns its own drawing conte
 rather than borrowing the bridge's are not counted, so the counters explain the
 drawing scopes rather than the whole frame.
 
+### Shadow asset reuse counters
+
+`target_trig_geometry_bytes` and `target_trig_table_bytes` count actual expanded
+uploads by the shadow target-triangle route. Their sum plus
+`other_asset_upload_bytes` equals `asset_upload_bytes`; geometry stays asset data.
+`target_trig_table_hits` / `target_trig_table_misses` count each table resolution,
+including the second triangle of a pair. `shadow_pairs` counts replayed mask/pair
+batches, including culled pairs. `target_trig_asset_buffers` counts only fallback
+asset creations: zero with the arena, one per nonempty fallback batch. A fresh
+pair uploads 480 geometry bytes; a resident table uploads zero. The disabled-arena
+fallback deduplicates the pair's table but uploads it again next batch.
+
+`arena_misses_{new_id,forget,size_class,generation,eviction}` and corresponding
+`arena_miss_<cause>_bytes` partition successful arena resolutions that upload;
+the bytes sum to `arena_bytes_uploaded`. Generation means the unchanged renderer
+recovery epoch. `arena_explicit_forgets` counts resident entries removed on release,
+separately from capacity-driven `arena_evictions`. A forgotten live ID can miss as
+`forget`; release permanently drops its history, so a recreated resource's new ID
+misses as `new_id`. Eviction history lasts only until reuse or resource release.
+
+`preparer_buffers` / `preparer_buffer_bytes` separately account the three gpoly
+setup buffers: vertices (96 bytes/triangle), row layout (20 bytes/triangle), and
+viewport (16 bytes/encode). They do not change `buffers`, `buffer_bytes`, or the
+legacy upload totals. Those totals still omit some uniform/staging traffic.
+
+The additional gauges are `arena_capacity_bytes` (allocated buffer),
+`arena_live_bytes` (resident size classes), `arena_retired_bytes` (released classes
+still protected by an encoder), and `arena_growth_peak_bytes` (largest old+new
+capacity during growth). They supplement the existing extent and scratch-peak
+gauges; they do not measure whole-process or driver/GPU peak memory.
+
 ## Presenter host attribution
 
 Rust-presenter runs include one `presenter.per_frame` sample per presentation;

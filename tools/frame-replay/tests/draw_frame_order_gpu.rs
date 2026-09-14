@@ -145,7 +145,26 @@ fn interleaved_families_keep_their_order() {
     drawing.frame_begin(targets[1][0]).unwrap();
     run(&mut drawing, &targets[1].clone());
     drawing.frame_end().unwrap();
-    let streamed = drawing.counters().batches - before.batches;
+    let after = drawing.counters();
+    let shadows = plan
+        .iter()
+        .filter(|step| matches!(step, Step::Shadow(_)))
+        .count() as u64;
+    assert_eq!(after.shadow_pairs - before.shadow_pairs, shadows);
+    assert_eq!(
+        after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
+        shadows * 480
+    );
+    assert_eq!(
+        after.target_trig_table_bytes - before.target_trig_table_bytes,
+        0
+    );
+    assert_eq!(
+        after.target_trig_table_hits - before.target_trig_table_hits,
+        shadows * 2
+    );
+    assert_eq!(after.target_trig_asset_buffers, 0);
+    let streamed = after.batches - before.batches;
 
     let expected = drawing.readback(targets[0][0]).unwrap();
     assert_eq!(

@@ -27,11 +27,24 @@ impl DrawRenderer {
             "snapshot triangle dispatch exceeds limit"
         );
         let mut words = Vec::new();
-        let mut uploads: Vec<(usize, Vec<u32>)> = Vec::new();
-        let mut length = 0usize;
         for c in commands {
             self.check_queued_resource(c.source)?;
             self.check_queued_resource(c.table)?;
+        }
+        self.arena_headroom(0)?;
+        let mut packer = asset_packer(
+            &self.device,
+            &self.queue,
+            &mut self.arena,
+            &mut self.counters,
+            self.asset_generation,
+            limit,
+        );
+        let mut geometry_bytes = 0;
+        let mut table_bytes = 0;
+        let mut table_hits = 0;
+        let mut table_misses = 0;
+        for c in commands {
             ensure!(
                 c.abi_version == ABI_VERSION
                     && c.reserved == [0; 3]
@@ -67,21 +80,15 @@ impl DrawRenderer {
                     && table.bytes.len() == 81920,
                 "invalid triangle table"
             );
-            let source_offset = length;
-            uploads.push((
-                length,
-                geometry.bytes.iter().map(|&v| u32::from(v)).collect(),
-            ));
-            length = length.checked_add(60).context("triangle arena overflow")?;
-            let table_offset = length;
-            uploads.push((length, table.bytes.iter().map(|&v| u32::from(v)).collect()));
-            length = length
-                .checked_add(table.bytes.len())
-                .context("triangle arena overflow")?;
-            ensure!(
-                length <= limit / 4 && length <= u32::MAX as usize,
-                "triangle arena exceeds limit"
-            );
+            let before = packer.uploaded_bytes();
+            let source_offset = packer.offset(c.source, &geometry.bytes)?;
+            geometry_bytes += packer.uploaded_bytes() - before;
+            let before = packer.uploaded_bytes();
+            let table_offset = packer.offset(c.table, &table.bytes)?;
+            let uploaded = packer.uploaded_bytes() - before;
+            table_bytes += uploaded;
+            table_hits += u64::from(uploaded == 0);
+            table_misses += u64::from(uploaded != 0);
             words.extend([TRIG, 0, 0, c.colour]);
             let policy = self.box_policy;
             let declared = bounds(c.x, c.y, c.width, c.height)?;
@@ -91,11 +98,16 @@ impl DrawRenderer {
                 declared
             });
             words.extend(bounds(c.clip_x, c.clip_y, c.clip_width, c.clip_height)?);
-            words.extend([source_offset as u32, table_offset as u32, 1, slot + 1]);
+            words.extend([source_offset, table_offset, 1, slot + 1]);
             words.extend([c.source_x, 65536, 64, 0]);
             words.extend([0; 4]);
             words.extend([OPAQUE, 0, 0, 0]);
         }
+        let assets = packer.finish();
+        self.counters.target_trig_geometry_bytes += geometry_bytes;
+        self.counters.target_trig_table_bytes += table_bytes;
+        self.counters.target_trig_table_hits += table_hits;
+        self.counters.target_trig_table_misses += table_misses;
         if commands.is_empty() {
             return Ok(());
         }
@@ -121,20 +133,23 @@ impl DrawRenderer {
             self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
-        // Built at creation rather than staged: a staged write applies before every
-        // pass of the submission it lands in, and the frame is one submission.
-        let mut arena = vec![0u32; length];
-        for (offset, values) in uploads {
-            arena[offset..offset + values.len()].copy_from_slice(&values);
-        }
-        let assets = buffer(
-            &self.device,
-            &mut self.counters,
-            "GPU texture and geometry arena",
-            &arena,
-            wgpu::BufferUsages::STORAGE,
-        );
-        self.counters.asset_upload_bytes += arena.len() as u64 * 4;
+        let assets = match assets {
+            Some(assets) => {
+                self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+                self.counters.target_trig_asset_buffers += 1;
+                buffer(
+                    &self.device,
+                    &mut self.counters,
+                    "snapshot triangle fallback assets",
+                    &assets,
+                    wgpu::BufferUsages::STORAGE,
+                )
+            }
+            None => self
+                .arena
+                .binding(&self.device, &self.queue, &mut self.counters),
+        };
+        self.counters.shadow_pairs += u64::from(mask.is_some());
         self.counters.command_upload_bytes +=
             (words.len() + self.tile_index.data().len()) as u64 * 4 + 20;
         let pass = self.tile_index.passes()[0];

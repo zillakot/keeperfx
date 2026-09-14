@@ -447,7 +447,7 @@ impl DrawRenderer {
                 debug_assert!(self.resource_bytes >= released.bytes.len());
                 self.resource_bytes = self.resource_bytes.saturating_sub(released.bytes.len());
             }
-            self.arena.forget(id);
+            self.arena.release(id);
         }
         for id in frame.released_targets.drain(..) {
             self.targets.remove(&id);

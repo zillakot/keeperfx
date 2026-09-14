@@ -101,6 +101,31 @@ struct KfxWgpuDrawCounters {
     /* Widest extent the arena's transient regions reached inside one pinning scope,
      * which frame-scoped pinning makes a whole frame rather than a batch. */
     uint64_t arena_scratch_bytes_peak;
+    uint64_t target_trig_geometry_bytes;
+    uint64_t target_trig_table_bytes;
+    uint64_t other_asset_upload_bytes;
+    uint64_t target_trig_table_hits;
+    uint64_t target_trig_table_misses;
+    uint64_t target_trig_asset_buffers;
+    uint64_t shadow_pairs;
+    uint64_t preparer_buffers;
+    uint64_t preparer_buffer_bytes;
+    uint64_t arena_misses_new_id;
+    uint64_t arena_misses_forget;
+    uint64_t arena_misses_size_class;
+    uint64_t arena_misses_generation;
+    uint64_t arena_misses_eviction;
+    uint64_t arena_miss_new_id_bytes;
+    uint64_t arena_miss_forget_bytes;
+    uint64_t arena_miss_size_class_bytes;
+    uint64_t arena_miss_generation_bytes;
+    uint64_t arena_miss_eviction_bytes;
+    uint64_t arena_explicit_forgets;
+    uint64_t arena_capacity_bytes;
+    uint64_t arena_live_bytes;
+    uint64_t arena_retired_bytes;
+    uint64_t arena_growth_peak_bytes;
+
 };
 #pragma pack(pop)
 

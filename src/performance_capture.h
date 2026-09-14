@@ -48,8 +48,33 @@ struct PerformanceDrawingCounters {
      * windows include their own stalls, so neither this nor their sum is exclusive —
      * only a KFX_WGPU_GPU_TIMING=2 run is. */
     unsigned long long gpu_pass_union_ns;
+    unsigned long long target_trig_geometry_bytes;
+    unsigned long long target_trig_table_bytes;
+    unsigned long long other_asset_upload_bytes;
+    unsigned long long target_trig_table_hits;
+    unsigned long long target_trig_table_misses;
+    unsigned long long target_trig_asset_buffers;
+    unsigned long long shadow_pairs;
+    unsigned long long preparer_buffers;
+    unsigned long long preparer_buffer_bytes;
+    unsigned long long arena_misses_new_id;
+    unsigned long long arena_misses_forget;
+    unsigned long long arena_misses_size_class;
+    unsigned long long arena_misses_generation;
+    unsigned long long arena_misses_eviction;
+    unsigned long long arena_miss_new_id_bytes;
+    unsigned long long arena_miss_forget_bytes;
+    unsigned long long arena_miss_size_class_bytes;
+    unsigned long long arena_miss_generation_bytes;
+    unsigned long long arena_miss_eviction_bytes;
+    unsigned long long arena_explicit_forgets;
     /* Trailing gauges are stored as observed, not differenced. */
     unsigned long long host_staged_asset_bytes, arena_bytes_resident, arena_scratch_bytes_peak;
+    unsigned long long arena_capacity_bytes;
+    unsigned long long arena_live_bytes;
+    unsigned long long arena_retired_bytes;
+    unsigned long long arena_growth_peak_bytes;
+
 };
 void performance_drawing_backend(const char* backend);
 void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulative);

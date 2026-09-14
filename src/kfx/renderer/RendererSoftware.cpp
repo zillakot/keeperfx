@@ -302,7 +302,31 @@ void RendererSoftware::report_drawing()
         gpu.pass_ns[0], gpu.pass_ns[1], gpu.pass_ns[2], gpu.pass_ns[3],
         gpu.pass_ns[4], gpu.pass_ns[5], gpu.pass_ns[6], gpu.pass_ns[7],
         gpu.timed_passes, gpu.untimed_passes, gpu.gpu_pass_union_ns,
-        gpu.host_staged_asset_bytes, gpu.arena_bytes_resident, gpu.arena_scratch_bytes_peak};
+        gpu.target_trig_geometry_bytes,
+        gpu.target_trig_table_bytes,
+        gpu.other_asset_upload_bytes,
+        gpu.target_trig_table_hits,
+        gpu.target_trig_table_misses,
+        gpu.target_trig_asset_buffers,
+        gpu.shadow_pairs,
+        gpu.preparer_buffers,
+        gpu.preparer_buffer_bytes,
+        gpu.arena_misses_new_id,
+        gpu.arena_misses_forget,
+        gpu.arena_misses_size_class,
+        gpu.arena_misses_generation,
+        gpu.arena_misses_eviction,
+        gpu.arena_miss_new_id_bytes,
+        gpu.arena_miss_forget_bytes,
+        gpu.arena_miss_size_class_bytes,
+        gpu.arena_miss_generation_bytes,
+        gpu.arena_miss_eviction_bytes,
+        gpu.arena_explicit_forgets,
+        gpu.host_staged_asset_bytes, gpu.arena_bytes_resident, gpu.arena_scratch_bytes_peak,
+        gpu.arena_capacity_bytes,
+        gpu.arena_live_bytes,
+        gpu.arena_retired_bytes,
+        gpu.arena_growth_peak_bytes};
     performance_drawing_frame(&sample);
     const char* path = SDL_getenv("KFX_WGPU_DRAW_STATS");
     if (path != nullptr) {
@@ -331,6 +355,30 @@ void RendererSoftware::report_drawing()
                 "\"gpu_lens_ns\":%llu,\"gpu_present_ns\":%llu,"
                 "\"gpu_timed_passes\":%llu,\"gpu_untimed_passes\":%llu,"
                 "\"gpu_pass_union_ns\":%llu,\"arena_scratch_bytes_peak\":%llu,"
+                "\"target_trig_geometry_bytes\":%llu,"
+                "\"target_trig_table_bytes\":%llu,"
+                "\"other_asset_upload_bytes\":%llu,"
+                "\"target_trig_table_hits\":%llu,"
+                "\"target_trig_table_misses\":%llu,"
+                "\"target_trig_asset_buffers\":%llu,"
+                "\"shadow_pairs\":%llu,"
+                "\"preparer_buffers\":%llu,"
+                "\"preparer_buffer_bytes\":%llu,"
+                "\"arena_misses_new_id\":%llu,"
+                "\"arena_misses_forget\":%llu,"
+                "\"arena_misses_size_class\":%llu,"
+                "\"arena_misses_generation\":%llu,"
+                "\"arena_misses_eviction\":%llu,"
+                "\"arena_miss_new_id_bytes\":%llu,"
+                "\"arena_miss_forget_bytes\":%llu,"
+                "\"arena_miss_size_class_bytes\":%llu,"
+                "\"arena_miss_generation_bytes\":%llu,"
+                "\"arena_miss_eviction_bytes\":%llu,"
+                "\"arena_explicit_forgets\":%llu,"
+                "\"arena_capacity_bytes\":%llu,"
+                "\"arena_live_bytes\":%llu,"
+                "\"arena_retired_bytes\":%llu,"
+                "\"arena_growth_peak_bytes\":%llu,"
                 "\"rejected_commands\":%llu,\"rejected_spans\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
@@ -400,6 +448,30 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.untimed_passes),
                 static_cast<unsigned long long>(gpu.gpu_pass_union_ns),
                 static_cast<unsigned long long>(gpu.arena_scratch_bytes_peak),
+                static_cast<unsigned long long>(gpu.target_trig_geometry_bytes),
+                static_cast<unsigned long long>(gpu.target_trig_table_bytes),
+                static_cast<unsigned long long>(gpu.other_asset_upload_bytes),
+                static_cast<unsigned long long>(gpu.target_trig_table_hits),
+                static_cast<unsigned long long>(gpu.target_trig_table_misses),
+                static_cast<unsigned long long>(gpu.target_trig_asset_buffers),
+                static_cast<unsigned long long>(gpu.shadow_pairs),
+                static_cast<unsigned long long>(gpu.preparer_buffers),
+                static_cast<unsigned long long>(gpu.preparer_buffer_bytes),
+                static_cast<unsigned long long>(gpu.arena_misses_new_id),
+                static_cast<unsigned long long>(gpu.arena_misses_forget),
+                static_cast<unsigned long long>(gpu.arena_misses_size_class),
+                static_cast<unsigned long long>(gpu.arena_misses_generation),
+                static_cast<unsigned long long>(gpu.arena_misses_eviction),
+                static_cast<unsigned long long>(gpu.arena_miss_new_id_bytes),
+                static_cast<unsigned long long>(gpu.arena_miss_forget_bytes),
+                static_cast<unsigned long long>(gpu.arena_miss_size_class_bytes),
+                static_cast<unsigned long long>(gpu.arena_miss_generation_bytes),
+                static_cast<unsigned long long>(gpu.arena_miss_eviction_bytes),
+                static_cast<unsigned long long>(gpu.arena_explicit_forgets),
+                static_cast<unsigned long long>(gpu.arena_capacity_bytes),
+                static_cast<unsigned long long>(gpu.arena_live_bytes),
+                static_cast<unsigned long long>(gpu.arena_retired_bytes),
+                static_cast<unsigned long long>(gpu.arena_growth_peak_bytes),
                 static_cast<unsigned long long>(counts.rejected_commands),
                 static_cast<unsigned long long>(counts.rejected_spans));
             fclose(output);
