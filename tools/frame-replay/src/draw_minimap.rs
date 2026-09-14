@@ -366,8 +366,10 @@ impl DrawRenderer {
         } else {
             let before = packer.uploaded_bytes();
             bases[0] = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
-            for i in 1..4 {
-                bases[i] = bases[0] + h[11 + i];
+            if h[0] == 0 {
+                for i in 1..4 {
+                    bases[i] = bases[0] + h[11 + i];
+                }
             }
             if enabled && packer.uploaded_bytes() != before {
                 uploaded = std::array::from_fn(|i| ranges[i].len() as u64 * 4);
@@ -459,6 +461,51 @@ impl DrawRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shader_and_validated_segment_ranges() {
+        let module = wgpu::naga::front::wgsl::parse_str(include_str!("draw_minimap.wgsl")).unwrap();
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+        let c = Command {
+            kind: MINIMAP,
+            ..Default::default()
+        };
+        for colours in 1..=16 {
+            let mut h = [0u32; 24];
+            h[1] = 64;
+            h[2] = 64;
+            h[5] = 32;
+            h[10] = 3;
+            h[11] = 5;
+            h[12] = 104;
+            h[13] = 360;
+            h[14] = 408;
+            h[15] = colours * 38569;
+            h[22] = 96;
+            h[23] = 1;
+            let mut bytes: Vec<u8> = h.into_iter().flat_map(u32::to_le_bytes).collect();
+            bytes.resize(104, 0);
+            bytes.extend(0..=255);
+            bytes.resize(408 + h[15] as usize, 0);
+            let v = validate(&c, &bytes, 64, 64).unwrap();
+            assert_eq!(v.ranges, [0..104, 104..360, 360..408, 408..bytes.len()]);
+            bytes[360..362].copy_from_slice(&38569u16.to_le_bytes());
+            assert!(validate(&c, &bytes, 64, 64).is_err());
+            bytes[360..362].fill(0);
+            if colours > 1 {
+                bytes[105] = bytes[104];
+                assert!(validate(&c, &bytes, 64, 64).is_err());
+                bytes[105] = 1;
+            }
+            bytes.pop();
+            assert!(validate(&c, &bytes, 64, 64).is_err());
+        }
+    }
+
     #[test]
     fn exact_identity_layout_and_style_lru() {
         let mut arena = arena::Arena::new(32 << 20);
