@@ -87,7 +87,6 @@ bool PlatformLinux::VideoInit()
 {
     if (game_control_enabled())
     {
-        // Agent mode: the window must never steal focus from the desktop.
         SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
         SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
         SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");

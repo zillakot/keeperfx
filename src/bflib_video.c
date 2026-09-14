@@ -27,6 +27,7 @@
 #include "bflib_vidsurface.h"
 #include "kfx/platform/PlatformManager.h"
 #include "kfx/renderer/RendererManager.h"
+#include "game_control.h"
 
 #include "keeperfx.hpp"
 
@@ -573,7 +574,7 @@ TbResult LbScreenSetup(TbScreenMode mode, TbScreenCoord width, TbScreenCoord hei
         {
           LbMouseChangeSpriteAndHotspot(msspr, hot_x, hot_y);
         }
-        if (lbMouseGrab && !IsMouseInsideWindow())
+        if (lbMouseGrab && !game_control_enabled() && !IsMouseInsideWindow())
         {
             PlatformManager_WarpCursor(mdinfo->Width / 2, mdinfo->Height / 2);
         }

@@ -11,16 +11,17 @@ pointer events pass through the SDL event dispatcher and the normal game input
 handlers. This proves game input handling, not physical keyboard/mouse delivery or
 OS accessibility permissions.
 
-This is **agent mode**: the session ignores physical keyboard and mouse events, never
-grabs or warps the host cursor, and its window does not take keyboard focus from the
-desktop, so an agent can drive the game while you keep working in another app.
-`state` reports the window's real OS focus in `focused` and SDL's cursor capture in
-`grabbed`; in agent mode both stay false. `focus` raises the window without
-activating it.
+Every control-session launch is **agent mode**: the session ignores physical
+keyboard and mouse events, never grabs or warps the host cursor, and its window
+does not take keyboard focus from the desktop, so an agent can drive the game
+while you keep working in another app. `state` reports the window's real OS focus
+in `focused` and SDL's cursor capture in `grabbed`; in agent mode both stay false.
+`focus` raises the window without activating it. The game cursor starts at the
+window centre rather than following the host pointer.
 
 ```sh
 python3 scripts/game-control.py launch --out out/control-example --backend wgpu --verify
-python3 scripts/game-control.py launch --out out/agent-session --level 1   # agent mode
+python3 scripts/game-control.py launch --out out/agent-session --level 1
 python3 scripts/game-control.py snapshot --session out/control-example/session.json
 python3 scripts/game-control.py click 320 345 --until frontend=27 --session out/control-example/session.json
 python3 scripts/game-control.py key Escape --until frontend=1 --session out/control-example/session.json

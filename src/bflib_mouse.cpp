@@ -32,6 +32,7 @@
 #include "bflib_vidraw.h"
 #include "bflib_mshandler.hpp"
 #include "bflib_inputctrl.h"
+#include "game_control.h"
 #include "post_inc.h"
 
 #ifdef __cplusplus
@@ -116,7 +117,10 @@ TbResult LbMouseSetPosition(long x, long y)
   {
     return Lb_FAIL;
   }
-  PlatformManager_WarpCursor((int)x, (int)y);
+  if (!game_control_enabled())
+  {
+    PlatformManager_WarpCursor((int)x, (int)y);
+  }
   return Lb_SUCCESS;
 }
 

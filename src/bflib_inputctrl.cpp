@@ -607,6 +607,11 @@ void LbMouseCheckPosition(TbBool grab_state_changed)
                 {
                     LbMoveGameCursorToHostCursor();
                 }
+                else
+                {
+                    // Host pointer is elsewhere: centre the game cursor without moving it.
+                    LbMouseSetPositionInitial(lbDisplay.PhysicalScreenWidth/2, lbDisplay.PhysicalScreenHeight/2);
+                }
             }
             else if (grab_state_changed) // if release grab, move cursor appropriately
             {
@@ -619,32 +624,30 @@ void LbMouseCheckPosition(TbBool grab_state_changed)
     }
 }
 
+static void LbLogMouseGrab(TbBool previousGrabState, TbBool controlled)
+{
+    // Both grab flags start true, so an unchanged init would otherwise leave the
+    // normal launch with no observable at all.
+    static TbBool everLogged = false;
+    if (everLogged && (previousGrabState == lbMouseGrabbed))
+        return;
+    everLogged = true;
+    SYNCLOG("Mouse grab %d (intent %d, control %d)", (int)lbMouseGrabbed, (int)lbMouseGrab, (int)(controlled != 0));
+}
+
 void LbSetMouseGrab(TbBool grab_mouse)
 {
     IWindowSystem* ws = GetSDLWindowSystem();
     if (!ws->HasOSCursor()) // consoles will have no OS cursor to grab or hide
         return;
-    // First call is always logged: both grab flags start true, so an unchanged
-    // init would otherwise leave the normal launch with no observable at all.
-    static TbBool grabLogged = false;
+    TbBool controlled = game_control_enabled();
     TbBool previousGrabState = lbMouseGrabbed;
-    if (game_control_enabled()) {
-        lbMouseGrabbed = false;
-        ws->SetCursorGrab(false);
-        if (!grabLogged || (previousGrabState != lbMouseGrabbed))
-        {
-            grabLogged = true;
-            SYNCLOG("Mouse grab %d (intent %d, control %d)", (int)lbMouseGrabbed, (int)lbMouseGrab, 1);
-        }
-        return;
-    }
-    lbMouseGrabbed = grab_mouse;
-    if (!grabLogged || (previousGrabState != lbMouseGrabbed))
+    lbMouseGrabbed = controlled ? false : grab_mouse;
+    LbLogMouseGrab(previousGrabState, controlled);
+    if (!controlled)
     {
-        grabLogged = true;
-        SYNCLOG("Mouse grab %d (intent %d, control %d)", (int)lbMouseGrabbed, (int)lbMouseGrab, 0);
+        ws->SetUseRelativeMouse(use_relative_mouse_mode());
     }
-    ws->SetUseRelativeMouse(use_relative_mouse_mode());
     if (lbMouseGrabbed)
     {
         LbMouseCheckPosition((previousGrabState != lbMouseGrabbed));
