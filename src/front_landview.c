@@ -974,12 +974,14 @@ TbBool load_map_and_window(LevelNumber lvnum)
     }
     map_screen = &game.land_map_start;
     // Texture blocks memory isn't used here, so reuse it instead of allocating
+    // Bumped on both sides of the load so a mid-write cache entry is invalidated too.
     kfx_render_assets_changed();
     unsigned char* ptr = block_mem;
     memcpy(frontend_backup_palette, &frontend_palette, PALETTE_SIZE);
     // Now prepare window sprite file name and load the file
     fname = prepare_file_fmtpath(FGrp_LandView,"%s.dat",land_window);
     map_window_len = LbFileLoadAt(fname, ptr);
+    kfx_render_assets_changed();
     if (map_window_len < (int32_t)(WINDOW_Y_SIZE*sizeof(int32_t)))
     {
         ERRORLOG("Unable to load Land Map Window \"%s.dat\"",land_window);

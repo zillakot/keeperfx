@@ -24,9 +24,8 @@ DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "checkpoint_copy_bytes", "validation_waits", "upload_bytes", "readback_bytes",
                     "full_readbacks", "full_readback_bytes", "buffers", "buffer_bytes",
-                    "batches", "commands", "ordered_sprites", "gpu_span_ns", "gpu_spans",
-                    "arena_bytes_resident")
-DRAWING_GAUGES = ("arena_bytes_resident",)
+                    "batches", "commands", "ordered_sprites", "host_staged_asset_bytes")
+DRAWING_GAUGES = ("host_staged_asset_bytes",)
 SETTINGS = {
     "DELTA_TIME": "ON", "TURNS_PER_SECOND": "20", "FRAMES_PER_SECOND": "60", "VSYNC": "OFF",
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
@@ -44,9 +43,9 @@ LIMITATIONS = [
 DRAWING_LIMITATIONS = [
     "Drawing counters are deltas between consecutive presented frames inside the measured window; the first presentation only establishes the baseline, so there is one fewer counter frame than presentation sample.",
     "wait_ns is host time blocked inside device polls, not GPU execution time; it is already included in the enclosing draw and presentation wall-clock scopes.",
-    "gpu_span_ns is GPU execution time reported by timestamp queries and is distinct from every host wall-clock column; zero spans mean no timestamped pass was recorded, not zero GPU work.",
+    "GPU execution time is not implemented: no counter here is a GPU timing, and none may be read as one.",
     "Counters cover the drawing context the bridge owns. Presenter surface acquisition and any drawing done outside that context are not counted.",
-    "arena_bytes_resident is a gauge sampled at frame end, not a per-frame delta, so its window total is meaningless.",
+    "host_staged_asset_bytes is a host-side gauge sampled at frame end: the CPU copies the drawing context stages, not GPU memory, and not a per-frame delta, so its window total is meaningless.",
 ]
 
 
@@ -222,6 +221,8 @@ def summarize(output, args):
 
 def drawing_distribution(values, gauge=False):
     ordered = sorted(values)
+    if not ordered:
+        raise RuntimeError("drawing counter series is empty")
     def percentile(percent):
         index = (len(ordered) - 1) * percent / 100
         low, high = math.floor(index), math.ceil(index)
@@ -340,12 +341,9 @@ def write_report(output, report):
                 lines.append(f"| {name} | {stats['min']} | {stats['mean']:.2f} | {stats['p95']:.2f} | "
                              f"{stats['max']} | {total} |")
             waits = drawing["per_frame"]["wait_ns"]
-            spans = drawing["per_frame"]["gpu_span_ns"]
             lines += ["", f"Blocking host wait: {waits['mean'] / 1_000_000:.3f} ms mean, "
-                      f"{waits['p95'] / 1_000_000:.3f} ms p95 per frame. "
-                      + (f"GPU time from timestamp queries: {spans['mean'] / 1_000_000:.3f} ms mean per frame "
-                         f"over {drawing['per_frame']['gpu_spans']['total']} timestamped passes."
-                         if spans["total"] else "GPU timestamp queries recorded no pass; no GPU time is available.")]
+                      f"{waits['p95'] / 1_000_000:.3f} ms p95 per frame. No GPU execution time is "
+                      "collected; every column above is host-side."]
     lines += ["", *[f"- {item}" for item in report["limitations"]], "",
               f"Engine SHA256: `{report['engine_sha256']}`", f"Asset content SHA256: `{report['assets']['sha256']}`", "",
               "Exact request, platform, content identities, seeds and actual settings: report.json. Samples: raw.csv."]

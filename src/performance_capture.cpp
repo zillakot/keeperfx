@@ -78,11 +78,14 @@ std::string json_quote(const std::string& value)
 
 constexpr int DrawingCounterCount = sizeof(PerformanceDrawingCounters) / sizeof(unsigned long long);
 constexpr int DrawingGaugeCount = 1;
+/* Names must stay in PerformanceDrawingCounters member order; gauges come last. */
 const char* const drawing_counter_names[DrawingCounterCount] = {
     "submits", "dispatches", "waits", "wait_ns", "checkpoints", "checkpoint_copy_bytes",
     "validation_waits", "upload_bytes", "readback_bytes", "full_readbacks", "full_readback_bytes",
-    "buffers", "buffer_bytes", "batches", "commands", "ordered_sprites", "gpu_span_ns",
-    "gpu_spans", "arena_bytes_resident"};
+    "buffers", "buffer_bytes", "batches", "commands", "ordered_sprites",
+    "host_staged_asset_bytes"};
+static_assert(sizeof(PerformanceDrawingCounters) == DrawingCounterCount * sizeof(unsigned long long),
+    "drawing counters must be a packed array of unsigned long long");
 
 struct Profile {
     const char* output = std::getenv("KFX_PERF_OUTPUT");
@@ -281,6 +284,7 @@ void performance_prepare_turn(void)
     p.start_state = state();
     p.start_turn = get_gameturn();
     p.start_resources = resources();
+    p.drawing_frames.reserve(p.turns * 4);
     p.active = true;
 }
 
@@ -369,11 +373,15 @@ void performance_drawing_backend(const char* backend)
     Profile& p = profile();
     if (!p.active) return;
     const std::string value = backend ? backend : "unknown";
-    if (p.drawing_backend.empty()) p.drawing_backend = value;
-    else if (p.drawing_backend != value &&
-        p.drawing_backend.find('+' + value) == std::string::npos &&
-        p.drawing_backend.compare(0, value.size(), value) != 0)
-        p.drawing_backend += '+' + value;
+    if (p.drawing_backend.empty()) { p.drawing_backend = value; return; }
+    for (size_t start = 0; start <= p.drawing_backend.size();) {
+        const size_t end = p.drawing_backend.find('+', start);
+        const size_t stop = end == std::string::npos ? p.drawing_backend.size() : end;
+        if (p.drawing_backend.compare(start, stop - start, value) == 0) return;
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    p.drawing_backend += '+' + value;
 }
 
 void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulative)

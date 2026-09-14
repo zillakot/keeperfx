@@ -995,9 +995,7 @@ pub struct DrawCounters {
     wait_ns: u64,
     buffers: u64,
     buffer_bytes: u64,
-    gpu_span_ns: u64,
-    gpu_spans: u64,
-    arena_bytes_resident: u64,
+    host_staged_asset_bytes: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1027,9 +1025,7 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 wait_ns: counters.wait_ns,
                 buffers: counters.buffers,
                 buffer_bytes: counters.buffer_bytes,
-                gpu_span_ns: counters.gpu_span_ns,
-                gpu_spans: counters.gpu_spans,
-                arena_bytes_resident: drawing.resident_resource_bytes(),
+                host_staged_asset_bytes: drawing.staged_asset_bytes(),
             });
             Ok(Some(1))
         });

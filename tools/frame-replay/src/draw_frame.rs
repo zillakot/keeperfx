@@ -245,7 +245,8 @@ impl DrawRenderer {
     fn drain_releases(&mut self, frame: &mut QueuedFrame) {
         for id in frame.released_resources.drain() {
             if let Some(released) = self.resources.remove(&id) {
-                self.resource_bytes -= released.bytes.len();
+                debug_assert!(self.resource_bytes >= released.bytes.len());
+                self.resource_bytes = self.resource_bytes.saturating_sub(released.bytes.len());
             }
         }
         for id in frame.released_targets.drain(..) {
@@ -429,6 +430,7 @@ mod tests {
             "checkpoint copies and the batch must submit"
         );
         assert_eq!(after.dispatches, 1);
+        assert_eq!(draw.staged_asset_bytes(), 64);
         assert_eq!(after.waits, 0);
         assert_eq!(after.wait_ns, 0);
         assert!(after.buffers > baseline.buffers);
@@ -447,7 +449,7 @@ mod tests {
         assert_eq!(read.readback_bytes, 16 * 16 * 4);
         draw.release_resource(source).unwrap();
         assert_eq!(draw.resource_bytes, 0);
-        assert!(draw.counters().gpu_spans == 0 && draw.counters().gpu_span_ns == 0);
+        assert_eq!(draw.staged_asset_bytes(), 0);
     }
 
     #[test]

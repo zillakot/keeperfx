@@ -151,7 +151,9 @@ GPU-owned `u32` palette index per pixel. CPU tile lists retain submission order;
 each GPU invocation exclusively owns a destination pixel. The live integration
 currently synchronizes that target with remaining CPU drawing. Full GPU target
 ownership now has a queued-frame implementation; complete native coverage and
-performance acceptance remain open.
+performance acceptance remain open. The target architecture for that path — one
+command stream, one asset arena, one encoder and one submit per frame — is the
+[single-stream wgpu renderer design](../architecture/wgpu-single-stream-renderer.md).
 
 ### Active delivery: full wgpu drawing
 

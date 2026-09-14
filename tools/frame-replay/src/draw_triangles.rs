@@ -177,6 +177,7 @@ impl DrawRenderer {
             pass.set_bind_group(0, &validation, &[]);
             pass.dispatch_workgroups(target.height.div_ceil(64), commands.len() as u32, 1);
         }
+        self.counters.dispatches += 1;
         if let Some(staging) = &staging {
             encoder.copy_buffer_to_buffer(&status, 0, staging, 0, 4);
         }

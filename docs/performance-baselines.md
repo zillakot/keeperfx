@@ -152,22 +152,26 @@ for queue submits, full-target compute dispatches, blocking device polls and
 their measured host wait time, frame checkpoints and GPU-to-GPU checkpoint copy
 bytes, aggregate validation waits, command and asset upload bytes, GPU readback
 bytes, full-target readbacks, buffer allocations and bytes, batches, commands and
-ordered sprites. `arena_bytes_resident` is a gauge sampled at frame end, so its
-window total is meaningless.
+ordered sprites. `dispatches` counts every compute dispatch the drawing context
+issues, including the single-workgroup ordered-sprite passes.
+`host_staged_asset_bytes` is a gauge sampled at frame end holding the CPU copies
+the drawing context stages, not GPU memory, so its window total is meaningless.
 
 The first presentation only establishes the counter baseline, so there is exactly
 one fewer counter frame than presentation sample. `wait_ns` is host time blocked
 inside device polls and is already contained in the enclosing `draw` and
-`presentation` wall-clock scopes; it must not be added to them. `gpu_span_ns` and
-`gpu_spans` are the separate GPU-time column and stay zero on this hardware: the
-Metal adapter exposes `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`,
-so a timestamp per submission cannot be recorded, and the copy-only submissions
-have no pass to carry `timestamp_writes`. No GPU execution time is therefore
-available, and no host column may be presented as one.
+`presentation` wall-clock scopes; it must not be added to them.
+
+**GPU execution time is not implemented.** It was not attempted because the Metal
+adapter exposes `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a
+timestamp per submission cannot be recorded, and the copy-only submissions carry no
+pass for `timestamp_writes`. No counter here is a GPU timing and none may be read
+as one.
 
 Counters cover the drawing context the bridge owns. Surface acquisition,
-presentation by the Rust presenter and any work outside that context are not
-counted, so the counters explain the drawing scopes rather than the whole frame.
+presentation by the Rust presenter, and a cursor that owns its own drawing context
+rather than borrowing the bridge's are not counted, so the counters explain the
+drawing scopes rather than the whole frame.
 
 ## Collection bounds and outputs
 

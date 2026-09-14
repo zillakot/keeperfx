@@ -460,11 +460,19 @@ int WgpuTerrainBridge::Sink(void* context, const KfxGpolyTarget* target,
     return result;
 }
 
+/* Only storage registered as an immutable asset range may be keyed by pointer;
+ * vec_map can also point at mutable scratch, which must keep content comparison. */
+const void* WgpuTerrainBridge::StableKey(const void* bytes, size_t length)
+{
+    return kfx_render_asset_stable(bytes, length) ? bytes : nullptr;
+}
+
 uint64_t WgpuTerrainBridge::ResourceFor(std::vector<Resource>& cache, const void* key,
     uint64_t generation, const uint8_t* bytes, size_t length, uint32_t width, uint32_t height,
     uint32_t pitch, size_t limit)
 {
     for (const auto& resource : cache) {
+        if (resource.key != nullptr && resource.generation != generation) continue;
         if (resource.width != width || resource.height != height || resource.pitch != pitch ||
             resource.bytes.size() != length) continue;
         if (key != nullptr ? resource.key == key && resource.generation == generation
@@ -528,11 +536,11 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
     std::array<uint8_t, KFX_GPOLY_TEXTURE_BYTES> texture_bytes = {};
     for (size_t row = 0; row < 32; ++row)
         std::memcpy(texture_bytes.data() + row * 256, texture + row * 256, 32);
-    const uint64_t texture_handle = ResourceFor(m_textures, texture, kfx_render_asset_generation,
-        texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
+    const uint64_t texture_handle = ResourceFor(m_textures, StableKey(texture, TEXTURE_READ_BYTES),
+        kfx_render_asset_generation, texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
     if (texture_handle == 0) return Fail(nullptr);
-    const uint64_t fade_handle = ResourceFor(m_fades, fade, kfx_render_asset_generation,
-        fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
+    const uint64_t fade_handle = ResourceFor(m_fades, StableKey(fade, KFX_GPOLY_FADE_BYTES),
+        kfx_render_asset_generation, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
     if (fade_handle == 0) return Fail(nullptr);
     KfxWgpuDrawCommand command = {};
     command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
@@ -606,11 +614,11 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
     for (size_t row = 0; row < 32; ++row)
         std::memcpy(texture_bytes.data() + row * 256, texture + row * 256, 32);
     KfxWgpuTriangle owned = triangle;
-    owned.source = ResourceFor(m_textures, texture, kfx_render_asset_generation,
-        texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
+    owned.source = ResourceFor(m_textures, StableKey(texture, TEXTURE_READ_BYTES),
+        kfx_render_asset_generation, texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
     if (!owned.source) return Fail(nullptr);
-    owned.table = ResourceFor(m_fades, fade, kfx_render_asset_generation,
-        fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
+    owned.table = ResourceFor(m_fades, StableKey(fade, KFX_GPOLY_FADE_BYTES),
+        kfx_render_asset_generation, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
     if (!owned.table) return Fail(nullptr);
     AppendTriangle(owned);
     return KFX_GPOLY_CONSUMED;

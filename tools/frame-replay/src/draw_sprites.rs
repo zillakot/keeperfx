@@ -186,6 +186,7 @@ impl DrawRenderer {
                 pass.set_bind_group(0, &binding, &[]);
                 pass.dispatch_workgroups(1, 1, 1);
             }
+            self.counters.dispatches += 1;
             self.submit_encoder(encoder);
             self.check_status()?;
             self.counters.batches += 1;

@@ -160,8 +160,6 @@ pub struct Counters {
     pub wait_ns: u64,
     pub buffers: u64,
     pub buffer_bytes: u64,
-    pub gpu_span_ns: u64,
-    pub gpu_spans: u64,
 }
 
 pub struct DrawRenderer {
@@ -299,8 +297,9 @@ impl DrawRenderer {
         self.counters
     }
 
-    /// Live asset bytes the drawing context holds, not a window delta.
-    pub fn resident_resource_bytes(&self) -> u64 {
+    /// Host-side staged asset bytes the drawing context holds; not GPU memory and
+    /// not a window delta.
+    pub fn staged_asset_bytes(&self) -> u64 {
         self.resource_bytes as u64
     }
 
@@ -407,7 +406,8 @@ impl DrawRenderer {
             return Ok(());
         }
         let released = self.resources.remove(&id).context("unknown resource")?;
-        self.resource_bytes -= released.bytes.len();
+        debug_assert!(self.resource_bytes >= released.bytes.len());
+        self.resource_bytes = self.resource_bytes.saturating_sub(released.bytes.len());
         Ok(())
     }
 

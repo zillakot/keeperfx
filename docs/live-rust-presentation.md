@@ -239,10 +239,10 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `verified_triangles` / `verified_batches`: successfully compared triangles/batches; `verification_cpu_spans` and `verification_cpu_commands`: explicitly enabled CPU oracle work.
 - `bridge_initial_index_bytes`: native index bytes supplied for composition; `gpu_asset_upload_bytes`, `gpu_command_upload_bytes` and `gpu_api_readback_bytes`: actual widened GPU transfers, including four-byte triangle validation flags.
 
-- `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, full-target compute dispatches, blocking device polls with their measured host stall, and buffer allocations.
-- `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_arena_bytes_resident`: live asset bytes the drawing context holds, a gauge rather than a total.
+- `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations.
+- `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_host_staged_asset_bytes`: host-side staged asset bytes the drawing context holds, a gauge rather than a total, and not GPU memory.
 - `bridge_solo_batches`: the `gpu_batches` subset a single command occupied alone because its kind cannot share a submission; the floor the shadow path sets.
-- `gpu_span_ns` / `gpu_spans`: GPU execution time from timestamp queries. Both stay zero: the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable, and the copy-only submissions that make up roughly half of them carry no pass to attach `timestamp_writes` to.
+- No GPU execution time is collected. It was not attempted because the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable and the copy-only submissions carry no pass for `timestamp_writes`.
 
 Zero declined spans is not a whole-renderer CPU-drawing count. These counters
 measure work and transfers, not elapsed GPU time or whole-process memory. Keep
