@@ -22,6 +22,10 @@ struct KfxWgpuFrameCounters {
 };
 int32_t kfx_wgpu_draw_frame_counters(void *drawing, struct KfxWgpuFrameCounters *output,
     char *error, size_t capacity);
+/* Non-blocking. Reports and clears the flags raised by the most recent frame whose
+ * staging read has completed, so a flag reaches the caller within two frames.
+ * Bit 0 is the frame flag; the remaining bits name the kernel check that raised it. */
+int32_t kfx_wgpu_draw_frame_status(void *drawing, uint32_t *flags, char *error, size_t capacity);
 int32_t kfx_wgpu_draw_frame_abort(void *drawing, char *error, size_t capacity);
 #ifdef __cplusplus
 }

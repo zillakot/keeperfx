@@ -60,6 +60,6 @@ int main(void)
     CHECK(kfx_wgpu_draw_submit_target_images(draw, target, images, 1, error, sizeof(error)) == -1);
     CHECK(kfx_wgpu_draw_target_release(draw, target, error, sizeof(error)) == 1);
     kfx_wgpu_draw_destroy(draw);
-    puts("GPU snapshot C ABI: exact indices, padding, ordering, release and atomic rejection passed");
+    puts("GPU snapshot C ABI: exact indices, padding, ordering, release and host rejection passed");
     return 0;
 }

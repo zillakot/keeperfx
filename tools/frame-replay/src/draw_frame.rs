@@ -84,8 +84,13 @@ impl DrawRenderer {
         self.status_pending[slot] = Some(receiver);
     }
 
-    /// Collects completed maps without polling; `acquire` already polls each frame.
+    /// Collects completed maps. The poll is the non-blocking kind wgpu needs to run
+    /// map callbacks, so a status read never waits on the queue.
     pub(super) fn status_drain(&mut self) {
+        if self.status_pending.iter().all(Option::is_none) {
+            return;
+        }
+        let _ = self.device.poll(wgpu::PollType::Poll);
         for slot in 0..STATUS_RING {
             let received = match &self.status_pending[slot] {
                 Some(receiver) => receiver.try_recv(),

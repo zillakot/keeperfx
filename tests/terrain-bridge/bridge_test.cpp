@@ -22,6 +22,9 @@ extern "C" int32_t kfx_wgpu_draw_frame_begin(void*, uint64_t, char*, size_t) { r
 extern "C" int32_t kfx_wgpu_draw_frame_flush(void*, char*, size_t) { return 1; }
 extern "C" int32_t kfx_wgpu_draw_frame_end(void*, char*, size_t) { return 1; }
 extern "C" int32_t kfx_wgpu_draw_frame_abort(void*, char*, size_t) { return 1; }
+static uint32_t fake_frame_flags = 0;
+extern "C" int32_t kfx_wgpu_draw_frame_status(void*, uint32_t* flags, char*, size_t)
+{ *flags = fake_frame_flags; fake_frame_flags = 0; return 1; }
 extern "C" uint64_t kfx_wgpu_draw_target_view(void* handle, uint64_t root, uint32_t x, uint32_t y,
     uint32_t width, uint32_t height, char*, size_t)
 {
@@ -424,6 +427,16 @@ int main()
         assert(bridge.GetCounters().bridge_initial_index_bytes == 236);
         assert(bridge.EndFrame(true));
         assert(frame_pixels == independent);
+        // A kernel flag from an earlier frame is not a failure: it counts the frame and
+        // takes the full redraw, and the bridge keeps drawing.
+        const auto before_invalid = bridge.GetCounters().invalid_frames;
+        fake_frame_flags = 1;
+        assert(bridge.BeginFrame(frame, true));
+        assert(bridge.GetCounters().invalid_frames == before_invalid + 1);
+        assert(bridge.FrameValid() && !bridge.Failed());
+        assert(bridge.SubmitNative(frame, clear, nullptr, nullptr, copy_oracle, &clear_reference) == 1);
+        assert(bridge.EndFrame(true));
+        assert(bridge.GetCounters().invalid_frames == before_invalid + 1);
     }
     {
         std::vector<uint8_t> resident_pixels(240, 0x6a), checkpoint = resident_pixels;

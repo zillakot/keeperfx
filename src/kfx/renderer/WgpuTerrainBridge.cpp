@@ -196,6 +196,15 @@ bool WgpuTerrainBridge::BeginFrame(const KfxGpolyTarget& target, bool discard)
     if (m_failed || !target.pixels || !target.width || !target.height || target.width > target.pitch)
         return false;
     if (!EndFrame(false)) return false;
+    uint32_t flags = 0;
+    if (m_context != nullptr &&
+        kfx_wgpu_draw_frame_status(m_context, &flags, m_error.data(), m_error.size()) == 1 &&
+        flags != 0) {
+        // A kernel found an out-of-range lookup one or two frames ago; that frame was
+        // presented as drawn, so recovery is the full redraw, not a rollback.
+        Invalidate();
+        FullRedraw();
+    }
     if (m_context && context_cleanup && m_frame_target.pixels &&
         (target.pixels != m_frame_target.pixels || target.width != m_frame_target.width ||
         target.height != m_frame_target.height || target.pitch != m_frame_target.pitch))
