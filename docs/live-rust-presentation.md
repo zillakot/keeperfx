@@ -30,6 +30,16 @@ link Rust. Live support on those systems, Intel Macs and universal packaging has
 not been validated. The local app bundle needs its executable refreshed separately
 when building with the CMake commands above.
 
+`KFX_PRESENT_BACKEND=wgpu-offscreen` selects the same presenter with no swapchain: it
+renders into a two-slot texture ring, takes its output size from the logical
+framebuffer rather than the window, and hides the window it still needs for events.
+Nothing reaches the screen, so this is a measurement mode and not a player feature; the
+[profiling runner](performance-baselines.md#offscreen-measurement-mode) selects it with
+`--offscreen`. One dependence on visibility survives: `SDL_HideWindow` drops focus, and
+`FREEZE_GAME_ON_FOCUS_LOST` would then park the loop
+([`game_loop.c`](../src/game_loop.c)), so that setting must be off. The runner forces it
+off in its isolated configuration; a hand-run offscreen session must do the same.
+
 Use a separate asset installation with empty `save/` and `scrshots/` directories
 for gameplay validation. The [profiling runner](performance-baselines.md) creates
 such an installation automatically and accepts `--backend original|rust`.
@@ -79,7 +89,8 @@ widths. Monitor color management remains outside byte comparison.
 
 For framebuffer presentation, indices/palette are uploaded and one pass renders directly into the acquired
 surface. Indexed texture and binding change only when input dimensions change;
-there is no retained offscreen output texture in the live path. There is no routine
+the swapchain path retains no offscreen output texture, while the offscreen
+measurement mode retains exactly two. There is no routine
 readback or GPU completion wait in this presenter path. The partial drawing bridge
 below does require synchronous readback. wgpu/driver submission and staging allocations
 still occur; retained resources do not imply allocation-free presentation.

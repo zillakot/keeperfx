@@ -22,7 +22,9 @@ from requested settings. Rust measurements require a native window; headless
 smoke tests support only the original presenter.
 
 These commands open a native game window and exit after the bounded sample.
-Keep the window visible during measurement. In an opted-in local game the hook
+Keep the window visible during measurement, or use the
+[offscreen measurement mode](#offscreen-measurement-mode), which has no swapchain and
+therefore no such requirement. In an opted-in local game the hook
 suppresses gameplay command input (including mouse-look) from startup through
 completion, while SDL event polling continues. Other applications,
 window occlusion, power mode, temperature and display configuration can affect
@@ -383,6 +385,87 @@ pairs it moves the busy 640×480 GPU-drawing ceiling from 141 to 190 FPS, with t
 1080p pair inside its run-to-run spread.
 
 Every figure here is uncapped host wall-clock timing on this host.
+
+## Offscreen measurement mode
+
+```sh
+python3 scripts/profile-game.py --scene busy --resolution 1920x1080 --backend rust \
+  --offscreen --gpu-timing --out out/perf-offscreen
+```
+
+`--offscreen` selects `KFX_PRESENT_BACKEND=wgpu-offscreen`. The presenter builds its
+adapter, device and palette pipeline exactly as the windowed path does, but renders
+into a two-slot `Bgra8Unorm` texture ring instead of a swapchain: there is no surface,
+no drawable and no dependence on an unlocked, unoccluded display. The SDL window is
+still created — the mode, event and mouse layer hangs off it — and then hidden. The
+output size comes from the logical framebuffer (`lbDrawSurface`), not the window, so
+it is independent of window size, backing scale and visibility. The engine reports
+itself as `wgpu-metal-offscreen` with present mode `Offscreen`, and the runner rejects
+either half of that pair appearing without the other. It requires `--backend rust` on
+native macOS and is incompatible with `--headless`.
+
+Pacing is unchanged for capped runs: the frame limiter is engine-side and unrelated to
+presentation. Uncapped runs are throttled by the ring instead of by `nextDrawable` —
+before a slot is rendered into again the host waits for that slot's last submission, so
+it stays at most two frames ahead of the GPU, the same depth as the swapchain's
+`desired_maximum_frame_latency`. The ring waits on the frame's own submission, taken
+from whichever renderer made it, and issues no submission of its own, so `submits` is
+one per frame on both paths and remains comparable.
+
+**Comparable with a windowed run:** `simulation`, `draw` and the whole
+`--draw-breakdown` series; every drawing volume counter (`submits`, `dispatches`,
+`upload_bytes`, `buffers`, `batches`, `commands`, `tile_entries*`, `arena_*`,
+`prepared_row_*`); and the per-pass `gpu_*_ns` timestamps with `gpu_pass_union_ns`,
+which live in the drawing context and never touched the surface.
+
+**Not comparable:** `presentation` (it loses the `nextDrawable` wait and gains the ring
+wait), `present_wait`, `frame_interval`, and therefore observed FPS on uncapped runs;
+process CPU to the extent it tracks blocking. `gpu_present_ns` is the same shader at
+the same size but writes a plain texture rather than a drawable: treat it as
+same-order, not identical.
+
+This is a measurement mode, not a player feature — nothing reaches the screen.
+`report.json` carries `presentation_mode`, `report.md` states it beside the backend
+line, and the limitation list gains the offscreen caveat.
+
+### Environment guards and the timing lock
+
+Both runners sample the environment and refuse a run they cannot measure. A refusal is
+`status: "refused"` with `refusal: {reason, detail}` in `report.json`, distinct from
+`status: "failed"`, and the sampled values are kept under `environment_guards`.
+
+- `console_locked` — a locked console session (`CGSSessionScreenIsLocked` via `ioreg`)
+  refuses the swapchain path, which cannot acquire a drawable behind it, and is allowed
+  under `--offscreen`, which is the point of that mode. A probe that fails records
+  `null`, which is not a refusal.
+- `background_load` — the one-minute load average per core above `--max-load`
+  (default `0.5`). It is a cheap guard, not a scheduler: a one-minute average both lags
+  a job that just started and trails one that just finished by about a minute, so a
+  build that ended moments ago still shows in it. Wait for it to fall rather than
+  raising the threshold. It is sampled again at the end, and a late breach annotates the
+  limitations rather than discarding a completed run.
+- `occluded` — checked after the engine exits, over the measured window only: the
+  `Rust surface acquisition skipped` marker in stderr, or zero presentation samples. A
+  skipped acquisition inside the window calls `performance_failed`, which writes that
+  marker, so the two cover the window between them. The presenter's own counts are not
+  consulted: `renderer_details` is captured once on the first frame and must stay
+  constant for the run, so it only ever carries a startup snapshot. End-of-run counts
+  appear in the `Rust presenter shutdown after N frames, M acquisition skips` line in
+  `keeperfx.log`.
+
+`--ignore-guards` records `"ignored": true` and the findings, adds a limitation line,
+and runs anyway. It never applies to the lock.
+
+Every run holds `/private/tmp/keeperfx-timing.lock` from before the isolated tree is
+prepared until `report.json` is written, so no build can start inside a timing window.
+A second invocation prints the holder and blocks; its `report.json` records
+`timing_lock` with the `waited_seconds` it spent waiting.
+`benchmark-presenters.py` takes the lock once for the whole schedule and exports
+`KFX_TIMING_LOCK_HELD=1` to each child, which records `held_by_parent: true` and does
+not re-acquire — `flock` is per open file description, so a nested acquire would
+self-deadlock. The lock file is never unlinked, because that would race a waiter that
+has already opened it. It is advisory: a build started by hand still overlaps a timing
+window.
 
 ## Repeated native A/B comparison
 

@@ -3,6 +3,7 @@ import argparse
 from datetime import datetime, timezone
 import importlib.util
 import json
+import os
 from pathlib import Path
 import statistics
 import subprocess
@@ -161,6 +162,8 @@ def main():
     parser.add_argument("--turns", type=int, default=200)
     parser.add_argument("--resolution", type=profile.capture.resolution, default=(640, 480))
     parser.add_argument("--uncapped", action="store_true", help="collect every run without the engine frame limiter")
+    parser.add_argument("--max-load", type=float, default=profile.DEFAULT_MAX_LOAD,
+                        help="abort the experiment when the one-minute load average per core exceeds this")
     parser.add_argument("--conditions", required=True, help="display/scaling, power mode and observed background load during collection")
     args = parser.parse_args()
     if sys.platform != "darwin":
@@ -180,23 +183,37 @@ def main():
                 "conditions": args.conditions, "engine_sha256": profile.sha256(engine), "runs": entries}
     profile.write_json(output / "manifest.json", manifest)
     try:
-        for entry in entries:
-            if profile.sha256(engine) != manifest["engine_sha256"]:
-                raise RuntimeError("engine changed during the experiment")
-            entry["started_utc"] = datetime.now(timezone.utc).isoformat()
-            command = [sys.executable, str(ROOT / "scripts/profile-game.py"), "--engine", str(engine), "--game-dir", str(game),
-                       "--out", str(output / entry["path"]), "--scene", entry["scene"], "--backend", entry["backend"],
-                       "--warmup-turns", str(args.warmup_turns), "--turns", str(args.turns),
-                       "--resolution", f"{args.resolution[0]}x{args.resolution[1]}"] + (["--uncapped"] if args.uncapped else [])
-            entry["command"] = command
+        # One lock and one guard sample for the whole schedule; the children are told a
+        # parent holds it, because flock is per open file description.
+        with profile.timing_lock() as lock:
+            manifest["timing_lock"] = lock
+            guards = {"max_load": args.max_load, "ignored": False, "offscreen": False,
+                      "console_locked": profile.console_locked(), "load_per_core": profile.load_per_core()}
+            guards["findings"] = profile.evaluate_guards(args, guards["console_locked"], guards["load_per_core"])
+            manifest["environment_guards"] = guards
             profile.write_json(output / "manifest.json", manifest)
-            print(f"Pair {entry['pair']}/{args.pairs}: {entry['scene']} / {entry['backend']}", flush=True)
-            subprocess.run(command, check=True)
-            entry["finished_utc"] = datetime.now(timezone.utc).isoformat()
-            entry["status"] = "complete"
-            entry["sha256"] = {name: profile.sha256(output / entry["path"] / name)
-                               for name in ("report.json", "raw.csv", "raw.csv.json", "keeperfx.cfg")}
-            profile.write_json(output / "manifest.json", manifest)
+            if guards["findings"]:
+                finding = guards["findings"][0]
+                raise RuntimeError(f"environment guard refused the experiment ({finding['reason']}): {finding['detail']}")
+            environment = dict(os.environ, KFX_TIMING_LOCK_HELD="1")
+            for entry in entries:
+                if profile.sha256(engine) != manifest["engine_sha256"]:
+                    raise RuntimeError("engine changed during the experiment")
+                entry["started_utc"] = datetime.now(timezone.utc).isoformat()
+                command = [sys.executable, str(ROOT / "scripts/profile-game.py"), "--engine", str(engine), "--game-dir", str(game),
+                           "--out", str(output / entry["path"]), "--scene", entry["scene"], "--backend", entry["backend"],
+                           "--warmup-turns", str(args.warmup_turns), "--turns", str(args.turns),
+                           "--max-load", str(args.max_load),
+                           "--resolution", f"{args.resolution[0]}x{args.resolution[1]}"] + (["--uncapped"] if args.uncapped else [])
+                entry["command"] = command
+                profile.write_json(output / "manifest.json", manifest)
+                print(f"Pair {entry['pair']}/{args.pairs}: {entry['scene']} / {entry['backend']}", flush=True)
+                subprocess.run(command, check=True, env=environment)
+                entry["finished_utc"] = datetime.now(timezone.utc).isoformat()
+                entry["status"] = "complete"
+                entry["sha256"] = {name: profile.sha256(output / entry["path"] / name)
+                                   for name in ("report.json", "raw.csv", "raw.csv.json", "keeperfx.cfg")}
+                profile.write_json(output / "manifest.json", manifest)
         reports = [load_report(output / entry["path"]) for entry in entries]
         comparison = compare(entries, reports)
         if any(report["engine_sha256"] != manifest["engine_sha256"] for report in reports):

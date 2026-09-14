@@ -1,10 +1,13 @@
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -13,8 +16,14 @@ profile = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(profile)
 
 
+LOCKED = 'x | "CGSSessionScreenIsLocked" = Yes\n'
+UNLOCKED = 'x | "CGSSessionScreenIsLocked" = No\n'
+NO_SESSION = "x | IOPlatformUUID = 0\n"
+
+
 def arguments(**changes):
-    values = dict(headless=True, backend="original", scene="quiet", warmup_turns=40, turns=20, resolution=(640, 480))
+    values = dict(headless=True, backend="original", scene="quiet", warmup_turns=40, turns=20,
+                  resolution=(640, 480), max_load=profile.DEFAULT_MAX_LOAD)
     values.update(changes)
     return argparse.Namespace(**values)
 
@@ -63,6 +72,28 @@ def drawing_metadata(output, frames, backend="wgpu", available=True):
                            "gauges": list(profile.DRAWING_GAUGES), "per_frame": per_frame}
     (output / "raw.csv.json").write_text(json.dumps(metadata))
     return metadata
+
+
+def run_runner(root, behavior, headless=True, extra=(), locked=False, load=0.0, lock_path=None):
+    engine = root / "engine"
+    engine.write_bytes(b"engine")
+    (root / "keeperfx.cfg").write_text("DELTA_TIME=OFF\nVSYNC=ON\n")
+    (root / "settings.dat").write_bytes(b"personal")
+    (root / "save").mkdir()
+    (root / "save/personal.sav").write_bytes(b"personal")
+    output = root / "out/profile"
+    argv = ["profile-game.py", "--engine", str(engine), "--game-dir", str(root),
+            "--out", str(output), "--scene", "busy", "--turns", "20", *extra]
+    if headless:
+        argv += ["--headless"]
+    with mock.patch.object(profile, "ROOT", root), mock.patch("sys.argv", argv), \
+            mock.patch.object(profile, "TIMING_LOCK_PATH", str(lock_path or root / "timing.lock")), \
+            mock.patch.object(profile, "console_locked", return_value=locked), \
+            mock.patch.object(profile, "load_per_core", return_value=load), \
+            mock.patch.object(profile.platform, "processor", return_value="test CPU"), \
+            mock.patch.object(profile.subprocess, "run", side_effect=behavior):
+        profile.main()
+    return output
 
 
 class ProfileTests(unittest.TestCase):
@@ -310,7 +341,7 @@ class ProfileTests(unittest.TestCase):
                 engine_output(Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent)
                 return subprocess.CompletedProcess(command, 0, "", "Performance capture failed: writing metadata")
             with self.assertRaisesRegex(RuntimeError, "engine reported a performance capture failure"):
-                self.run_runner(root, run)
+                run_runner(root, run)
             self.assertEqual(json.loads((root / "out/profile/report.json").read_text())["status"], "failed")
             self.assertFalse((root / "out/profile/report.md").exists())
 
@@ -352,24 +383,6 @@ class ProfileTests(unittest.TestCase):
             asset.rename(root / "data/renamed")
             self.assertNotEqual(second["sha256"], profile.asset_identity(root)["sha256"])
 
-    def run_runner(self, root, behavior, headless=True, extra=()):
-        engine = root / "engine"
-        engine.write_bytes(b"engine")
-        (root / "keeperfx.cfg").write_text("DELTA_TIME=OFF\nVSYNC=ON\n")
-        (root / "settings.dat").write_bytes(b"personal")
-        (root / "save").mkdir()
-        (root / "save/personal.sav").write_bytes(b"personal")
-        output = root / "out/profile"
-        argv = ["profile-game.py", "--engine", str(engine), "--game-dir", str(root),
-                "--out", str(output), "--scene", "busy", "--turns", "20", *extra]
-        if headless:
-            argv += ["--headless"]
-        with mock.patch.object(profile, "ROOT", root), mock.patch("sys.argv", argv), \
-                mock.patch.object(profile.platform, "processor", return_value="test CPU"), \
-                mock.patch.object(profile.subprocess, "run", side_effect=behavior):
-            profile.main()
-        return output
-
     def test_runner_isolated_success_and_busy_map(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -385,7 +398,7 @@ class ProfileTests(unittest.TestCase):
                 engine_output(Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent)
                 (work / "keeperfx.log").write_text("engine log")
                 return subprocess.CompletedProcess(command, 0, "stdout", "stderr")
-            output = self.run_runner(root, run)
+            output = run_runner(root, run)
             report = json.loads((output / "report.json").read_text())
             self.assertEqual(report["status"], "complete")
             self.assertEqual(report["request"]["level"], 20)
@@ -409,7 +422,7 @@ class ProfileTests(unittest.TestCase):
                         raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=b"partial stdout", stderr=b"partial stderr")
                     return subprocess.CompletedProcess(command, 7, "partial stdout", "partial stderr")
                 with self.assertRaisesRegex(RuntimeError, "diagnostics preserved"):
-                    self.run_runner(root, run, headless=headless)
+                    run_runner(root, run, headless=headless)
                 output = root / "out/profile"
                 self.assertEqual(json.loads((output / "report.json").read_text())["status"], "failed")
                 self.assertEqual((output / "keeperfx.log").read_text(), "failure details")
@@ -475,13 +488,214 @@ class ProfileTests(unittest.TestCase):
                 self.assertIn("FRAMES_PER_SECOND=0", (kwargs["cwd"] / "keeperfx.cfg").read_text())
                 engine_output(Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent, arguments(uncapped=True))
                 return subprocess.CompletedProcess(command, 0, "stdout", "stderr")
-            output = self.run_runner(root, run, extra=["--uncapped"])
+            output = run_runner(root, run, extra=["--uncapped"])
             report = json.loads((output / "report.json").read_text())
             self.assertTrue(report["request"]["uncapped"])
             self.assertEqual(report["settings"]["FRAMES_PER_SECOND"], "0")
             self.assertEqual(report["frame_cap"], {"uncapped": True, "requested_fps_limit": 0,
                                                    "label": "uncapped", "engine_fps_limit": 0})
             self.assertIn("FRAMES_PER_SECOND=0", (output / "keeperfx.cfg").read_text())
+
+
+class GuardTests(unittest.TestCase):
+    def test_console_lock_probe_distinguishes_locked_unlocked_and_unknown(self):
+        self.assertIs(profile.console_locked(lambda: LOCKED), True)
+        self.assertIs(profile.console_locked(lambda: UNLOCKED), False)
+        self.assertIs(profile.console_locked(lambda: NO_SESSION), False)
+
+        def failing():
+            raise subprocess.CalledProcessError(1, "ioreg")
+        self.assertIsNone(profile.console_locked(failing))
+        self.assertIsNone(profile.console_locked(lambda: None))
+
+    def test_locked_console_refuses_the_swapchain_path_and_allows_offscreen(self):
+        swapchain = arguments(headless=False, backend="rust")
+        self.assertEqual([item["reason"] for item in profile.evaluate_guards(swapchain, True, 0.0)],
+                         ["console_locked"])
+        self.assertEqual(profile.evaluate_guards(arguments(headless=False, backend="rust", offscreen=True),
+                                                 True, 0.0), [])
+        self.assertEqual(profile.evaluate_guards(swapchain, False, 0.0), [])
+        self.assertEqual(profile.evaluate_guards(swapchain, None, 0.0), [])
+
+    def test_load_per_core_threshold_refuses_only_above_the_limit(self):
+        self.assertAlmostEqual(profile.load_per_core(lambda: (4.0, 0, 0), lambda: 8), 0.5)
+        self.assertIsNone(profile.load_per_core(lambda: (_ for _ in ()).throw(OSError()), lambda: 8))
+        args = arguments(max_load=0.5)
+        self.assertEqual(profile.evaluate_guards(args, False, 0.5), [])
+        self.assertEqual([item["reason"] for item in profile.evaluate_guards(args, False, 0.51)],
+                         ["background_load"])
+        self.assertEqual(profile.evaluate_guards(args, False, None), [])
+
+    def test_occlusion_fires_on_the_marker_or_on_no_presentation_only(self):
+        self.assertEqual(profile.occlusion_reason("Rust surface acquisition skipped", 10)["reason"], "occluded")
+        self.assertEqual(profile.occlusion_reason("", 0)["reason"], "occluded")
+        self.assertIsNone(profile.occlusion_reason("", 10))
+        self.assertIsNone(profile.occlusion_reason(None, 10))
+
+    def test_a_startup_acquisition_skip_does_not_refuse_a_healthy_window(self):
+        """renderer_details is the first-frame snapshot, so its skip count says nothing
+        about the measured window; four healthy windowed runs were refused over it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def run(command, **kwargs):
+                output = Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent
+                metadata = engine_output(output)
+                metadata["renderer_details"] = json.dumps(
+                    {"adapter": "Apple M5 (Metal)", "backend": "Metal", "format": "Bgra8Unorm",
+                     "present_mode": "Immediate", "acquisition_skips": 1, "presented_frames": 0})
+                (output / "raw.csv.json").write_text(json.dumps(metadata))
+                return subprocess.CompletedProcess(command, 0, "", "")
+            report = json.loads((run_runner(root, run) / "report.json").read_text())
+            self.assertEqual(report["status"], "complete")
+            self.assertIsNone(report["environment_guards"]["occlusion"])
+
+    def test_environment_selects_the_offscreen_backend_only_when_requested(self):
+        with mock.patch.dict(os.environ, {"PATH": "/bin"}, clear=True), \
+                mock.patch.object(profile.sys, "platform", "darwin"):
+            rust = arguments(headless=False, backend="rust")
+            self.assertEqual(profile.environment_for(rust, Path("/output"))["KFX_PRESENT_BACKEND"], "wgpu")
+            offscreen = profile.environment_for(arguments(headless=False, backend="rust", offscreen=True),
+                                                Path("/output"))
+            self.assertEqual(offscreen["KFX_PRESENT_BACKEND"], "wgpu-offscreen")
+            self.assertEqual(offscreen["SDL_VIDEODRIVER"], "cocoa")
+
+    def test_summary_pairs_the_offscreen_renderer_with_the_offscreen_present_mode(self):
+        details = {"adapter": 'Apple "Test" GPU', "backend": "Metal", "format": "Bgra8Unorm"}
+        cases = {(True, "wgpu-metal-offscreen", "Offscreen"): True,
+                 (False, "wgpu-metal", "Immediate"): True,
+                 (True, "wgpu-metal", "Immediate"): False,
+                 (False, "wgpu-metal-offscreen", "Offscreen"): False,
+                 (True, "wgpu-metal-offscreen", "Immediate"): False,
+                 (False, "wgpu-metal", "Offscreen"): False}
+        for (offscreen, renderer, mode), valid in cases.items():
+            with self.subTest(offscreen=offscreen, renderer=renderer, mode=mode), \
+                    tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.object(profile.sys, "platform", "darwin"):
+                output = Path(temporary)
+                args = arguments(headless=False, backend="rust", offscreen=offscreen)
+                metadata = engine_output(output, args)
+                metadata.update(renderer=renderer, video_driver="cocoa",
+                                renderer_details=json.dumps(dict(details, present_mode=mode)))
+                (output / "raw.csv.json").write_text(json.dumps(metadata))
+                if not valid:
+                    with self.assertRaises(RuntimeError):
+                        profile.summarize(output, args)
+                    continue
+                report = profile.summarize(output, args)
+                self.assertEqual(report["presentation_mode"], "offscreen" if offscreen else "swapchain")
+                self.assertEqual(profile.OFFSCREEN_LIMITATION in report["limitations"], offscreen)
+                profile.write_report(output, dict(report, request=dict(vars(args), campaign="keeporig", level=1),
+                                                  engine_sha256="0", assets={"sha256": "0"}))
+                text = (output / "report.md").read_text()
+                self.assertIn(f"presentation mode: {'offscreen' if offscreen else 'swapchain'}.", text)
+                self.assertEqual(profile.OFFSCREEN_LIMITATION in text, offscreen)
+
+    def test_offscreen_requires_the_rust_backend_on_a_native_mac(self):
+        for extra, platform_name in ((["--backend", "original", "--offscreen"], "darwin"),
+                                     (["--backend", "rust", "--offscreen", "--headless"], "darwin"),
+                                     (["--backend", "rust", "--offscreen"], "linux")):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.object(profile.sys, "platform", platform_name):
+                root = Path(temporary)
+                engine = root / "engine"
+                engine.write_bytes(b"engine")
+                (root / "keeperfx.cfg").write_text("VSYNC=ON\n")
+                argv = ["profile-game.py", "--engine", str(engine), "--game-dir", str(root),
+                        "--out", str(root / "out/profile"), *extra]
+                with mock.patch.object(profile, "ROOT", root), mock.patch("sys.argv", argv), \
+                        self.assertRaises(SystemExit):
+                    profile.main()
+
+
+class LockAndRefusalTests(unittest.TestCase):
+    def test_excess_load_refuses_before_the_engine_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launched = []
+
+            def run(command, **kwargs):
+                launched.append(command)
+                raise AssertionError("the engine must not launch after a refusal")
+            with self.assertRaisesRegex(RuntimeError, r"refused \(background_load\)"):
+                run_runner(root, run, load=9.0)
+            self.assertEqual(launched, [])
+            report = json.loads((root / "out/profile/report.json").read_text())
+            self.assertEqual(report["status"], "refused")
+            self.assertEqual(report["refusal"]["reason"], "background_load")
+            self.assertEqual(report["environment_guards"]["load_per_core"], 9.0)
+            self.assertFalse((root / "out/profile/report.md").exists())
+
+    def test_occlusion_turns_a_completed_engine_run_into_a_refusal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def run(command, **kwargs):
+                engine_output(Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent)
+                return subprocess.CompletedProcess(command, 0, "", "Rust surface acquisition skipped")
+            with self.assertRaisesRegex(RuntimeError, r"refused \(occluded\)"):
+                run_runner(root, run)
+            report = json.loads((root / "out/profile/report.json").read_text())
+            self.assertEqual(report["status"], "refused")
+            self.assertEqual(report["refusal"]["reason"], "occluded")
+
+    def test_ignore_guards_records_the_finding_and_still_holds_the_lock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def run(command, **kwargs):
+                engine_output(Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent)
+                return subprocess.CompletedProcess(command, 0, "", "")
+            output = run_runner(root, run, load=9.0, extra=["--ignore-guards"])
+            report = json.loads((output / "report.json").read_text())
+            self.assertEqual(report["status"], "complete")
+            self.assertTrue(report["environment_guards"]["ignored"])
+            self.assertEqual([item["reason"] for item in report["environment_guards"]["findings"]],
+                             ["background_load"])
+            self.assertTrue(any("--ignore-guards was set" in item for item in report["limitations"]))
+            self.assertFalse(report["timing_lock"]["held_by_parent"])
+            self.assertTrue(Path(report["timing_lock"]["path"]).is_file())
+
+    def test_the_lock_is_exclusive_and_a_waiting_runner_records_the_wait(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "timing.lock"
+            path.touch()
+            holder = open(path, "a+")
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            with open(path, "a+") as other, self.assertRaises(OSError):
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            threading.Timer(0.3, holder.close).start()
+
+            def run(command, **kwargs):
+                engine_output(Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent)
+                return subprocess.CompletedProcess(command, 0, "", "")
+            output = run_runner(root, run, lock_path=path)
+            lock = json.loads((output / "report.json").read_text())["timing_lock"]
+            self.assertGreater(lock["waited_seconds"], 0)
+            self.assertFalse(lock["held_by_parent"])
+            self.assertEqual(json.loads(path.read_text())["pid"], os.getpid())
+
+    def test_a_parent_holder_is_recorded_without_acquiring(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "timing.lock"
+            path.touch()
+            holder = open(path, "a+")
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            try:
+                def run(command, **kwargs):
+                    engine_output(Path(kwargs["env"]["KFX_PERF_OUTPUT"]).parent)
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                started = time.monotonic()
+                with mock.patch.dict(os.environ, {"KFX_TIMING_LOCK_HELD": "1"}):
+                    output = run_runner(root, run, lock_path=path)
+                self.assertLess(time.monotonic() - started, 10)
+                lock = json.loads((output / "report.json").read_text())["timing_lock"]
+                self.assertTrue(lock["held_by_parent"])
+                self.assertEqual(lock["waited_seconds"], 0.0)
+            finally:
+                holder.close()
 
 
 if __name__ == "__main__":

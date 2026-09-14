@@ -22,6 +22,8 @@ pub struct Renderer {
     parameters: wgpu::Buffer,
     inputs: Option<Inputs>,
     target: Option<Target>,
+    last_submission: Option<wgpu::SubmissionIndex>,
+    queue_submits: u64,
     pub(crate) failure: Arc<Mutex<Option<String>>>,
 }
 
@@ -103,6 +105,8 @@ impl Renderer {
             parameters,
             inputs: None,
             target: None,
+            last_submission: None,
+            queue_submits: 0,
             failure,
         };
         renderer.check_status()?;
@@ -271,8 +275,30 @@ impl Renderer {
             pass.set_bind_group(0, &inputs.binding, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([encoder.finish()]);
+        self.last_submission = Some(self.submit(encoder.finish()));
         self.check_status()
+    }
+
+    /// The most recent submission this renderer made, for a caller that has to wait on it.
+    pub fn take_submission(&mut self) -> Option<wgpu::SubmissionIndex> {
+        self.last_submission.take()
+    }
+
+    /// Every queue submission this renderer makes passes through here, so a caller can
+    /// assert how many a frame cost.
+    pub fn submit(&mut self, buffer: wgpu::CommandBuffer) -> wgpu::SubmissionIndex {
+        self.queue_submits += 1;
+        self.queue.submit([buffer])
+    }
+
+    /// A submission carrying no work, to name a place in the queue to wait on.
+    pub fn submit_empty(&mut self) -> wgpu::SubmissionIndex {
+        self.queue_submits += 1;
+        self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>())
+    }
+
+    pub fn queue_submits(&self) -> u64 {
+        self.queue_submits
     }
 }
 

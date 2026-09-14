@@ -18,10 +18,11 @@
 bool RendererSoftware::Init()
 {
     const char* backend = SDL_getenv("KFX_PRESENT_BACKEND");
-    if (backend != nullptr && strcmp(backend, "sdl") != 0 && strcmp(backend, "wgpu") != 0)
+    if (backend != nullptr && strcmp(backend, "sdl") != 0 && strcmp(backend, "wgpu") != 0 &&
+        strcmp(backend, "wgpu-offscreen") != 0)
         WARNLOG("Unknown KFX_PRESENT_BACKEND '%s'; using SDL", backend);
 #ifndef KFX_RUST_PRESENTER
-    if (backend != nullptr && strcmp(backend, "wgpu") == 0)
+    if (backend != nullptr && (strcmp(backend, "wgpu") == 0 || strcmp(backend, "wgpu-offscreen") == 0))
         WARNLOG("Rust presentation is not built on this platform; using SDL");
 #endif
     const char* drawing = SDL_getenv("KFX_DRAW_BACKEND");
@@ -410,7 +411,10 @@ void RendererSoftware::destroy_rust_presenter()
     if (m_rust != nullptr) {
         if (m_drawing != nullptr) m_drawing->DetachPresenter();
         kfx_wgpu_details(m_rust, m_rust_details, sizeof(m_rust_details));
-        SYNCLOG("Rust presenter shutdown after %lu frames: %s", m_rust_frames, m_rust_details);
+        // The presenter's identity string is deliberately constant, so the run's
+        // counts are reported here rather than through it.
+        SYNCLOG("Rust presenter shutdown after %lu frames, %lu acquisition skips: %s",
+            m_rust_frames, m_rust_skips, m_rust_details);
         kfx_wgpu_destroy(m_rust);
         m_rust = nullptr;
     }
@@ -418,6 +422,11 @@ void RendererSoftware::destroy_rust_presenter()
         SDL_Metal_DestroyView(m_metal_view);
         m_metal_view = nullptr;
     }
+    // The SDL fallback presents into the window this mode hid, so it must come back.
+    if (m_offscreen && lbWindow != nullptr)
+        SDL_ShowWindow(lbWindow);
+    m_offscreen = false;
+    m_rust_skips = 0;
     m_rust_window = nullptr;
     m_vsync = -1;
 }
@@ -427,10 +436,19 @@ bool RendererSoftware::try_rust_presenter()
     if (m_rust_attempted) return false;
     m_rust_attempted = true;
     const char* backend = SDL_getenv("KFX_PRESENT_BACKEND");
-    if (backend == nullptr || strcmp(backend, "wgpu") != 0) return false;
+    if (backend == nullptr) return false;
+    const bool offscreen = strcmp(backend, "wgpu-offscreen") == 0;
+    if (!offscreen && strcmp(backend, "wgpu") != 0) return false;
     char error[1024] = {};
     if (SDL_getenv("KFX_WGPU_FAIL_INIT") != nullptr) {
         snprintf(error, sizeof(error), "injected initialization failure");
+    } else if (offscreen) {
+        // The logical framebuffer, not the window: the offscreen output must not depend
+        // on window size, backing scale or visibility.
+        if (lbDrawSurface != nullptr && lbDrawSurface->w > 0 && lbDrawSurface->h > 0)
+            m_rust = kfx_wgpu_create_offscreen(lbDrawSurface->w, lbDrawSurface->h, error, sizeof(error));
+        else
+            snprintf(error, sizeof(error), "no logical framebuffer for offscreen presentation");
     } else {
         m_metal_view = SDL_Metal_CreateView(lbWindow);
         int width = 0, height = 0;
@@ -446,24 +464,36 @@ bool RendererSoftware::try_rust_presenter()
         destroy_rust_presenter();
         return false;
     }
+    m_offscreen = offscreen;
+    if (offscreen && lbWindow != nullptr)
+        SDL_HideWindow(lbWindow);
     if (m_drawing != nullptr)
         m_drawing->AttachPresenter(m_rust);
     m_rust_window = lbWindow;
     kfx_wgpu_details(m_rust, m_rust_details, sizeof(m_rust_details));
-    SYNCLOG("Presenting through Rust wgpu-metal: %s", m_rust_details);
+    SYNCLOG("Presenting through Rust %s: %s", offscreen ? "wgpu-metal-offscreen" : "wgpu-metal", m_rust_details);
     return true;
 }
 
 bool RendererSoftware::present_rust_frame()
 {
     int width = 0, height = 0;
-    SDL_GetWindowSizeInPixels(lbWindow, &width, &height);
-    if (width <= 0 || height <= 0 || (SDL_GetWindowFlags(lbWindow) & SDL_WINDOW_MINIMIZED)) {
-        performance_failed("Rust presentation skipped while minimized");
-        return true;
+    if (m_offscreen) {
+        if (lbDrawSurface == nullptr || lbDrawSurface->w <= 0 || lbDrawSurface->h <= 0) {
+            performance_failed("no logical framebuffer for offscreen presentation");
+            return true;
+        }
+        width = lbDrawSurface->w;
+        height = lbDrawSurface->h;
+    } else {
+        SDL_GetWindowSizeInPixels(lbWindow, &width, &height);
+        if (width <= 0 || height <= 0 || (SDL_GetWindowFlags(lbWindow) & SDL_WINDOW_MINIMIZED)) {
+            performance_failed("Rust presentation skipped while minimized");
+            return true;
+        }
     }
     if (performance_active()) {
-        performance_renderer_info("wgpu-metal", SDL_GetCurrentVideoDriver(),
+        performance_renderer_info(m_offscreen ? "wgpu-metal-offscreen" : "wgpu-metal", SDL_GetCurrentVideoDriver(),
             lbDrawSurface->w, lbDrawSurface->h, width, height, vsync_enabled ? 1 : 0);
         performance_renderer_details(m_rust_details);
     }
@@ -527,6 +557,7 @@ bool RendererSoftware::present_rust_frame()
         kfx_wgpu_details(m_rust, m_rust_details, sizeof(m_rust_details));
     }
     if (result == 0) {
+        ++m_rust_skips;
         performance_failed("Rust surface acquisition skipped");
         return true;
     }

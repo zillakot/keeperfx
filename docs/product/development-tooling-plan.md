@@ -100,6 +100,21 @@ load above a configured threshold, and refuse the run or annotate its report.
 Formalize the timing lock file `/private/tmp/keeperfx-timing.lock` inside the
 runner so builds and other measurements never overlap a timing window.
 
+**Delivered.** `KFX_PRESENT_BACKEND=wgpu-offscreen` with `profile-game.py --offscreen`,
+the three named guards with `--max-load` and `--ignore-guards`, and the `flock` timing
+lock in both runners. See
+[offscreen measurement mode](../performance-baselines.md#offscreen-measurement-mode).
+Verified across two agents and seventeen matched busy 1080p GPU-drawing runs, windowed
+versus offscreen, all accepted by the guards; plus an uncapped offscreen run that held
+20.007 turns/s, a CPU-drawing offscreen run, the `background_load` and `occluded`
+refusals end to end, and a second invocation that blocked on the lock and recorded its
+wait. The scene has two workload modes (46 and 59 dispatches per frame) that must be
+separated before anything is compared. Within both, volume counters are identical and
+per-pass GPU times agree inside the run-to-run spread; the reviewer's interleaved
+46-dispatch comparison puts `gpu_pass_union_ns` within 0.2% and every pass within 1.4%.
+**One clause remains open:** the locked-console acceptance needs a human to lock the
+console and confirm that the offscreen run completes while the swapchain run is refused.
+
 **Acceptance.** A busy 1080p timing run completes with the console locked and
 produces the same per-pass counters as an unlocked run within the usual run
 spread; a run started under a locked session on the swapchain path, under

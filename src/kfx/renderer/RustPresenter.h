@@ -10,6 +10,8 @@ extern "C" {
  * Input buffers are borrowed for submit only; handles must not be reused after destroy.
  * Errors are NUL-terminated UTF-8. submit: 1 ready, 0 skipped, -1 terminal failure. */
 void* kfx_wgpu_create(void* layer, uint32_t width, uint32_t height, int32_t vsync, char* error, size_t capacity);
+/* Measurement mode: no surface and no drawable; presentation retires into a two-slot texture ring. */
+void* kfx_wgpu_create_offscreen(uint32_t width, uint32_t height, char* error, size_t capacity);
 int32_t kfx_wgpu_submit(void* handle, const uint8_t* indices, size_t length,
     uint32_t width, uint32_t height, uint32_t pitch, const uint8_t* palette, size_t palette_length,
     uint32_t output_width, uint32_t output_height, int32_t vsync, char* error, size_t capacity);
