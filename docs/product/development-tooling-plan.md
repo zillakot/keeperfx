@@ -64,11 +64,12 @@ Still open: a profiling script that launches an isolated game session under
 from the trace.
 
 **Acceptance.** Two earlier criteria are withdrawn because neither discriminates.
-`gpu_frame_ns <= presentation` is wrong: `presentation` is a host scope that ends at
-hand-off while the GPU runs past it, and the capped 1080p run measures 8.006 against
-4.765 ms. `frame_interval >= gpu_frame_ns >= max(gpu_*_ns)` is satisfied by the window
-sum itself, so it cannot tell an overlap-free counter from the counter it replaces, and
-it is not an invariant either — a GPU-bound frame breaks it.
+`gpu_pass_union_ns <= presentation` is wrong: `presentation` is a host scope that ends
+at hand-off while the GPU runs past it, and the capped 1080p run measures 8.006 against
+4.765 ms. `frame_interval >= gpu_pass_union_ns >= max(gpu_*_ns)` is satisfied by the
+window sum itself, so it cannot tell an overlap-free counter from the counter it
+replaces, and it is not an invariant either — a GPU-bound frame breaks it. The union is
+published only as an upper bound on GPU occupancy.
 
 What is left is a property only a serialised run can establish: **the frame interval
 must exceed the serialised GPU sum**, and **the serialised sum is the figure an
