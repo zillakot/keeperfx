@@ -8,8 +8,8 @@ extern "C" {
 /* Views retain the canonical target's storage. Coordinates remain view-relative.
  * During an active frame submit copies commands and appends them to the frame's stream;
  * accepted commands write the canonical target as the frame is recorded, with no
- * intermediate copy. Host validation still rejects a batch before any target write, and
- * a frame it invalidates requires abort. A lookup the GPU finds out of range skips its
+ * intermediate copy. Host validation rejects the frame's whole stream before any target
+ * write, and a frame it invalidates requires abort. A lookup the GPU finds out of range skips its
  * own write, leaves earlier writes intact and raises a frame flag; the frame presents as
  * drawn, kfx_wgpu_draw_frame_status reports the flag without blocking within two frames,
  * and recovery is a full redraw, not a rollback. Resource releases retain queued versions.

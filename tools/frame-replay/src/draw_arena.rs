@@ -37,6 +37,7 @@ pub(crate) struct Arena {
     scratch: Vec<(usize, u32)>,
     staging: Vec<u8>,
     clock: u64,
+    holding: bool,
     enabled: bool,
     counters: ArenaCounters,
 }
@@ -69,6 +70,7 @@ impl Arena {
             scratch: Vec::new(),
             staging: Vec::new(),
             clock: 0,
+            holding: false,
             enabled: limit_bytes >= MIN_LIMIT_BYTES,
             counters: ArenaCounters::default(),
         }
@@ -93,10 +95,23 @@ impl Arena {
     /// because a reused region is rewritten at the head of the following submit.
     pub(super) fn begin_batch(&mut self) {
         self.clock += 1;
-        self.pinned.clear();
+        if !self.holding {
+            self.pinned.clear();
+        }
         while let Some((class, offset)) = self.scratch.pop() {
             self.free[class].push(offset);
         }
+    }
+
+    /// Keeps every pin until the frame's last dispatch, because a frame packs its
+    /// whole stream before the serial routes between its raster passes open batches.
+    pub(super) fn hold(&mut self) {
+        self.holding = true;
+    }
+
+    pub(super) fn release_hold(&mut self) {
+        self.holding = false;
+        self.pinned.clear();
     }
 
     pub(super) fn forget(&mut self, id: u64) {

@@ -143,7 +143,7 @@ struct Resource {
 }
 
 #[derive(Clone)]
-struct Target {
+pub(super) struct Target {
     width: u32,
     height: u32,
     indices: wgpu::Buffer,
@@ -203,6 +203,8 @@ pub struct DrawRenderer {
     deferred_snapshot_releases: Vec<u64>,
     arena: arena::Arena,
     tile_index: TileIndex,
+    stream_commands: PersistentBuffer,
+    stream_tiles: PersistentBuffer,
     asset_generation: u64,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
@@ -328,6 +330,8 @@ impl DrawRenderer {
                     .min(limits.max_buffer_size),
             ),
             tile_index: TileIndex::default(),
+            stream_commands: PersistentBuffer::default(),
+            stream_tiles: PersistentBuffer::default(),
             asset_generation: 1,
             failure: renderer.failure.clone(),
         })
@@ -611,6 +615,64 @@ impl DrawRenderer {
         self.counters.batches += 1;
         self.counters.commands += commands.len() as u64;
 
+        Ok(())
+    }
+
+    /// One raster pass over the whole root for one segment of the frame's stream;
+    /// the segment's row of the shared tile index bounds what each pixel iterates.
+    fn raster_segment(
+        &mut self,
+        target: &Target,
+        buffers: &(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer),
+        segment: usize,
+        commands: usize,
+    ) -> Result<()> {
+        let (command_buffer, tile_buffer, asset_buffer) = buffers;
+        let tiles = self.tile_index.tiles;
+        let parameters = buffer(
+            &self.device,
+            &mut self.counters,
+            "drawing dimensions",
+            &[
+                target.width,
+                target.height,
+                commands as u32,
+                target.width.div_ceil(16),
+                target.pitch,
+                target.offset,
+                segment as u32 * tiles,
+                tiles,
+            ],
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ordered drawing segment"),
+            layout: &self.compute.get_bind_group_layout(0),
+            entries: &[
+                entry(0, &target.indices),
+                entry(1, command_buffer),
+                entry(2, asset_buffer),
+                entry(3, &parameters),
+                entry(4, tile_buffer),
+                entry(6, self.shadow_slot_binding()),
+                entry(7, self.status_binding()),
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("exclusive destination pixel ownership"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.compute);
+            pass.set_bind_group(0, &binding, &[]);
+            pass.dispatch_workgroups(target.width.div_ceil(8), target.height.div_ceil(8), 1);
+        }
+        self.counters.dispatches += 1;
+        self.submit_encoder(encoder);
+        self.check_status()?;
+        self.counters.batches += 1;
+        self.counters.commands += commands as u64;
         Ok(())
     }
 
@@ -922,6 +984,59 @@ impl ViewSpace {
             rectangle[3].wrapping_add(self.origin_y),
         ]
     }
+
+    /// A dispatch over the root no longer stops at the view edge, so the clip
+    /// carries the view rectangle the per-view dispatch used to impose.
+    fn clip(&self, rectangle: [u32; 4]) -> [u32; 4] {
+        let rebased = self.rebase(rectangle);
+        let far = [self.origin_x + self.width, self.origin_y + self.height];
+        [
+            (rebased[0] as i32).max(self.origin_x as i32) as u32,
+            (rebased[1] as i32).max(self.origin_y as i32) as u32,
+            (rebased[2] as i32).min(far[0] as i32) as u32,
+            (rebased[3] as i32).min(far[1] as i32) as u32,
+        ]
+    }
+}
+
+/// A renderer-owned buffer reused across frames, grown in powers of two.
+#[derive(Default)]
+pub(super) struct PersistentBuffer {
+    buffer: Option<wgpu::Buffer>,
+    words: u64,
+    staging: Vec<u8>,
+}
+
+fn persist(
+    slot: &mut PersistentBuffer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    counters: &mut Counters,
+    label: &str,
+    words: &[u32],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    let needed = words.len().max(1) as u64;
+    if slot.words < needed {
+        let size = needed.next_power_of_two().max(1024) * 4;
+        counters.buffers += 1;
+        counters.buffer_bytes += size;
+        slot.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        slot.words = size / 4;
+    }
+    let buffer = slot.buffer.clone().unwrap();
+    if !words.is_empty() {
+        slot.staging.clear();
+        slot.staging
+            .extend(words.iter().flat_map(|word| word.to_le_bytes()));
+        queue.write_buffer(&buffer, 0, &slot.staging);
+    }
+    buffer
 }
 
 fn pack_commands(
@@ -1073,7 +1188,7 @@ fn pack_records<'a>(
         }
         words.extend([c.kind, c.blend, 0, c.colour]);
         words.extend(view.rebase(rectangle));
-        words.extend(view.rebase(clip));
+        words.extend(view.clip(clip));
         words.extend([source_offset, table_offset, source_pitch, 0]);
         words.extend([c.source_x, c.source_y, c.source_width, c.source_height]);
         words.extend([c.start_low, c.start_high, c.step_low, c.step_high]);

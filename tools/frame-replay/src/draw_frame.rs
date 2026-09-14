@@ -22,15 +22,20 @@ pub struct FrameCounters {
     pub status_stalls: u64,
 }
 
-pub(super) enum Batch {
-    Commands(u64, Vec<Command>),
+/// Work the raster stream cannot absorb: it keeps its own pass and closes the
+/// raster range at the stream position it was recorded at.
+pub(super) enum Serial {
+    Commands(u64, Command),
     Triangles(u64, Vec<TriangleCommand>),
     Shadow(u64, u64, u32, Vec<Command>),
 }
 
 pub(super) struct QueuedFrame {
     root: u64,
-    batches: Vec<Batch>,
+    /// Every rasterizable command of the frame in order, each with the origin of
+    /// the view it was issued against, so a target change is not a boundary.
+    stream: Vec<(ViewSpace, Command)>,
+    serials: Vec<(usize, Serial)>,
     count: usize,
     released_resources: std::collections::HashSet<u64>,
     released_targets: Vec<u64>,
@@ -170,7 +175,8 @@ impl DrawRenderer {
         ensure!(target.root == root, "frame target must be canonical");
         self.frame = Some(QueuedFrame {
             root,
-            batches: Vec::new(),
+            stream: Vec::new(),
+            serials: Vec::new(),
             count: 0,
             released_resources: std::collections::HashSet::new(),
             released_targets: Vec::new(),
@@ -255,26 +261,47 @@ impl DrawRenderer {
         if commands.is_empty() {
             return Ok(true);
         }
-        let compatible = |commands: &[Command]| {
-            commands
-                .iter()
-                .all(|c| !matches!(c.kind, LENS_EFFECT | MINIMAP) && !sprites::ordered(c))
-        };
+        let view = self.view_space(target)?;
         let frame = self.frame.as_mut().unwrap();
         frame.count += commands.len();
         self.frame_counters.queued_commands += commands.len() as u64;
-        if compatible(commands)
-            && let Some(Batch::Commands(prior_target, prior)) = frame.batches.last_mut()
-            && *prior_target == target
-            && compatible(prior)
-        {
-            prior.extend_from_slice(commands);
-            return Ok(true);
+        for command in commands {
+            if matches!(command.kind, LENS_EFFECT | MINIMAP) || sprites::ordered(command) {
+                let at = frame.stream.len();
+                frame.serials.push((at, Serial::Commands(target, *command)));
+            } else {
+                frame.stream.push((view, *command));
+            }
         }
-        frame
-            .batches
-            .push(Batch::Commands(target, commands.to_vec()));
         Ok(true)
+    }
+
+    /// The origin and extent of a frame target inside the frame root. Every view
+    /// is an offset alias of the root at the root's pitch, which is what lets one
+    /// dispatch in root space serve all of them.
+    fn view_space(&self, target: u64) -> Result<ViewSpace> {
+        let frame = self.frame.as_ref().context("no active frame")?;
+        let root = self
+            .targets
+            .get(&frame.root)
+            .context("missing frame root")?;
+        let view = self.targets.get(&target).context("unknown frame target")?;
+        ensure!(
+            view.pitch == root.pitch && root.offset == 0,
+            "frame view is not an offset alias of the root"
+        );
+        let origin_x = view.offset % root.pitch;
+        let origin_y = view.offset / root.pitch;
+        ensure!(
+            origin_x + view.width <= root.width && origin_y + view.height <= root.height,
+            "frame view exceeds the root"
+        );
+        Ok(ViewSpace {
+            origin_x,
+            origin_y,
+            width: view.width,
+            height: view.height,
+        })
     }
 
     pub(super) fn enqueue_triangles(
@@ -305,15 +332,17 @@ impl DrawRenderer {
         let frame = self.frame.as_mut().unwrap();
         frame.count += commands.len();
         self.frame_counters.queued_commands += commands.len() as u64;
-        if let Some(Batch::Triangles(prior_target, prior)) = frame.batches.last_mut()
+        let at = frame.stream.len();
+        if let Some((position, Serial::Triangles(prior_target, prior))) = frame.serials.last_mut()
             && *prior_target == target
+            && *position == at
         {
             prior.extend_from_slice(commands);
             return Ok(true);
         }
         frame
-            .batches
-            .push(Batch::Triangles(target, commands.to_vec()));
+            .serials
+            .push((at, Serial::Triangles(target, commands.to_vec())));
         Ok(true)
     }
 
@@ -343,9 +372,10 @@ impl DrawRenderer {
         let frame = self.frame.as_mut().unwrap();
         frame.count += commands.len();
         self.frame_counters.queued_commands += commands.len() as u64;
+        let at = frame.stream.len();
         frame
-            .batches
-            .push(Batch::Shadow(target, source, slot, commands.to_vec()));
+            .serials
+            .push((at, Serial::Shadow(target, source, slot, commands.to_vec())));
         Ok(true)
     }
 
@@ -395,26 +425,17 @@ impl DrawRenderer {
             self.frame = Some(frame);
             anyhow::bail!("queued frame is invalid; abort required");
         }
-        if frame.batches.is_empty() {
+        if frame.stream.is_empty() && frame.serials.is_empty() {
             self.drain_releases(&mut frame);
             self.frame = Some(frame);
             return self.check_status();
         }
         self.replaying = true;
-        let mut result = (|| {
-            for batch in frame.batches.drain(..) {
-                match batch {
-                    Batch::Commands(target, commands) => self.submit(target, &commands)?,
-                    Batch::Triangles(target, commands) => {
-                        self.submit_triangles(target, &commands)?
-                    }
-                    Batch::Shadow(target, source, slot, commands) => {
-                        self.submit_shadow_batch(target, source, slot, &commands)?
-                    }
-                }
-            }
-            Ok(())
-        })();
+        let root = frame.root;
+        let stream = std::mem::take(&mut frame.stream);
+        let serials = std::mem::take(&mut frame.serials);
+        let mut result = self.replay_stream(root, &stream, serials);
+        self.arena.release_hold();
         self.replaying = false;
         if result.is_ok() {
             result = self.check_status();
@@ -430,11 +451,130 @@ impl DrawRenderer {
             }
         }
         frame.invalid = result.is_err();
-        frame.batches.clear();
         frame.count = 0;
         self.drain_releases(&mut frame);
         self.frame = Some(frame);
         result
+    }
+
+    /// Replays the frame as one command stream in root space: a raster dispatch per
+    /// serial segment over a single tile index, with the serial work in place.
+    fn replay_stream(
+        &mut self,
+        root: u64,
+        stream: &[(ViewSpace, Command)],
+        serials: Vec<(usize, Serial)>,
+    ) -> Result<()> {
+        self.check_status()?;
+        let limit = self.storage_limit() as usize;
+        let target = self
+            .targets
+            .get(&root)
+            .context("missing frame root")?
+            .clone();
+        let dispatch_limit = self.device.limits().max_compute_workgroups_per_dimension;
+        ensure!(
+            target.width.div_ceil(8) <= dispatch_limit
+                && target.height.div_ceil(8) <= dispatch_limit,
+            "drawing dispatch exceeds device limit"
+        );
+        let mut boundaries = Vec::new();
+        let mut prior = 0;
+        for (at, _) in &serials {
+            if *at > prior {
+                boundaries.push(*at);
+                prior = *at;
+            }
+        }
+        if stream.len() > prior {
+            boundaries.push(stream.len());
+        }
+        let mut raster = None;
+        if !boundaries.is_empty() {
+            self.arena.hold();
+            let mut packer = asset_packer(
+                &self.device,
+                &self.queue,
+                &mut self.arena,
+                &mut self.counters,
+                self.asset_generation,
+                limit,
+            );
+            let words = pack_records(
+                &mut packer,
+                stream.iter().map(|(view, command)| (command, *view)),
+                stream.len(),
+                &self.resources,
+                limit,
+            )?;
+            let assets = packer.finish();
+            self.tile_index.build(
+                &mut self.counters,
+                &words,
+                &boundaries,
+                target.width,
+                target.height,
+                limit,
+            )?;
+            let commands = persist(
+                &mut self.stream_commands,
+                &self.device,
+                &self.queue,
+                &mut self.counters,
+                "immutable ordered commands",
+                &words,
+                wgpu::BufferUsages::STORAGE,
+            );
+            let tiles = persist(
+                &mut self.stream_tiles,
+                &self.device,
+                &self.queue,
+                &mut self.counters,
+                "ordered tile lists",
+                self.tile_index.data(),
+                wgpu::BufferUsages::STORAGE,
+            );
+            let arena = match &assets {
+                Some(assets) => {
+                    self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+                    buffer(
+                        &self.device,
+                        &mut self.counters,
+                        "immutable asset versions",
+                        assets,
+                        wgpu::BufferUsages::STORAGE,
+                    )
+                }
+                None => self
+                    .arena
+                    .binding(&self.device, &self.queue, &mut self.counters),
+            };
+            self.counters.command_upload_bytes +=
+                (words.len() + self.tile_index.data().len()) as u64 * 4;
+            raster = Some((commands, tiles, arena));
+        }
+        let mut segment = 0;
+        let mut prior = 0;
+        for (at, serial) in serials {
+            if at > prior {
+                let buffers = raster.as_ref().unwrap();
+                self.raster_segment(&target, buffers, segment, at - prior)?;
+                segment += 1;
+                prior = at;
+            }
+            match serial {
+                Serial::Commands(target, command) => self.submit(target, &[command])?,
+                Serial::Triangles(target, commands) => self.submit_triangles(target, &commands)?,
+                Serial::Shadow(target, source, slot, commands) => {
+                    self.submit_shadow_batch(target, source, slot, &commands)?
+                }
+            }
+        }
+        if stream.len() > prior {
+            let buffers = raster.as_ref().unwrap();
+            self.raster_segment(&target, buffers, segment, stream.len() - prior)?;
+        }
+        Ok(())
     }
 
     pub fn frame_end(&mut self) -> Result<()> {
@@ -596,7 +736,11 @@ mod tests {
         assert_eq!(draw.counters().asset_upload_bytes, 0);
         assert_eq!(draw.counters().readback_bytes, 0);
         draw.frame_end().unwrap();
-        assert_eq!(draw.counters().batches, 4);
+        assert_eq!(
+            draw.counters().batches,
+            1,
+            "three views and the root are one raster pass over the root"
+        );
         assert_eq!(draw.counters().readback_bytes, 0);
         assert_eq!(draw.counters().asset_upload_bytes, 24);
         assert_eq!(draw.frame_counters().validation_waits, 0);
@@ -742,8 +886,8 @@ mod tests {
         draw.frame_abort().unwrap();
         assert_eq!(
             draw.readback(root).unwrap(),
-            vec![5; 12 * 11],
-            "batches accepted before a host rejection stay in the root"
+            expected,
+            "the frame's stream is validated as a unit, before any target write"
         );
         draw.frame_begin(root).unwrap();
         draw.submit(root, &[clear]).unwrap();
