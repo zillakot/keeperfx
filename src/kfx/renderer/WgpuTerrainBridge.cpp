@@ -9,6 +9,20 @@
 #include <exception>
 #include <limits>
 
+namespace {
+struct OwnedResource {
+    void* context = nullptr;
+    uint64_t handle = 0;
+    ~OwnedResource()
+    {
+        if (context == nullptr || handle == 0) return;
+        char error[1024] = {};
+        kfx_wgpu_draw_resource_release(context, handle, error, sizeof(error));
+    }
+    uint64_t Take() { const uint64_t taken = handle; handle = 0; return taken; }
+};
+}
+
 static WgpuTerrainBridge* active_bridge = nullptr;
 static void (*context_cleanup)(void*) = nullptr;
 extern "C" void kfx_wgpu_native_context_cleanup(void (*cleanup)(void*)) { context_cleanup = cleanup; }
@@ -26,7 +40,7 @@ extern "C" void kfx_wgpu_native_invalidate_frame(void)
 { if (active_bridge && !active_bridge->IsOracleActive()) active_bridge->InvalidateFrame(); }
 
 extern "C" void kfx_wgpu_native_flush(void)
-{ if (active_bridge != nullptr && !active_bridge->IsOracleActive()) active_bridge->Flush(); }
+{ if (active_bridge != nullptr && !active_bridge->IsOracleActive()) active_bridge->EmitterBoundary(); }
 
 extern "C" void* kfx_wgpu_native_context(void)
 { return active_bridge && !active_bridge->Failed() ? active_bridge->CursorContext() : nullptr; }
@@ -117,6 +131,8 @@ int WgpuTerrainBridge::SubmitShadow(const KfxGpolyTarget& target, const KfxWgpuD
     KfxWgpuNativeOracle oracle, void* oracle_context)
 {
     Boundary(false);
+    // The shadow route accepts only its own command, so close any pending run first.
+    Flush();
     m_shadow_scratch = scratch;
     int accepted = SubmitNative(target, command, source, table, oracle, oracle_context);
     m_shadow_scratch = nullptr;
@@ -334,8 +350,7 @@ void WgpuTerrainBridge::FullRedraw()
     if (m_queue_active) kfx_wgpu_draw_frame_abort(m_context, m_error.data(), m_error.size());
     m_queue_active = false;
     m_frame_active = false;
-    m_pending.clear();
-    m_triangles.clear();
+    ClearPending();
     m_resident_lease = false;
     m_allow_terrain = false;
     m_frame_invalid = false;
@@ -395,8 +410,9 @@ uint64_t WgpuTerrainBridge::BorrowTarget(const KfxGpolyTarget& target)
 void WgpuTerrainBridge::Boundary(bool allow_terrain)
 {
     if (!allow_terrain) {
-        if (m_frame_active) Flush();
-        else CpuBarrier();
+        // The pending record list keeps issue order, so a live frame needs no flush here.
+        if (!m_frame_active) CpuBarrier();
+        else if (!m_resident_lease || m_verify) Flush();
     } else BeginResident();
     m_allow_terrain = allow_terrain;
 }
@@ -408,8 +424,7 @@ int WgpuTerrainBridge::Fail(const char* reason)
     if (m_gpu_dirty || m_queue_active) {
         m_frame_invalid = true;
         ++m_counts.invalid_frames;
-        m_triangles.clear();
-        m_pending.clear();
+        ClearPending();
         if (m_queue_active) kfx_wgpu_draw_frame_abort(m_context, m_error.data(), m_error.size());
         m_queue_active = false;
     }
@@ -417,8 +432,7 @@ int WgpuTerrainBridge::Fail(const char* reason)
         try { ReplayPending(); }
         catch (...) {
             m_counts.rejected_triangles += m_triangles.size();
-            m_triangles.clear();
-            m_pending.clear();
+            ClearPending();
             std::snprintf(m_error.data(), m_error.size(), "immutable terrain recovery failed; target unchanged");
         }
     }
@@ -487,7 +501,7 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
     const uint8_t* texture, const uint8_t* fade)
 {
     if (m_failed || !m_allow_terrain) return KFX_GPOLY_DECLINED;
-    if (!m_triangles.empty()) Flush();
+    if (m_verify && !m_triangles.empty()) Flush();
     if (m_failed) return KFX_GPOLY_DECLINED;
     if (target.pixels == nullptr || texture == nullptr || fade == nullptr || span.x < 0 ||
         span.y < 0 || span.count == 0 || target.pitch < target.width ||
@@ -504,9 +518,7 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
         m_context = kfx_wgpu_draw_create(m_error.data(), m_error.size());
         if (m_context == nullptr) return Fail(nullptr);
     }
-    if (m_native_target.pixels != target.pixels || m_native_target.width != target.width ||
-        m_native_target.height != target.height || m_native_target.pitch != target.pitch ||
-        m_pending.size() == 32768) {
+    if (PendingTargetChanged(target) || m_pending.size() >= kPendingSpanLimit) {
         Flush();
         if (m_failed) return KFX_GPOLY_DECLINED;
     }
@@ -546,7 +558,7 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
     command.step_low = span.step_low;
     command.step_high = span.step_high;
     command.transparent = KFX_WGPU_DRAW_OPAQUE;
-    m_pending.push_back(command);
+    AppendCommand(command, 0);
     return KFX_GPOLY_CONSUMED;
 }
 
@@ -578,10 +590,8 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
     for (const auto& vertex : triangle.vertices)
         if (vertex.x < -32768 || vertex.x > 32767 || vertex.y < -32768 || vertex.y > 32767)
             return KFX_GPOLY_DECLINED;
-    if (!m_pending.empty() || m_triangles.size() == 128 ||
-        m_native_target.pixels != target.pixels || m_native_target.width != target.width ||
-        m_native_target.height != target.height || m_native_target.pitch != target.pitch ||
-        (m_rasterizer && m_rasterizer != rasterizer)) Flush();
+    if ((m_verify && !m_pending.empty()) || m_triangles.size() >= 128 ||
+        PendingTargetChanged(target) || (m_rasterizer && m_rasterizer != rasterizer)) Flush();
     if (m_failed) return KFX_GPOLY_DECLINED;
     if (m_context == nullptr) {
         if (m_fail_init) return Fail("injected GPU drawing initialization failure");
@@ -610,39 +620,73 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
     owned.table = ResourceFor(m_fades, StableKey(fade, KFX_GPOLY_FADE_BYTES),
         kfx_render_asset_generation, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 4);
     if (!owned.table) return Fail(nullptr);
-    m_triangles.push_back(owned);
+    AppendTriangle(owned);
     return KFX_GPOLY_CONSUMED;
 }
 
 bool WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
 {
-    for (const auto& triangle : m_triangles) {
-        const uint8_t* texture = nullptr;
-        const uint8_t* fade = nullptr;
-        for (const auto& resource : m_textures)
-            if (resource.handle == triangle.source) texture = resource.bytes.data();
-        for (const auto& resource : m_fades)
-            if (resource.handle == triangle.table) fade = resource.bytes.data();
-        KfxGpolyTarget target = {pixels, m_native_target.width, m_native_target.height, pitch};
-        if (!m_rasterizer(&target, &triangle, texture, fade)) return false;
-    }
-    for (const auto& command : m_pending) {
-        const uint8_t* texture = nullptr;
-        const uint8_t* fade = nullptr;
-        for (const auto& resource : m_textures)
-            if (resource.handle == command.source) texture = resource.bytes.data();
-        for (const auto& resource : m_fades)
-            if (resource.handle == command.table) fade = resource.bytes.data();
-        uint64_t position = (static_cast<uint64_t>(command.start_high) << 32) | command.start_low;
-        const uint64_t step = (static_cast<uint64_t>(command.step_high) << 32) | command.step_low;
-        uint8_t* destination = pixels + static_cast<size_t>(command.y) * pitch + command.x;
-        for (uint32_t pixel = 0; pixel < command.width; ++pixel, position += step) {
-            const uint32_t high = static_cast<uint32_t>(position >> 32);
-            const uint32_t uv = ((high << 8) | (high >> 24)) & 0x1f1f;
-            destination[pixel] = fade[texture[uv] | (position & 0xff00)];
+    // Generic commands keep their oracle in the caller, so a mixed batch has no CPU replay.
+    for (const auto& command : m_pending)
+        if (command.kind != KFX_WGPU_DRAW_GPOLY_SPAN) return false;
+    size_t commands = 0, triangles = 0;
+    for (const auto& run : m_order) {
+        for (uint32_t index = 0; index < run.count; ++index) {
+            const uint8_t* texture = nullptr;
+            const uint8_t* fade = nullptr;
+            if (run.triangles) {
+                const auto& triangle = m_triangles[triangles++];
+                for (const auto& resource : m_textures)
+                    if (resource.handle == triangle.source) texture = resource.bytes.data();
+                for (const auto& resource : m_fades)
+                    if (resource.handle == triangle.table) fade = resource.bytes.data();
+                KfxGpolyTarget target = {pixels, m_native_target.width, m_native_target.height, pitch};
+                if (!m_rasterizer(&target, &triangle, texture, fade)) return false;
+                continue;
+            }
+            const auto& command = m_pending[commands++];
+            for (const auto& resource : m_textures)
+                if (resource.handle == command.source) texture = resource.bytes.data();
+            for (const auto& resource : m_fades)
+                if (resource.handle == command.table) fade = resource.bytes.data();
+            uint64_t position = (static_cast<uint64_t>(command.start_high) << 32) | command.start_low;
+            const uint64_t step = (static_cast<uint64_t>(command.step_high) << 32) | command.step_low;
+            uint8_t* destination = pixels + static_cast<size_t>(command.y) * pitch + command.x;
+            for (uint32_t pixel = 0; pixel < command.width; ++pixel, position += step) {
+                const uint32_t high = static_cast<uint32_t>(position >> 32);
+                const uint32_t uv = ((high << 8) | (high >> 24)) & 0x1f1f;
+                destination[pixel] = fade[texture[uv] | (position & 0xff00)];
+            }
         }
     }
     return true;
+}
+
+void WgpuTerrainBridge::AppendCommand(const KfxWgpuDrawCommand& command, uint64_t source)
+{
+    if (m_order.empty() || m_order.back().triangles) m_order.push_back({false, 0});
+    ++m_order.back().count;
+    m_pending.push_back(command);
+    m_pending_sources.push_back(source);
+}
+
+void WgpuTerrainBridge::AppendTriangle(const KfxWgpuTriangle& triangle)
+{
+    if (m_order.empty() || !m_order.back().triangles) m_order.push_back({true, 0});
+    ++m_order.back().count;
+    m_triangles.push_back(triangle);
+}
+
+void WgpuTerrainBridge::ClearPending()
+{
+    char error[1024] = {};
+    for (const uint64_t source : m_pending_sources)
+        if (source != 0 && m_context != nullptr)
+            kfx_wgpu_draw_resource_release(m_context, source, error, sizeof(error));
+    m_pending_sources.clear();
+    m_pending.clear();
+    m_triangles.clear();
+    m_order.clear();
 }
 
 void WgpuTerrainBridge::ReplayPending()
@@ -661,8 +705,7 @@ void WgpuTerrainBridge::ReplayPending()
         m_counts.rejected_triangles += m_triangles.size();
         std::snprintf(m_error.data(), m_error.size(), "invalid triangle shade; immutable fallback batch rejected without target writes");
     }
-    m_triangles.clear();
-    m_pending.clear();
+    ClearPending();
 }
 
 bool WgpuTerrainBridge::PrepareNativeTarget()
@@ -732,21 +775,44 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
     const uint64_t destination = SubmissionTarget();
     if (!destination) return false;
     if (m_resident_lease) m_gpu_dirty = true;
-    if (!m_triangles.empty() && kfx_wgpu_draw_submit_triangles(m_context, destination, m_triangles.data(),
-            m_triangles.size(), m_error.data(), m_error.size()) != 1) return false;
     std::vector<uint8_t> shadow_mirror;
+    size_t routes = 0;
     if (m_shadow_scratch != nullptr) {
-        if (m_pending.size() != 1 || m_pending[0].kind != KFX_WGPU_DRAW_SHADOW) return false;
+        if (m_pending.size() != 1 || !m_triangles.empty() ||
+            m_pending[0].kind != KFX_WGPU_DRAW_SHADOW) {
+            std::snprintf(m_error.data(), m_error.size(), "shadow submission requires a solo batch");
+            return false;
+        }
         shadow_mirror.resize(65536);
         if (kfx_wgpu_draw_submit_shadow(m_context, destination, m_pending.data(), shadow_mirror.data(),
                 shadow_mirror.size(), m_error.data(), m_error.size()) != 1) return false;
         m_counts.shadow_scratch_upload_bytes += 65536;
         m_counts.shadow_scratch_readback_bytes += 65536 * sizeof(uint32_t);
-    } else if (m_pending.size() == 1 && m_pending[0].kind == KFX_WGPU_DRAW_TRANSITION) {
+        routes = 1;
+    } else if (m_pending.size() == 1 && m_triangles.empty() &&
+            m_pending[0].kind == KFX_WGPU_DRAW_TRANSITION) {
         if (kfx_wgpu_draw_submit_target_images(m_context, destination, m_pending.data(), 1,
                 m_error.data(), m_error.size()) != 1) return false;
-    } else if (kfx_wgpu_draw_submit(m_context, destination, m_pending.data(), m_pending.size(),
-            m_error.data(), m_error.size()) != 1) return false;
+        routes = 1;
+    } else if (m_order.empty()) {
+        if (kfx_wgpu_draw_submit(m_context, destination, m_pending.data(), 0,
+                m_error.data(), m_error.size()) != 1) return false;
+        routes = 1;
+    } else {
+        size_t commands = 0, triangles = 0;
+        for (const auto& run : m_order) {
+            if (run.triangles) {
+                if (kfx_wgpu_draw_submit_triangles(m_context, destination, m_triangles.data() + triangles,
+                        run.count, m_error.data(), m_error.size()) != 1) return false;
+                triangles += run.count;
+            } else if (kfx_wgpu_draw_submit(m_context, destination, m_pending.data() + commands,
+                    run.count, m_error.data(), m_error.size()) != 1) return false;
+            else commands += run.count;
+            ++routes;
+        }
+    }
+    if (m_shadow_scratch != nullptr ||
+        (m_pending.size() == 1 && NeedsSoloBatch(m_pending[0]))) ++m_counts.bridge_solo_batches;
     if (!m_resident_lease || m_verify) {
         if (kfx_wgpu_draw_readback(m_context, m_target, m_readback.data(), m_readback.size(),
                 m_width, m_error.data(), m_error.size()) != 1) return false;
@@ -816,10 +882,33 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
         }
     }
     m_counts.gpu_triangles += m_triangles.size();
-    m_triangles.clear();
-    ++m_counts.gpu_batches;
-    m_pending.clear();
+    m_counts.gpu_batches += routes;
+    ClearPending();
     return true;
+}
+
+bool WgpuTerrainBridge::NeedsSoloBatch(const KfxWgpuDrawCommand& command)
+{
+    return !(command.kind <= KFX_WGPU_DRAW_TRIG || command.kind == KFX_WGPU_DRAW_MOVIE ||
+        command.kind == KFX_WGPU_DRAW_MAP_VIEW || command.kind == KFX_WGPU_DRAW_BITMAP);
+}
+
+bool WgpuTerrainBridge::OrderedSprite(const KfxWgpuDrawCommand& command)
+{
+    /* Bit 3 of source_x marks the serial row-copy ordered sprite path. */
+    return command.kind == KFX_WGPU_DRAW_SPRITE && (command.source_x & 8u) != 0;
+}
+
+bool WgpuTerrainBridge::PendingTargetChanged(const KfxGpolyTarget& target) const
+{
+    return m_native_target.pixels != target.pixels || m_native_target.width != target.width ||
+        m_native_target.height != target.height || m_native_target.pitch != target.pitch;
+}
+
+void WgpuTerrainBridge::EmitterBoundary()
+{
+    if (m_resident_lease && !m_verify && !m_failed) return;
+    Flush();
 }
 
 int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
@@ -827,7 +916,10 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
     const KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context)
 {
     if (m_oracle_active) return 0;
-    Flush();
+    if (!m_pending.empty() || !m_triangles.empty()) {
+        if (m_verify || !m_resident_lease || NeedsSoloBatch(command) || OrderedSprite(command) ||
+            m_pending.size() >= kPendingLimit || PendingTargetChanged(target)) Flush();
+    }
     m_allow_terrain = false;
     if (m_failed) return 0;
     if (m_verify && oracle == nullptr) {
@@ -867,12 +959,14 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
                 (table && !ReadBarrier(table->bytes, table->length))) return Fail(nullptr);
         }
         KfxWgpuDrawCommand owned = command;
+        OwnedResource guard = {m_context, 0};
         if (source != nullptr) {
-            source_handle = kfx_wgpu_draw_resource_create(m_context, source->bytes, source->length,
+            guard.handle = kfx_wgpu_draw_resource_create(m_context, source->bytes, source->length,
                 source->width, source->height, source->pitch, m_error.data(), m_error.size());
-            if (source_handle == 0) return Fail(nullptr);
+            if (guard.handle == 0) return Fail(nullptr);
             m_counts.resource_snapshot_bytes += source->length;
         }
+        source_handle = guard.handle;
         if (table != nullptr) {
             table_handle = ResourceFor(m_fades, nullptr, 0, table->bytes,
                 table->length, table->width, table->height, table->pitch, 8);
@@ -882,19 +976,21 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
         owned.table = table_handle;
         bool success = false;
         if (resources_ready) {
-            m_pending.push_back(owned);
-            success = ExecutePending(oracle, oracle_context);
-            m_pending.clear();
+            AppendCommand(owned, guard.Take());
+            success = !NeedsSoloBatch(command) && !OrderedSprite(command) && !m_verify &&
+                m_resident_lease && m_pending.size() < kPendingLimit;
+            if (!success) success = ExecutePending(oracle, oracle_context);
         }
-        char release_error[1024] = {};
-        if (source_handle != 0) kfx_wgpu_draw_resource_release(m_context, source_handle, release_error, sizeof(release_error));
-        if (!success) return Fail(nullptr);
+        if (!success) {
+            ClearPending();
+            return Fail(nullptr);
+        }
         return 1;
     } catch (const std::exception& error) {
-        m_pending.clear();
+        ClearPending();
         return Fail(error.what());
     } catch (...) {
-        m_pending.clear();
+        ClearPending();
         return Fail("native command bridge exception");
     }
 }

@@ -40,6 +40,8 @@ int main()
         WgpuTerrainBridge bridge(0,false,verify,resident);
         KfxGpolyTarget target={screen.data(),320,200,327};
         bridge.BeginResident();paint(bridge,target,17);
+        // Batched commands upload the initial index image at their flush, not on submission.
+        bridge.Flush();
         auto initial=bridge.GetCounters().bridge_initial_index_bytes;
         auto snapshot=bridge.Snapshot(target,320,200,320,first.data());
         assert(snapshot);

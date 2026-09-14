@@ -146,15 +146,23 @@ Its direct GPU-target palette presentation API is tested offscreen, but the game
 still presents the synchronized native framebuffer.
 
 [WgpuTerrainBridge](../src/kfx/renderer/WgpuTerrainBridge.cpp) batches selected
-terrain between audited world-dispatch boundaries. Accepted textured gpoly calls
+terrain and generic commands between audited world-dispatch boundaries. Accepted textured gpoly calls
 copy original unsorted vertices and return before CPU sorting, setup, clipping or
 scan conversion. [GPU preparation](../tools/frame-replay/src/gpoly.rs) supplies its
 row buffer directly to the [ordered pixel pass](../tools/frame-replay/src/draw_triangles.rs);
 no prepared rows are read back to construct draw commands. Each destination pixel
 consumes the bounded triangle batch in submission order. A four-byte GPU shade
-validation flag is read back before target writes. Other bucket entries flush
-terrain first; switching between original triangles and the retained span path
-also flushes pending work. Pixel, box, HV-line and circle hooks in
+validation flag is read back before target writes. Pending terrain spans, terrain
+triangles and generic commands share one ordered record list, so the span and
+triangle paths no longer flush each other. Inside a resident frame a batch closes
+only at a kind the GPU packer accepts alone (shadow, transition, minimap, lens
+effect), an ordered sprite, a target or view change, a snapshot, readback or
+barrier, the 4,096 command cap or verification mode. A world-bucket boundary and
+an emitter head only stop terrain from continuing; outside a resident lease every
+command still flushes, so a command accepted inside a frame
+reaches the native target at the next barrier, readback or frame end rather than
+before it returns. A batch the GPU rejects loses its whole pending run, and the
+frame recovers through a full CPU redraw. Pixel, box, HV-line and circle hooks in
 [bflib_vidraw.c](../src/kfx/renderer/software/bflib_vidraw.c) use the same bridge.
 Circles execute their integer coverage recurrence on GPU. The
 [sprite adapter](../src/kfx/renderer/software/WgpuSprite.c) decodes RLE into immutable
@@ -233,6 +241,7 @@ native evidence and its source/binary limits are in the coverage ledger.
 
 - `gpu_submits`, `gpu_dispatches`, `gpu_waits`, `gpu_wait_ns`, `gpu_buffers`, `gpu_buffer_bytes`: queue submissions, compute dispatches, blocking device polls with their measured host stall, and buffer allocations.
 - `gpu_ordered_sprites`: the serial row-copy sprite subset of `gpu_sprite_commands`; `gpu_host_staged_asset_bytes`: host-side staged asset bytes the drawing context holds, a gauge rather than a total, and not GPU memory.
+- `bridge_solo_batches`: the `gpu_batches` subset a single command occupied alone because its kind cannot share a submission; the floor the shadow path sets.
 - No GPU execution time is collected. It was not attempted because the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable and the copy-only submissions carry no pass for `timestamp_writes`.
 
 Zero declined spans is not a whole-renderer CPU-drawing count. These counters
