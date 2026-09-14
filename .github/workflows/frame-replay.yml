@@ -143,6 +143,15 @@ jobs:
             -DKFX_GPU_LIBRARY="$CARGO_TARGET_DIR/debug/libkeeperfx_frame_replay.a"
           cmake --build out/cursor-tests --parallel 2
           ctest --test-dir out/cursor-tests --output-on-failure
+      - name: Verify the resident shadow chain through the real drawing C ABI
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          cmake -S tests/shadows -B out/shadow-bridge-tests \
+            -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include" \
+            -DKFX_GPU_LIBRARY="$CARGO_TARGET_DIR/debug/libkeeperfx_frame_replay.a"
+          cmake --build out/shadow-bridge-tests --target shadow_native --parallel 2
+          ctest --test-dir out/shadow-bridge-tests -R shadow_native --output-on-failure
       - name: Verify native transition snapshot ownership
         run: |
           cmake -S tests/transitions -B out/transition-bridge-tests \

@@ -2,11 +2,21 @@
 #include <cstdio>
 extern "C" int shadow_cases(FILE*, int);
 extern "C" uint64_t shadow_hash, shadow_scratch_hash;
+static WgpuTerrainBridge* active;
+// RendererSoftware answers an invalidated frame with a full CPU redraw; model that here.
+extern "C" void shadow_native_recover(void) { if (active) active->FullRedraw(); }
+static int run(WgpuTerrainBridge& bridge, int expected_accept)
+{
+    active = &bridge;
+    const int result = shadow_cases(nullptr, expected_accept);
+    active = nullptr;
+    return result;
+}
 int main() {
     uint64_t expected, expected_scratch;
     {
         WgpuTerrainBridge bridge(0, false, true);
-        if (shadow_cases(nullptr, 1)) {
+        if (run(bridge, 1)) {
             std::fprintf(stderr, "shadow bridge: %s\n", bridge.GetError());return 1;
         }
         expected = shadow_hash;
@@ -22,7 +32,7 @@ int main() {
         // Production keeps the mask chain on the GPU, so the CPU scratch is not mirrored back.
         WgpuTerrainBridge bridge(0, false, false);
         const auto &c = bridge.GetCounters();
-        if (shadow_cases(nullptr, 1) || shadow_hash != expected || bridge.Failed() ||
+        if (run(bridge, 1) || shadow_hash != expected || bridge.Failed() ||
             c.gpu_shadow_commands != 192 || c.verified_batches || c.verification_cpu_commands ||
             c.shadow_scratch_upload_bytes || c.shadow_scratch_readback_bytes ||
             c.shadow_scratch_copy_bytes) {
@@ -31,13 +41,13 @@ int main() {
     }
     {
         WgpuTerrainBridge bridge(0, true, true);
-        if (shadow_cases(nullptr, 0) || shadow_hash != expected ||
+        if (run(bridge, 0) || shadow_hash != expected ||
             shadow_scratch_hash != expected_scratch || !bridge.Failed() ||
             bridge.GetCounters().gpu_shadow_commands) return 3;
     }
     {
         WgpuTerrainBridge bridge(1, false, true);
-        if (shadow_cases(nullptr, 2) || shadow_hash != expected ||
+        if (run(bridge, 2) || shadow_hash != expected ||
             shadow_scratch_hash != expected_scratch || !bridge.Failed() ||
             bridge.GetCounters().gpu_shadow_commands != 1) return 4;
     }
