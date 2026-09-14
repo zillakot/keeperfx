@@ -11,8 +11,17 @@ pointer events pass through the SDL event dispatcher and the normal game input
 handlers. This proves game input handling, not physical keyboard/mouse delivery or
 OS accessibility permissions.
 
+Every control-session launch is **agent mode**: the session ignores physical
+keyboard and mouse events, never grabs or warps the host cursor, and its window
+does not take keyboard focus from the desktop, so an agent can drive the game
+while you keep working in another app. `state` reports the window's real OS focus
+in `focused` and SDL's cursor capture in `grabbed`; in agent mode both stay false.
+`focus` raises the window without activating it. The game cursor starts at the
+window centre rather than following the host pointer.
+
 ```sh
 python3 scripts/game-control.py launch --out out/control-example --backend wgpu --verify
+python3 scripts/game-control.py launch --out out/agent-session --level 1
 python3 scripts/game-control.py snapshot --session out/control-example/session.json
 python3 scripts/game-control.py click 320 345 --until frontend=27 --session out/control-example/session.json
 python3 scripts/game-control.py key Escape --until frontend=1 --session out/control-example/session.json
@@ -48,10 +57,10 @@ for what that evidence establishes and the remaining coverage.
 ## Operations and outcomes
 
 All commands print JSON. `state` returns frontend state, game view, turn, pause,
-focus, actual window/pixel dimensions, mouse position, active presenter and the
-control sequence counters. Frontend values include 1 (main menu), 2 (load menu),
-27 (options), and 0 during gameplay. `presenter` reports the actual active SDL or
-wgpu instance, including a fallback.
+OS focus, cursor grab, actual window/pixel dimensions, mouse position, active
+presenter and the control sequence counters. Frontend values include 1 (main
+menu), 2 (load menu), 27 (options), and 0 during gameplay. `presenter` reports
+the actual active SDL or wgpu instance, including a fallback.
 
 - `move X Y`, `click X Y --button 1`, and `drag X Y TO_X TO_Y` use absolute window
   coordinates. The dispatcher applies the same window-to-game coordinate mapping
@@ -74,8 +83,8 @@ A completed sequence means its inputs have been dispatched and released. It does
 not alone prove a UI action succeeded. Use repeated `--until FIELD=VALUE` predicates
 for actual results; values use JSON syntax, except `presenter=sdl`/`presenter=wgpu`.
 Supported fields are frontend, view, width, height, fullscreen, minimized, focused,
-paused and presenter. A predicate timeout is an error. For the launcher's configured
-game modes, starting at 640×480 windowed:
+grabbed, paused and presenter. A predicate timeout is an error. For the launcher's
+configured game modes, starting at 640×480 windowed:
 
 ```sh
 python3 scripts/game-control.py cycle-mode --until fullscreen=true --session out/control-example/session.json

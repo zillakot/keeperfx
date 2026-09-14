@@ -10,6 +10,7 @@
 #include "kfx/platform/WindowSystemSDL.h"
 #include "bflib_basics.h"
 #include "bflib_video.h"
+#include "game_control.h"
 #include <SDL3/SDL.h>
 #include <SDL3_image/SDL_image.h>
 #include "post_inc.h"
@@ -60,7 +61,9 @@ static SDL_DisplayID display_index_to_id(int index)
 
 bool WindowSystemSDL::IsAppActive() const { return m_appActive; }
 void WindowSystemSDL::OnFocusGained()     { m_appActive = true;  ApplyOsCursorPolicy(); }
-void WindowSystemSDL::OnFocusLost()       { m_appActive = false; ApplyOsCursorPolicy(); }
+// Agent mode keeps the engine "active" without OS focus so the frontend keeps
+// drawing and snapshots keep working; state reports real focus separately.
+void WindowSystemSDL::OnFocusLost()       { if (!game_control_enabled()) m_appActive = false; ApplyOsCursorPolicy(); }
 
 void WindowSystemSDL::ApplyOsCursorPolicy()
 {
@@ -286,6 +289,7 @@ bool WindowSystemSDL::CreateWindow(const char* title, int x, int y, int w, int h
         sdl3_flags |= SDL_WINDOW_FULLSCREEN;
     if (flags & KFX_WF_BORDERLESS) sdl3_flags |= SDL_WINDOW_BORDERLESS;
     if (flags & KFX_WF_HIDDEN)     sdl3_flags |= SDL_WINDOW_HIDDEN;
+    if (game_control_enabled())    sdl3_flags |= SDL_WINDOW_NOT_FOCUSABLE;
 
     lbWindow = SDL_CreateWindow(title, w, h, sdl3_flags);
     if (!lbWindow)

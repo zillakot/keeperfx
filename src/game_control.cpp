@@ -86,7 +86,8 @@ void state(VALUE *out)
     value_init_uint32(value_dict_add(out, "turn"), get_gameturn());
     value_init_int32(value_dict_add(out, "view"), get_my_player()->view_type);
     value_init_bool(value_dict_add(out, "paused"), (game.operation_flags & GOF_Paused) != 0);
-    value_init_bool(value_dict_add(out, "focused"), LbIsActive());
+    value_init_bool(value_dict_add(out, "focused"), (SDL_GetWindowFlags(lbWindow) & SDL_WINDOW_INPUT_FOCUS) != 0);
+    value_init_bool(value_dict_add(out, "grabbed"), SDL_GetWindowRelativeMouseMode(lbWindow) || SDL_GetWindowMouseGrab(lbWindow));
     value_init_bool(value_dict_add(out, "fullscreen"), (SDL_GetWindowFlags(lbWindow) & SDL_WINDOW_FULLSCREEN) != 0);
     value_init_bool(value_dict_add(out, "minimized"), (SDL_GetWindowFlags(lbWindow) & SDL_WINDOW_MINIMIZED) != 0);
     value_init_int32(value_dict_add(out, "width"), width);

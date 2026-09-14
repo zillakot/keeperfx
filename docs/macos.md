@@ -45,7 +45,9 @@ there, outside tracked source files.
 Double-click `out/game/KeeperFX.app` in Finder. Alternatively, run
 `scripts/launch-macos.command` in Terminal to skip the intro. Both use `out/game`,
 where settings, saves, screenshots and `keeperfx.log` are stored. Keep the app
-beside its game data. Quit through the game menu.
+beside its game data. Quit through the game menu. Pass `-altinput` (or set
+`CAPTURE_CURSOR=OFF` in `out/game/keeperfx.cfg`) to stop the game capturing the host
+cursor while developing.
 
 For an initial windowed setup, set these values in `out/game/keeperfx.cfg`:
 
