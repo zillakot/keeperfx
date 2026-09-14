@@ -104,6 +104,7 @@ def environment_for(args, output):
     environment.update(KFX_PRESENT_BACKEND="wgpu" if args.backend == "rust" else "sdl",
                        SDL_RENDER_VSYNC="0", KFX_PERF_OUTPUT=str(output / "raw.csv"),
                        KFX_PERF_DRAW_BREAKDOWN="1" if getattr(args, "draw_breakdown", False) else "0",
+                       KFX_WGPU_GPU_TIMING="1" if getattr(args, "gpu_timing", False) else "0",
                        KFX_PERF_TURN=str(args.warmup_turns), KFX_PERF_TURNS=str(args.turns),
                        KFX_PERF_SCENE="possession" if args.scene == "possession" else "dungeon")
     return environment
@@ -373,6 +374,7 @@ def main():
     parser.add_argument("--warmup-turns", type=int, default=40, help="earliest game turn to begin measuring (1..600)")
     parser.add_argument("--turns", type=int, default=200, help="actual simulation updates to measure (20..1200)")
     parser.add_argument("--draw-breakdown", action="store_true", help="coarse nested CPU drawing timings; compare against a matched run without this flag")
+    parser.add_argument("--gpu-timing", action="store_true", help="resolve per-pass GPU execution time into the gpu_*_ns drawing counters")
     parser.add_argument("--headless", action="store_true", help="dummy/software smoke test, not a native performance baseline")
     args = parser.parse_args()
     if args.backend == "rust" and (args.headless or sys.platform != "darwin"):
