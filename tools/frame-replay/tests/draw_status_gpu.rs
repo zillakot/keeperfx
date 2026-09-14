@@ -154,6 +154,67 @@ fn the_flagged_frame_is_presented_as_drawn() -> Result<()> {
     Ok(())
 }
 
+/// The ring holds eight slots, so a longer run reuses each of them; a stall must defer
+/// a flag to the next publish rather than lose it.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn the_status_ring_wraps_without_losing_a_flag() -> Result<()> {
+    let mut scene = Scene::new()?;
+    scene.frame(0)?;
+    let good = scene.draw.readback(scene.root)?;
+    let before = scene.draw.counters();
+    for _ in 0..24 {
+        scene.frame(0)?;
+        ensure!(
+            scene.draw.frame_status().1 == 0,
+            "a valid frame raised a flag while the ring wrapped"
+        );
+    }
+    let wrapped = scene.draw.frame_counters();
+    ensure!(
+        wrapped.status_reads + wrapped.status_stalls >= 24,
+        "the ring published fewer times than it had frames"
+    );
+    ensure!(
+        scene.draw.counters().waits == before.waits,
+        "wrapping the ring blocked on the queue"
+    );
+    scene.draw.frame_begin(scene.root)?;
+    scene.draw.submit(
+        scene.root,
+        &[Command {
+            colour: 201,
+            ..scene.clear
+        }],
+    )?;
+    scene
+        .draw
+        .submit_triangles(scene.root, &[triangle(scene.source, scene.table, 70 << 16)])?;
+    scene.draw.frame_end()?;
+    let mut flags = 0;
+    for _ in 0..=2u64 {
+        flags = scene.draw.frame_status().1;
+        if flags != 0 {
+            break;
+        }
+        scene.frame(0)?;
+    }
+    ensure!(
+        flags & FRAME_FLAG != 0,
+        "a wrapped ring lost the flag it should only have deferred"
+    );
+    ensure!(
+        scene.draw.counters().waits == before.waits,
+        "reporting the flag blocked on the queue"
+    );
+    scene.frame(0)?;
+    ensure!(
+        scene.draw.readback(scene.root)? == good,
+        "the redrawn frame must match the reference"
+    );
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires a GPU adapter"]
 fn a_production_frame_performs_no_blocking_wait() -> Result<()> {
