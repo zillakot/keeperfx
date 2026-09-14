@@ -300,7 +300,7 @@ void RendererSoftware::report_drawing()
                 "\"gpu_submits\":%llu,\"gpu_dispatches\":%llu,\"gpu_waits\":%llu,\"gpu_wait_ns\":%llu,"
                 "\"gpu_buffers\":%llu,\"gpu_buffer_bytes\":%llu,"
                 "\"gpu_ordered_sprites\":%llu,\"gpu_host_staged_asset_bytes\":%llu,"
-                "\"bridge_solo_batches\":%llu}\n",
+                "\"bridge_solo_batches\":%llu,\"rejected_commands\":%llu,\"rejected_spans\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
                 static_cast<unsigned long long>(counts.cpu_gpoly_spans), static_cast<unsigned long long>(counts.cpu_replayed_spans),
@@ -337,7 +337,9 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.buffer_bytes),
                 static_cast<unsigned long long>(counts.gpu_ordered_sprites),
                 static_cast<unsigned long long>(gpu.host_staged_asset_bytes),
-                static_cast<unsigned long long>(counts.bridge_solo_batches));
+                static_cast<unsigned long long>(counts.bridge_solo_batches),
+                static_cast<unsigned long long>(counts.rejected_commands),
+                static_cast<unsigned long long>(counts.rejected_spans));
             fclose(output);
         }
     }
