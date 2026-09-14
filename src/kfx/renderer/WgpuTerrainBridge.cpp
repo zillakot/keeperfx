@@ -417,24 +417,32 @@ void WgpuTerrainBridge::Boundary(bool allow_terrain)
     m_allow_terrain = allow_terrain;
 }
 
+void WgpuTerrainBridge::Invalidate()
+{
+    if (m_frame_invalid) return;
+    m_frame_invalid = true;
+    ++m_counts.invalid_frames;
+}
+
 int WgpuTerrainBridge::Fail(const char* reason)
 {
     if (m_failed) return KFX_GPOLY_DECLINED;
     if (reason != nullptr) std::snprintf(m_error.data(), m_error.size(), "%s", reason);
+    // Fail owns whatever is still pending: it is replayed onto the target, or the frame is
+    // invalidated so RendererSoftware redraws it. Dropping a run and staying valid is a hole.
     if (m_gpu_dirty || m_queue_active) {
-        m_frame_invalid = true;
-        ++m_counts.invalid_frames;
-        ClearPending();
+        Invalidate();
+        DiscardPending();
         if (m_queue_active) kfx_wgpu_draw_frame_abort(m_context, m_error.data(), m_error.size());
         m_queue_active = false;
-    }
-    if (!m_pending.empty() || !m_triangles.empty()) {
-        try { ReplayPending(); }
+    } else if (!m_pending.empty() || !m_triangles.empty()) {
+        bool replayed = false;
+        try { replayed = ReplayPending(); }
         catch (...) {
-            m_counts.rejected_triangles += m_triangles.size();
-            ClearPending();
+            DiscardPending();
             std::snprintf(m_error.data(), m_error.size(), "immutable terrain recovery failed; target unchanged");
         }
+        if (!replayed) Invalidate();
     }
     m_failed = true;
     ++m_counts.failures;
@@ -624,11 +632,17 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
     return KFX_GPOLY_CONSUMED;
 }
 
-bool WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
+bool WgpuTerrainBridge::PendingIsReplayable() const
 {
-    // Generic commands keep their oracle in the caller, so a mixed batch has no CPU replay.
+    // Generic commands keep their oracle in the caller, so a mixed run has no CPU replay.
     for (const auto& command : m_pending)
         if (command.kind != KFX_WGPU_DRAW_GPOLY_SPAN) return false;
+    return true;
+}
+
+bool WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
+{
+    if (!PendingIsReplayable()) return false;
     size_t commands = 0, triangles = 0;
     for (const auto& run : m_order) {
         for (uint32_t index = 0; index < run.count; ++index) {
@@ -689,23 +703,40 @@ void WgpuTerrainBridge::ClearPending()
     m_order.clear();
 }
 
-void WgpuTerrainBridge::ReplayPending()
+void WgpuTerrainBridge::DiscardPending()
 {
+    for (const auto& command : m_pending) {
+        if (command.kind == KFX_WGPU_DRAW_GPOLY_SPAN) ++m_counts.rejected_spans;
+        else ++m_counts.rejected_commands;
+    }
+    m_counts.rejected_triangles += m_triangles.size();
+    ClearPending();
+}
+
+bool WgpuTerrainBridge::ReplayPending()
+{
+    if (!PendingIsReplayable()) {
+        std::snprintf(m_error.data(), m_error.size(),
+            "batched generic commands have no CPU replay; pending run dropped for a full redraw");
+        DiscardPending();
+        return false;
+    }
     std::vector<uint8_t> recovered(static_cast<size_t>(m_native_target.width) * m_native_target.height);
     for (uint32_t row = 0; row < m_native_target.height; ++row)
         std::memcpy(recovered.data() + static_cast<size_t>(row) * m_native_target.width,
             m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch, m_native_target.width);
-    if (RasterizePending(recovered.data(), m_native_target.width)) {
-        for (uint32_t row = 0; row < m_native_target.height; ++row)
-            std::memcpy(m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch,
-                recovered.data() + static_cast<size_t>(row) * m_native_target.width, m_native_target.width);
-        m_counts.cpu_replayed_spans += m_pending.size();
-        m_counts.replayed_triangles += m_triangles.size();
-    } else {
-        m_counts.rejected_triangles += m_triangles.size();
+    if (!RasterizePending(recovered.data(), m_native_target.width)) {
         std::snprintf(m_error.data(), m_error.size(), "invalid triangle shade; immutable fallback batch rejected without target writes");
+        DiscardPending();
+        return false;
     }
+    for (uint32_t row = 0; row < m_native_target.height; ++row)
+        std::memcpy(m_native_target.pixels + static_cast<size_t>(row) * m_native_target.pitch,
+            recovered.data() + static_cast<size_t>(row) * m_native_target.width, m_native_target.width);
+    m_counts.cpu_replayed_spans += m_pending.size();
+    m_counts.replayed_triangles += m_triangles.size();
     ClearPending();
+    return true;
 }
 
 bool WgpuTerrainBridge::PrepareNativeTarget()
@@ -887,10 +918,15 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
     return true;
 }
 
+bool WgpuTerrainBridge::PacksInBatch(uint32_t kind)
+{
+    return kind <= KFX_WGPU_DRAW_TRIG || kind == KFX_WGPU_DRAW_MOVIE ||
+        kind == KFX_WGPU_DRAW_MAP_VIEW || kind == KFX_WGPU_DRAW_BITMAP;
+}
+
 bool WgpuTerrainBridge::NeedsSoloBatch(const KfxWgpuDrawCommand& command)
 {
-    return !(command.kind <= KFX_WGPU_DRAW_TRIG || command.kind == KFX_WGPU_DRAW_MOVIE ||
-        command.kind == KFX_WGPU_DRAW_MAP_VIEW || command.kind == KFX_WGPU_DRAW_BITMAP);
+    return !PacksInBatch(command.kind);
 }
 
 bool WgpuTerrainBridge::OrderedSprite(const KfxWgpuDrawCommand& command)
@@ -981,16 +1017,11 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
                 m_resident_lease && m_pending.size() < kPendingLimit;
             if (!success) success = ExecutePending(oracle, oracle_context);
         }
-        if (!success) {
-            ClearPending();
-            return Fail(nullptr);
-        }
+        if (!success) return Fail(nullptr);
         return 1;
     } catch (const std::exception& error) {
-        ClearPending();
         return Fail(error.what());
     } catch (...) {
-        ClearPending();
         return Fail("native command bridge exception");
     }
 }

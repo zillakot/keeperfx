@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <stdexcept>
 #include <vector>
 
 #ifndef KFX_BRIDGE_REAL_GPU
@@ -31,11 +32,8 @@ extern "C" uint64_t kfx_wgpu_draw_target_view(void* handle, uint64_t root, uint3
 }
 extern "C" void* kfx_wgpu_draw_context(void* presenter, char*, size_t) { return presenter; }
 static std::vector<std::vector<uint32_t>> submit_log;
-static bool packable(uint32_t kind)
-{
-    return kind <= KFX_WGPU_DRAW_TRIG || kind == KFX_WGPU_DRAW_MOVIE ||
-        kind == KFX_WGPU_DRAW_MAP_VIEW || kind == KFX_WGPU_DRAW_BITMAP;
-}
+// The mock ABI rejects what the Rust packer rejects, through the bridge's own predicate.
+static bool packable(uint32_t kind) { return WgpuTerrainBridge::PacksInBatch(kind); }
 extern "C" int32_t kfx_wgpu_draw_submit_shadow(void*, uint64_t, const KfxWgpuDrawCommand*, uint8_t*, size_t, char*, size_t) { return -1; }
 extern "C" uint64_t kfx_wgpu_draw_target_snapshot(void*, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, char*, size_t) { return 0; }
 extern "C" int32_t kfx_wgpu_draw_target_snapshot_release(void*, uint64_t, char*, size_t) { return -1; }
@@ -67,8 +65,14 @@ extern "C" int32_t kfx_wgpu_draw_counters(void*, KfxWgpuDrawCounters* counters, 
 { *counters = {}; return 1; }
 extern "C" void* kfx_wgpu_draw_create(char*, size_t) { return new FakeContext; }
 extern "C" void kfx_wgpu_draw_destroy(void* handle) { delete static_cast<FakeContext*>(handle); }
-extern "C" uint64_t kfx_wgpu_draw_target_create(void* handle, uint32_t width, uint32_t height, char*, size_t)
+static bool fail_target_create = false, throw_target_create = false, fail_resource_create = false;
+extern "C" uint64_t kfx_wgpu_draw_target_create(void* handle, uint32_t width, uint32_t height, char* error, size_t capacity)
 {
+    if (throw_target_create) throw std::runtime_error("injected target creation exception");
+    if (fail_target_create) {
+        std::snprintf(error, capacity, "injected target creation failure");
+        return 0;
+    }
     auto& context = *static_cast<FakeContext*>(handle);
     const auto id = context.next++;
     context.targets[id] = {std::vector<uint8_t>(width * height), width, height, width};
@@ -77,8 +81,12 @@ extern "C" uint64_t kfx_wgpu_draw_target_create(void* handle, uint32_t width, ui
 extern "C" int32_t kfx_wgpu_draw_target_release(void* handle, uint64_t id, char*, size_t)
 { auto& context = *static_cast<FakeContext*>(handle); return context.targets.erase(id) + context.views.erase(id) == 1 ? 1 : -1; }
 extern "C" uint64_t kfx_wgpu_draw_resource_create(void* handle, const uint8_t* bytes, size_t length,
-    uint32_t width, uint32_t height, uint32_t pitch, char*, size_t)
+    uint32_t width, uint32_t height, uint32_t pitch, char* error, size_t capacity)
 {
+    if (fail_resource_create) {
+        std::snprintf(error, capacity, "injected resource creation failure");
+        return 0;
+    }
     auto& context = *static_cast<FakeContext*>(handle);
     const auto id = context.next++;
     context.resources[id] = {std::vector<uint8_t>(bytes, bytes + length), width, height, pitch};
@@ -546,6 +554,93 @@ int main()
         assert(pixels == expected && bridge.Failed());
         assert(bridge.GetCounters().gpu_spans == 0 && bridge.GetCounters().cpu_replayed_spans == 1);
         fail_readback = false;
+    }
+    // A failure while a batched run is pending must replay the run or invalidate the frame;
+    // dropping it while FrameValid() stays true would present a hole with no redraw request.
+    {
+        // Spans only: the CPU rasterizer owns them, so recovery repaints and the frame survives.
+        std::vector<uint8_t> run(24 * 10, 0x6a), run_expected = run;
+        KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+        WgpuTerrainBridge bridge(0, false, false, true);
+        assert(bridge.BeginFrame(run_target));
+        bridge.Boundary(true);
+        for (unsigned i = 0; i < 3; ++i) {
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &run_target, &a, texture.data(), fade.data()) == 1);
+            oracle(run_expected, run_target.pitch, a, texture, fade);
+        }
+        assert(bridge.GetCounters().gpu_batches == 0);
+        std::vector<uint8_t> blend(256, 3);
+        KfxWgpuNativeResource blend_table = {blend.data(), blend.size(), 256, 1, 256};
+        KfxWgpuDrawCommand rect = {};
+        rect.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+        rect.kind = KFX_WGPU_DRAW_RECT;
+        rect.width = rect.clip_width = 4;
+        rect.height = rect.clip_height = 2;
+        rect.transparent = KFX_WGPU_DRAW_OPAQUE;
+        fail_resource_create = true;
+        assert(bridge.SubmitNative(run_target, rect, nullptr, &blend_table, nullptr, nullptr) == 0);
+        fail_resource_create = false;
+        assert(bridge.Failed());
+        assert(bridge.FrameValid());
+        assert(run == run_expected);
+        assert(bridge.GetCounters().cpu_replayed_spans == 3);
+        assert(bridge.GetCounters().rejected_commands == 0 && bridge.GetCounters().rejected_spans == 0);
+    }
+    for (const bool by_exception : {false, true}) {
+        // Mixed run: the generic command has no CPU oracle here, so the frame must go invalid.
+        std::vector<uint8_t> run(24 * 10, 0x6a);
+        const std::vector<uint8_t> untouched = run;
+        KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+        WgpuTerrainBridge bridge(0, false, false, true);
+        assert(bridge.BeginFrame(run_target));
+        KfxWgpuDrawCommand rect = {};
+        rect.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+        rect.kind = KFX_WGPU_DRAW_RECT;
+        rect.x = 1; rect.y = 1;
+        rect.width = rect.clip_width = 4;
+        rect.height = rect.clip_height = 2;
+        rect.colour = 55;
+        rect.transparent = KFX_WGPU_DRAW_OPAQUE;
+        assert(bridge.SubmitNative(run_target, rect, nullptr, nullptr, nullptr, nullptr) == 1);
+        bridge.Boundary(true);
+        for (unsigned i = 0; i < 2; ++i)
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &run_target, &a, texture.data(), fade.data()) == 1);
+        assert(bridge.GetCounters().gpu_batches == 0 && bridge.FrameValid());
+        // The first flush builds the target, so it fails before the frame is marked dirty.
+        fail_target_create = !by_exception;
+        throw_target_create = by_exception;
+        bridge.Flush();
+        fail_target_create = throw_target_create = false;
+        assert(bridge.Failed());
+        assert(!bridge.FrameValid());
+        assert(run == untouched);
+        assert(bridge.GetCounters().rejected_commands == 1);
+        assert(bridge.GetCounters().rejected_spans == 2);
+        assert(bridge.GetCounters().invalid_frames == 1);
+        bridge.FullRedraw();
+        assert(bridge.FrameValid());
+    }
+    {
+        // The same guarantee through SubmitNative's own exception handler.
+        std::vector<uint8_t> run(24 * 10, 0x6a);
+        const std::vector<uint8_t> untouched = run;
+        KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+        WgpuTerrainBridge bridge(0, false, false, true);
+        KfxWgpuDrawCommand rect = {};
+        rect.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+        rect.kind = KFX_WGPU_DRAW_RECT;
+        rect.width = rect.clip_width = 4;
+        rect.height = rect.clip_height = 2;
+        rect.colour = 55;
+        rect.transparent = KFX_WGPU_DRAW_OPAQUE;
+        throw_target_create = true;
+        assert(bridge.SubmitNative(run_target, rect, nullptr, nullptr, nullptr, nullptr) == 0);
+        throw_target_create = false;
+        assert(bridge.Failed() && !bridge.FrameValid());
+        assert(run == untouched);
+        assert(bridge.GetCounters().rejected_commands == 1);
+        bridge.FullRedraw();
+        assert(bridge.FrameValid());
     }
     // Seeded interleave: batching must match per-command flushing and isolate solo kinds.
     std::vector<uint8_t> interleave_expected;
