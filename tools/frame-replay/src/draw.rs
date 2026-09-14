@@ -613,13 +613,13 @@ impl DrawRenderer {
         Ok(())
     }
 
-    /// Drops a half-recorded frame. Dropping a `CommandEncoder` without finishing it
-    /// discards its recording, which is what an abort or a terminal failure wants.
     /// The most recent submission this context made, for a caller that has to wait on it.
     pub fn take_submission(&mut self) -> Option<wgpu::SubmissionIndex> {
         self.last_submission.take()
     }
 
+    /// Drops a half-recorded frame. Dropping a `CommandEncoder` without finishing it
+    /// discards its recording, which is what an abort or a terminal failure wants.
     pub fn frame_discard(&mut self) {
         if self.encoder.take().is_none() {
             return;

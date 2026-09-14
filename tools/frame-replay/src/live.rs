@@ -528,11 +528,7 @@ pub unsafe extern "C" fn kfx_wgpu_present(
                     // The ring waits on this before rendering into the slot again; an
                     // empty submit only names a place in the queue when nothing was
                     // recorded, which a frame that reached here normally did.
-                    slots[*next].last = Some(submission.unwrap_or_else(|| {
-                        renderer
-                            .queue()
-                            .submit(std::iter::empty::<wgpu::CommandBuffer>())
-                    }));
+                    slots[*next].last = Some(submission.unwrap_or_else(|| renderer.submit_empty()));
                     *next = (*next + 1) % slots.len();
                 }
             }
@@ -879,6 +875,9 @@ mod tests {
                 unsafe { std::ffi::CStr::from_ptr(error.as_ptr()) }.to_string_lossy()
             );
         }
+        // One queue submission per frame and no more: the ring reuses the frame's own
+        // submission, so the empty fallback must never have run.
+        assert_eq!(presenter.renderer.queue_submits(), 3);
         let Target::Offscreen { slots, next, .. } = &presenter.target else {
             unreachable!()
         };
