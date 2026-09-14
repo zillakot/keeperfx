@@ -290,8 +290,8 @@ void RendererSoftware::report_drawing()
         gpu.tile_allocations, gpu.tile_entries,
         counts.bridge_target_flushes, counts.bridge_target_runs,
         gpu.prepared_row_words, gpu.prepared_row_allocations,
-        gpu.pass_ns[0], gpu.pass_ns[1], gpu.pass_ns[2], gpu.pass_ns[3], gpu.pass_ns[4],
-        gpu.pass_ns[5], gpu.pass_ns[6], gpu.pass_ns[7], gpu.pass_ns[8],
+        gpu.pass_ns[0], gpu.pass_ns[1], gpu.pass_ns[2], gpu.pass_ns[3],
+        gpu.pass_ns[4], gpu.pass_ns[5], gpu.pass_ns[6], gpu.pass_ns[7],
         gpu.timed_passes, gpu.untimed_passes,
         gpu.host_staged_asset_bytes, gpu.arena_bytes_resident};
     performance_drawing_frame(&sample);
@@ -314,7 +314,7 @@ void RendererSoftware::report_drawing()
                 "\"bridge_target_runs\":%llu,\"tile_allocations\":%llu,\"tile_entries\":%llu,"
                 "\"prepared_row_words\":%llu,\"prepared_row_allocations\":%llu,"
                 "\"gpu_raster_ns\":%llu,"
-                "\"gpu_terrain_prepare_ns\":%llu,\"gpu_terrain_validate_ns\":%llu,"
+                "\"gpu_terrain_prepare_ns\":%llu,"
                 "\"gpu_shadow_mask_ns\":%llu,\"gpu_target_trig_ns\":%llu,"
                 "\"gpu_ordered_sprite_ns\":%llu,\"gpu_minimap_ns\":%llu,"
                 "\"gpu_lens_ns\":%llu,\"gpu_present_ns\":%llu,"
@@ -381,7 +381,6 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.pass_ns[5]),
                 static_cast<unsigned long long>(gpu.pass_ns[6]),
                 static_cast<unsigned long long>(gpu.pass_ns[7]),
-                static_cast<unsigned long long>(gpu.pass_ns[8]),
                 static_cast<unsigned long long>(gpu.timed_passes),
                 static_cast<unsigned long long>(gpu.untimed_passes),
                 static_cast<unsigned long long>(counts.rejected_commands),

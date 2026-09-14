@@ -36,7 +36,7 @@ pub use triangles::TriangleCommand;
 pub mod timing;
 use timing::{
     PASS_KINDS, PASS_LENS, PASS_MINIMAP, PASS_ORDERED_SPRITES, PASS_PRESENT, PASS_RASTER,
-    PASS_SHADOW_MASK, PASS_TARGET_TRIG, PASS_TERRAIN_PREPARE, PASS_TERRAIN_VALIDATE, PassTimings,
+    PASS_SHADOW_MASK, PASS_TARGET_TRIG, PASS_TERRAIN_PREPARE, PassTimings,
 };
 
 use crate::gpoly;
@@ -819,7 +819,7 @@ impl DrawRenderer {
         self.triangles
             .get_or_insert_with(|| triangles::TrianglePipelines::new(&self.device));
         let stamp = self.stamp(PASS_TERRAIN_PREPARE);
-        let extents = self.triangles.as_ref().unwrap().prepare.encode(
+        self.triangles.as_ref().unwrap().prepare.encode(
             &self.device,
             encoder,
             &pending.triangles,
@@ -827,45 +827,6 @@ impl DrawRenderer {
             &pending.rows,
             stamp.compute(),
         )?;
-        self.counters.dispatches += 1;
-        let count = pending.triangles.len() as u32;
-        let deepest = pending
-            .layout
-            .iter()
-            .map(|entry| entry.rows)
-            .max()
-            .unwrap_or(0);
-        if deepest == 0 {
-            return Ok(());
-        }
-        let parameters = buffer(
-            &self.device,
-            &mut self.counters,
-            "terrain batch dimensions",
-            &[count, 0, 0, 0],
-            wgpu::BufferUsages::UNIFORM,
-        );
-        let stamp = self.stamp(PASS_TERRAIN_VALIDATE);
-        let pipelines = self.triangles.as_ref().unwrap();
-        let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("terrain span validation"),
-            layout: &pipelines.validate.get_bind_group_layout(0),
-            entries: &[
-                entry(0, &pending.rows),
-                entry(3, &parameters),
-                entry(5, &extents),
-                entry(6, &self.status),
-            ],
-        });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("terrain span validation"),
-                timestamp_writes: stamp.compute(),
-            });
-            pass.set_pipeline(&pipelines.validate);
-            pass.set_bind_group(0, &binding, &[]);
-            pass.dispatch_workgroups(deepest.div_ceil(64), count, 1);
-        }
         self.counters.dispatches += 1;
         Ok(())
     }

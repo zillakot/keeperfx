@@ -16,25 +16,12 @@ const _: () = assert!(std::mem::size_of::<Vertex>() == 32);
 
 pub(super) struct TrianglePipelines {
     pub(super) prepare: GpolyPreparer,
-    pub(super) validate: wgpu::ComputePipeline,
 }
 
 impl TrianglePipelines {
     pub(super) fn new(device: &wgpu::Device) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("ordered original-vertex terrain"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("draw_triangles.wgsl").into()),
-        });
         Self {
             prepare: GpolyPreparer::new(device),
-            validate: device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("validate"),
-                layout: None,
-                module: &shader,
-                entry_point: Some("validate"),
-                compilation_options: Default::default(),
-                cache: None,
-            }),
         }
     }
 }
@@ -58,7 +45,7 @@ impl DrawRenderer {
         let dispatch_limit = self.device.limits().max_compute_workgroups_per_dimension;
         ensure!(
             commands.len() <= dispatch_limit as usize,
-            "triangle validation dispatch exceeds device limits"
+            "triangle setup dispatch exceeds device limits"
         );
         ensure!(
             target.width.div_ceil(8) <= dispatch_limit

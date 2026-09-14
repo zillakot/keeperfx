@@ -923,7 +923,7 @@ mod tests {
         draw.frame_end().unwrap();
         assert_eq!(draw.readback(root).unwrap(), vec![201; 12 * 11]);
         let (index, flags) = draw.frame_status();
-        assert_eq!((index, flags), (2, 1 | 1 << 2 | 1 << 3));
+        assert_eq!((index, flags), (2, 1 | 1 << 2));
         assert_eq!(draw.frame_counters().rejected_checkpoints, 0);
         assert_eq!(draw.frame_counters().invalid_frames, 1);
         draw.frame_abort().unwrap();

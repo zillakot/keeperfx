@@ -1,19 +1,17 @@
-pub const PASS_KINDS: usize = 9;
+pub const PASS_KINDS: usize = 8;
 pub(super) const PASS_RASTER: usize = 0;
 pub(super) const PASS_TERRAIN_PREPARE: usize = 1;
-pub(super) const PASS_TERRAIN_VALIDATE: usize = 2;
-pub(super) const PASS_SHADOW_MASK: usize = 3;
-pub(super) const PASS_TARGET_TRIG: usize = 4;
-pub(super) const PASS_ORDERED_SPRITES: usize = 5;
-pub(super) const PASS_MINIMAP: usize = 6;
-pub(super) const PASS_LENS: usize = 7;
-pub(super) const PASS_PRESENT: usize = 8;
+pub(super) const PASS_SHADOW_MASK: usize = 2;
+pub(super) const PASS_TARGET_TRIG: usize = 3;
+pub(super) const PASS_ORDERED_SPRITES: usize = 4;
+pub(super) const PASS_MINIMAP: usize = 5;
+pub(super) const PASS_LENS: usize = 6;
+pub(super) const PASS_PRESENT: usize = 7;
 
 /// Reporting order of `Counters::pass_ns`; mirrored by `KfxWgpuDrawCounters`.
 pub const PASS_NAMES: [&str; PASS_KINDS] = [
     "raster",
     "terrain_prepare",
-    "terrain_validate",
     "shadow_mask",
     "target_trig",
     "ordered_sprites",

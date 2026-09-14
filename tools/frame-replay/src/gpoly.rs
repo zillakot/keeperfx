@@ -93,7 +93,7 @@ impl GpolyPreparer {
         layout: &[RowLayout],
         rows: &wgpu::Buffer,
         stamp: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) -> Result<wgpu::Buffer> {
+    ) -> Result<()> {
         ensure!(
             layout.len() == triangles.len(),
             "triangle row layout does not match the batch"
@@ -197,6 +197,6 @@ impl GpolyPreparer {
             pass.set_bind_group(0, &bindings, &[]);
             pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
         }
-        Ok(layout_buffer)
+        Ok(())
     }
 }

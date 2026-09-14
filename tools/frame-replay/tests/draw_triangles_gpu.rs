@@ -138,8 +138,8 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
     let (_, flags) = drawing.frame_status();
     ensure!(flags & 1 != 0, "an invalid shade raised no frame flag");
     ensure!(
-        flags & (1 << 2 | 1 << 3) == (1 << 2 | 1 << 3),
-        "both the per-pixel and the per-span shade checks must report"
+        flags & (1 << 2) != 0,
+        "the per-pixel shade check must report"
     );
     invalid = valid;
     invalid.source = u64::MAX;

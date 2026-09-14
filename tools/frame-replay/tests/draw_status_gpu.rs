@@ -4,7 +4,6 @@ use keeperfx_frame_replay::gpoly::Vertex;
 
 const FRAME_FLAG: u32 = 1;
 const TERRAIN_SHADE: u32 = 1 << 2;
-const TERRAIN_SPAN: u32 = 1 << 3;
 
 fn triangle(source: u64, table: u64, shade: i64) -> TriangleCommand {
     TriangleCommand {
@@ -96,7 +95,7 @@ fn a_flagged_frame_presents_then_recovers_within_two_frames() -> Result<()> {
     }
     let (_, flags) = seen.context("the flag never surfaced within two frames")?;
     ensure!(
-        flags == FRAME_FLAG | TERRAIN_SHADE | TERRAIN_SPAN,
+        flags == FRAME_FLAG | TERRAIN_SHADE,
         "unexpected status flags {flags:#x}"
     );
     ensure!(
