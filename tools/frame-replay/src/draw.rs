@@ -207,6 +207,9 @@ pub struct DrawRenderer {
     stream_commands: PersistentBuffer,
     stream_tiles: PersistentBuffer,
     asset_generation: u64,
+    /// Work recorded after the frame's last flush: the cursor backup, compose and
+    /// restore around the palette pass. Submitted once by `kfx_wgpu_present`.
+    tail: Option<wgpu::CommandEncoder>,
     failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -335,6 +338,7 @@ impl DrawRenderer {
             stream_commands: PersistentBuffer::default(),
             stream_tiles: PersistentBuffer::default(),
             asset_generation: 1,
+            tail: None,
             failure: renderer.failure.clone(),
         })
     }
@@ -381,9 +385,34 @@ impl DrawRenderer {
         self.resource_bytes as u64
     }
 
+    /// Submits the present tail first, so no encoder opened after it can reach the
+    /// queue ahead of work the tail already recorded.
     pub(super) fn submit_encoder(&mut self, encoder: wgpu::CommandEncoder) {
+        self.tail_submit();
+        self.submit_one(encoder);
+    }
+
+    fn submit_one(&mut self, encoder: wgpu::CommandEncoder) {
         self.counters.submits += 1;
         self.queue.submit([encoder.finish()]);
+    }
+
+    /// The encoder the present tail records into, opened on first use.
+    pub(super) fn tail_encoder(&mut self) -> &mut wgpu::CommandEncoder {
+        self.tail
+            .get_or_insert_with(|| self.device.create_command_encoder(&Default::default()))
+    }
+
+    pub(super) fn tail_open(&self) -> bool {
+        self.tail.is_some()
+    }
+
+    /// Finishes the present tail. Every queue read of the root must precede it with
+    /// this, because the tail is recorded after the work it reads.
+    pub fn tail_submit(&mut self) {
+        if let Some(encoder) = self.tail.take() {
+            self.submit_one(encoder);
+        }
     }
 
     pub(super) fn tracked_buffer(&mut self, descriptor: &wgpu::BufferDescriptor) -> wgpu::Buffer {
@@ -694,6 +723,7 @@ impl DrawRenderer {
     }
 
     pub fn readback(&mut self, target: u64) -> Result<Vec<u8>> {
+        self.tail_submit();
         self.checkpoint_target(target)?;
         self.check_status()?;
         let target = self.targets.get(&target).context("unknown target")?.clone();
@@ -741,6 +771,8 @@ impl DrawRenderer {
         Ok(bytes)
     }
 
+    /// Records the palette pass into the present tail; the caller submits it with
+    /// `tail_submit` after the cursor restore is recorded.
     pub fn present_into(
         &mut self,
         target: u64,
@@ -799,7 +831,8 @@ impl DrawRenderer {
                 entry(2, &parameters),
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let present = self.present.clone();
+        let encoder = self.tail_encoder();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("GPU-owned presentation"),
@@ -817,11 +850,10 @@ impl DrawRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.present);
+            pass.set_pipeline(&present);
             pass.set_bind_group(0, &binding, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.submit_encoder(encoder);
         Ok(())
     }
 }
@@ -1779,6 +1811,7 @@ mod tests {
                 &texture.create_view(&Default::default()),
             )
             .unwrap();
+        drawing.tail_submit();
         drawing.release_target(target).unwrap();
         let staging = renderer.device().create_buffer(&wgpu::BufferDescriptor {
             label: None,
