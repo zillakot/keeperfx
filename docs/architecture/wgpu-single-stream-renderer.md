@@ -391,7 +391,7 @@ Each step is one PR and keeps every existing fixture green.
 | 1 | **Instrumentation.** Route every `queue.submit` through one helper and every `create_buffer`/`create_buffer_init`/`create_bind_group` through helpers; add the new counters including `wait_ns` and `ordered_sprites`; time the three `device.poll(Wait)` sites; add a per-frame ring; expose the counters through [`performance_capture.cpp`](../../src/performance_capture.cpp) with window semantics and **no per-frame file I/O**; make `report_drawing` interval- or shutdown-driven; wire `kfx_wgpu_cursor_counters()` into the sidecar; optional `TIMESTAMP_QUERY`. | none directly; every *derived* row above becomes measured |
 | 2 | **Free CPU wins.** `ResourceFor` → pointer+generation intern; `check_queued_target` → running byte total; `released_resources` → `HashSet`; **and `create_resource`, which runs the identical O(resources) byte sum on every resource creation**; `DrawTriangle`'s 8 KiB array → reused member scratch. | `resource_snapshot_bytes` 1.95 MB → ~0 |
 | 3 | **Bridge batching.** `SubmitNative` accumulates into `m_pending`; flush only at target change, shadow, transition, ordered sprite, snapshot or readback. | `gpu_batches` 139 → 10–20 |
-| 4 | **Persistent asset arena**, `u32` expansion kept, kernels unchanged. Delivered: asset plus command upload 28.78 MB → 15.14 MB per frame and Rust requested bytes 93.1 MB → 28.4 MB per presentation. The ≤ 0.3 MB target needs PR 13 and emitters that stop baking position into the asset. |
+| 4 | **Persistent asset arena**, `u32` expansion kept, kernels unchanged. Delivered, GPU drawing behind the SDL presenter: asset plus command upload 28.78 MB → 15.14 MB per frame and Rust requested bytes 93.1 MB → 28.4 MB per presentation; the wgpu-presenter pair is outstanding. The ≤ 0.3 MB target needs PR 13 and emitters that stop baking position into the asset. |
 | 5 | **Shadow residency.** Persistent GPU scratch and mask slots; drop the CPU mirror, the readback and the snapshot; mask pass and `TRIG` in one encoder. | checkpoints 11.8 → ≤ 1; waits 25.7 → ~1; `shadow_scratch_readback_bytes` → 0 |
 | 6 | **Non-blocking validation, no double copy.** Fold the flag into the raster kernels, ring-read the status, write straight into the root, delete the transactional scratch, settle the snapshot rollback explicitly. | waits → 0; `frame_gpu_checkpoint_copy_bytes` → 0; `PerfPresentation` falls toward `PerfPresentWait` |
 | 7 | **Single command stream, root space, one tile index.** Counting-sort binning with persistent scratch; one raster dispatch per serial segment. Terrain still separate. | Rust batches → ~4; tile-list allocations → 0; fixtures 1 and 2 land here |
@@ -422,7 +422,8 @@ Each step is one PR and keeps every existing fixture green.
 
 ## Open measurement
 
-**Measured, 2026-09-14.** Busy scene, 640x480, GPU drawing, Apple M5 Metal, 304 measured frames:
+**Measured, 2026-09-14.** Busy scene, 640x480, `KFX_DRAW_BACKEND=wgpu` with the SDL presenter (the
+Rust presenter could not acquire a drawable on the measuring host), Apple M5 Metal, 304 measured frames:
 `arena_bytes_resident` 12.09 MB mean and 13.34 MB maximum against the 32 MiB phase-1 budget, with
 `arena_evictions` and `arena_overflows` at zero. The gauge is the suballocated arena extent, so it is an
 upper bound on the live working set. The working set therefore fits phase-1 `u32` expansion at the
