@@ -1,7 +1,12 @@
 import copy
+import fcntl
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("benchmark_presenters", Path(__file__).parents[1] / "benchmark-presenters.py")
 benchmark = importlib.util.module_from_spec(spec)
@@ -96,6 +101,62 @@ class BenchmarkTests(unittest.TestCase):
         self.assertTrue(comparison["frame_cap"]["uncapped"])
         self.assertNotIn(benchmark.profile.CAPPED_LIMITATION, comparison["limitations"])
         self.assertIn(benchmark.profile.UNCAPPED_LIMITATIONS[0], comparison["limitations"])
+
+    def run_experiment(self, root, behavior, load=0.0, locked=False):
+        engine = root / "engine"
+        engine.write_bytes(b"engine")
+        (root / "keeperfx.cfg").write_text("VSYNC=ON\n")
+        output = root / "out/ab"
+        argv = ["benchmark-presenters.py", "--engine", str(engine), "--game-dir", str(root),
+                "--out", str(output), "--conditions", "unit test"]
+        with mock.patch.object(benchmark, "ROOT", root), \
+                mock.patch.object(benchmark.profile, "ROOT", root), \
+                mock.patch.object(benchmark.profile, "TIMING_LOCK_PATH", str(root / "timing.lock")), \
+                mock.patch.object(benchmark.profile, "console_locked", return_value=locked), \
+                mock.patch.object(benchmark.profile, "load_per_core", return_value=load), \
+                mock.patch.object(benchmark.sys, "platform", "darwin"), \
+                mock.patch("sys.argv", argv), \
+                mock.patch.object(benchmark.subprocess, "run", side_effect=behavior):
+            benchmark.main()
+        return output
+
+    def test_experiment_holds_one_lock_and_tells_every_child_a_parent_holds_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calls = []
+
+            def run(command, **kwargs):
+                calls.append(kwargs["env"])
+                with open(root / "timing.lock", "a+") as probe:
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        raise AssertionError("the experiment did not hold the timing lock")
+                    except BlockingIOError:
+                        pass
+                raise subprocess.CalledProcessError(1, command)
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.run_experiment(root, run)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["KFX_TIMING_LOCK_HELD"], "1")
+            manifest = json.loads((root / "out/ab/manifest.json").read_text())
+            self.assertFalse(manifest["timing_lock"]["held_by_parent"])
+            self.assertEqual(manifest["environment_guards"]["findings"], [])
+
+    def test_a_guard_finding_aborts_before_the_first_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launched = []
+
+            def run(command, **kwargs):
+                launched.append(command)
+                raise AssertionError("no run may start after a guard refusal")
+            with self.assertRaisesRegex(RuntimeError, "environment guard refused"):
+                self.run_experiment(root, run, load=9.0)
+            self.assertEqual(launched, [])
+            manifest = json.loads((root / "out/ab/manifest.json").read_text())
+            self.assertEqual([item["reason"] for item in manifest["environment_guards"]["findings"]],
+                             ["background_load"])
+            self.assertEqual(manifest["status"], "failed")
 
     def test_unavailable_cpu_does_not_become_zero(self):
         entries = benchmark.schedule(5)

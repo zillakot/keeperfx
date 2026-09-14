@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
 import csv
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -14,6 +16,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("capture_frame", Path(__file__).with_name("capture-frame.py"))
@@ -47,6 +50,8 @@ SETTINGS = {
     "FREEZE_GAME_ON_FOCUS_LOST": "OFF", "CAPTURE_CURSOR": "OFF",
     "CURSOR_EDGE_CAMERA_PANNING": "OFF", "LOCK_CURSOR_IN_POSSESSION": "OFF",
 }
+TIMING_LOCK_PATH = "/private/tmp/keeperfx-timing.lock"
+DEFAULT_MAX_LOAD = 0.35
 CAPPED_FPS_LIMIT = 60
 UNCAPPED_FPS_LIMIT = 0
 CAPPED_LIMITATION = "The 60 FPS cap limits observed frame rate; lower presentation duration is not an uncapped gameplay FPS speedup."
@@ -56,6 +61,9 @@ UNCAPPED_LIMITATIONS = [
     "The simulation still targets 20 turns per second. A measured turns-per-second below 20 means the host could not sustain the simulation, so the run does not measure a drawing ceiling.",
     "VSync stays off and the presenter must report a non-VSync present mode; an uncapped run behind VSync would measure the display, not the engine.",
 ]
+OFFSCREEN_LIMITATION = ("OFFSCREEN RUN: there is no swapchain, so presentation, present_wait, frame_interval and "
+                        "observed FPS are not comparable with a windowed run. Drawing counters and per-pass GPU "
+                        "timestamps are.")
 LIMITATIONS = [
     "Per-scope timings are monotonic wall-clock durations, including scheduling and blocking; they are not CPU-time counters.",
     "GPU execution time is collected only when KFX_WGPU_GPU_TIMING is 1 or 2 and the adapter supports timestamp queries: the gpu_*_ns drawing counters are per-pass GPU durations. Presentation and present_wait remain host-side wall clock.",
@@ -104,6 +112,117 @@ def uncapped(args):
     return bool(getattr(args, "uncapped", False))
 
 
+def offscreen(args):
+    return bool(getattr(args, "offscreen", False))
+
+
+def _ioreg_text():
+    return subprocess.run(["ioreg", "-n", "Root", "-d1"], capture_output=True, text=True,
+                          timeout=30, check=True).stdout
+
+
+def console_locked(probe=_ioreg_text):
+    """True or False when the session lock state is readable, None when the probe fails."""
+    try:
+        text = probe()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if not isinstance(text, str):
+        return None
+    match = re.search(r'"CGSSessionScreenIsLocked"\s*=\s*(\w+)', text)
+    return False if match is None else match.group(1) == "Yes"
+
+
+def load_per_core(probe=os.getloadavg, cpus=os.cpu_count):
+    """One-minute load average per core; it lags a job that just started."""
+    try:
+        return probe()[0] / (cpus() or 1)
+    except (OSError, ValueError, TypeError, IndexError):
+        return None
+
+
+def evaluate_guards(args, locked, load):
+    findings = []
+    if locked and not offscreen(args):
+        findings.append({"reason": "console_locked",
+                         "detail": "the console session is locked, so the swapchain path cannot acquire a "
+                                   "drawable; --offscreen measures without one"})
+    threshold = getattr(args, "max_load", DEFAULT_MAX_LOAD)
+    if load is not None and load > threshold:
+        findings.append({"reason": "background_load",
+                         "detail": f"one-minute load average per core {load:.3f} exceeds --max-load {threshold}"})
+    return findings
+
+
+def occlusion_reason(stderr, details, presentations):
+    """Post-run: the engine skipped acquisitions, or presented nothing at all."""
+    if "Rust surface acquisition skipped" in (stderr or ""):
+        return {"reason": "occluded", "detail": "the engine reported a skipped surface acquisition"}
+    skips = (details or {}).get("acquisition_skips")
+    if isinstance(skips, int) and not isinstance(skips, bool) and skips > 0:
+        return {"reason": "occluded", "detail": f"the presenter skipped {skips} acquisitions"}
+    if not presentations:
+        return {"reason": "occluded", "detail": "no frame was presented inside the measured window"}
+    return None
+
+
+def post_run_occlusion(output, stderr):
+    details, presentations = {}, 0
+    sidecar = output / "raw.csv.json"
+    if sidecar.is_file():
+        try:
+            parsed = json.loads(json.loads(sidecar.read_text()).get("renderer_details") or "{}")
+            details = parsed if isinstance(parsed, dict) else {}
+        except (OSError, ValueError, TypeError, AttributeError):
+            details = {}
+    raw = output / "raw.csv"
+    if raw.is_file():
+        try:
+            presentations = sum(1 for line in raw.read_text().splitlines() if line.startswith("presentation,"))
+        except OSError:
+            presentations = 0
+    return occlusion_reason(stderr, details, presentations)
+
+
+class Refusal(RuntimeError):
+    """Conditions made the run unmeasurable. Distinct from a failed run."""
+
+    def __init__(self, reason, detail):
+        super().__init__(f"{reason}: {detail}")
+        self.reason, self.detail = reason, detail
+
+
+@contextlib.contextmanager
+def timing_lock(path=None):
+    """Serializes timing runs and builds. flock is advisory and per open file description,
+    so a nested acquire would self-deadlock; KFX_TIMING_LOCK_HELD=1 means a parent holds it."""
+    path = path or TIMING_LOCK_PATH
+    if os.environ.get("KFX_TIMING_LOCK_HELD") == "1":
+        yield {"path": path, "waited_seconds": 0.0, "held_by_parent": True, "previous_holder": None}
+        return
+    handle = open(path, "a+")
+    try:
+        started = time.monotonic()
+        previous = None
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.seek(0)
+            previous = handle.read(4096).strip() or None
+            print(f"waiting for the timing lock held by {previous or 'an unnamed holder'}", flush=True)
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        waited = time.monotonic() - started
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps({"holder": str(ROOT), "pid": os.getpid(),
+                                 "started_utc": datetime.now(timezone.utc).isoformat()}))
+        handle.flush()
+        yield {"path": path, "waited_seconds": waited, "held_by_parent": False, "previous_holder": previous}
+    finally:
+        # Never unlink: that would race a waiter which already opened this path.
+        handle.close()
+
+
 def settings_for(args):
     """Isolated engine settings; FRAMES_PER_SECOND=0 disables the engine frame limiter."""
     values = dict(SETTINGS)
@@ -143,7 +262,8 @@ def environment_for(args, output):
         environment.update(SDL_VIDEODRIVER="dummy", SDL_VIDEO_DRIVER="dummy", SDL_RENDER_DRIVER="software")
     elif sys.platform == "darwin":
         environment.update(SDL_VIDEODRIVER="cocoa", SDL_VIDEO_DRIVER="cocoa", SDL_RENDER_DRIVER="metal")
-    environment.update(KFX_PRESENT_BACKEND="wgpu" if args.backend == "rust" else "sdl",
+    backend = ("wgpu-offscreen" if offscreen(args) else "wgpu") if args.backend == "rust" else "sdl"
+    environment.update(KFX_PRESENT_BACKEND=backend,
                        SDL_RENDER_VSYNC="0", KFX_PERF_OUTPUT=str(output / "raw.csv"),
                        KFX_PERF_DRAW_BREAKDOWN="1" if getattr(args, "draw_breakdown", False) else "0",
                        KFX_WGPU_GPU_TIMING=gpu_timing_level(args),
@@ -183,7 +303,8 @@ def summarize(output, args):
     cap["engine_fps_limit"] = metadata["fps_limit"]
     if args.backend == "rust" and (args.headless or sys.platform != "darwin"):
         raise RuntimeError("Rust measurements require a native macOS window")
-    expected_backend = (("cocoa", "wgpu-metal") if args.backend == "rust" else
+    expected_backend = ((("cocoa", "wgpu-metal-offscreen") if offscreen(args) else ("cocoa", "wgpu-metal"))
+                        if args.backend == "rust" else
                         (("dummy", "software") if args.headless else (("cocoa", "metal") if sys.platform == "darwin" else None)))
     if expected_backend and (metadata["video_driver"], metadata["renderer"]) != expected_backend:
         raise RuntimeError(f"engine backend does not match requested {expected_backend}")
@@ -195,9 +316,10 @@ def summarize(output, args):
         raise RuntimeError("actual renderer does not match requested original backend")
     if args.backend == "rust":
         details = json.loads(metadata.get("renderer_details", "{}"))
+        modes = ("Offscreen",) if offscreen(args) else ("Immediate", "Mailbox")
         if (not isinstance(details, dict) or details.get("backend") != "Metal" or not details.get("adapter")
-                or details.get("present_mode") not in ("Immediate", "Mailbox") or not details.get("format")):
-            raise RuntimeError("Rust backend did not confirm its adapter, format and actual non-VSync present mode")
+                or details.get("present_mode") not in modes or not details.get("format")):
+            raise RuntimeError("Rust backend did not confirm its adapter, format and actual presentation mode")
     breakdown = metadata.get("draw_breakdown", False)
     if type(breakdown) is not bool or breakdown != getattr(args, "draw_breakdown", False):
         raise RuntimeError("engine draw breakdown does not match the request")
@@ -254,6 +376,7 @@ def summarize(output, args):
     drawing_report = summarize_drawing(metadata.get("drawing"), len(presentations))
     limitations = ([item for item in LIMITATIONS if item != CAPPED_LIMITATION] + UNCAPPED_LIMITATIONS
                    if cap["uncapped"] else list(LIMITATIONS))
+    limitations += [OFFSCREEN_LIMITATION] if offscreen(args) else []
     limitations += [] if resource_report["process_cpu"] is not None else ["Process CPU time is not available in this run."]
     if drawing_report is None:
         limitations += ["Drawing-backend counters are absent from this engine build."]
@@ -276,6 +399,7 @@ def summarize(output, args):
                 "turns_per_second": None if not window_ms else args.turns / (window_ms / 1000),
                 "frame_cap": cap["label"]}
     return {"engine": metadata, "frame_cap": cap, "observed": observed, "wall_ms": wall_ms,
+            "presentation_mode": "offscreen" if offscreen(args) else "swapchain",
             "resources": resource_report, "drawing": drawing_report,
             "percentile_method": "linear interpolation at (sample_count - 1) * percentile / 100",
             "limitations": limitations + (["HEADLESS SOFTWARE SMOKE TEST: not a native presentation baseline."] if args.headless else [])}
@@ -368,7 +492,8 @@ def write_report(output, report):
     lines = [f"# {label}", "", f"Scene: {request['scene']}; campaign: {request['campaign']}; level: {request['level']}.",
              f"Actual turns: {actual['start']['turn']}–{actual['end']['turn'] - 1} ({request['turns']} simulation updates).",
              f"Backend: {actual['video_driver']} / {actual['renderer']}; logical resolution: {actual['width']}×{actual['height']}; "
-             f"output: {actual['output_width']}×{actual['output_height']}.",
+             f"output: {actual['output_width']}×{actual['output_height']}; "
+             f"presentation mode: {report.get('presentation_mode', 'swapchain')}.",
              f"Frame cap: {cap['label']} (engine frame limit {actual['fps_limit']}); "
              f"VSync: {actual['vsync_actual']}; interpolation: {actual['interpolation']}.",
              f"Population at start/end: creatures {actual['start']['creatures']}/{actual['end']['creatures']}; "
@@ -437,10 +562,18 @@ def main():
     parser.add_argument("--serial-gpu-timing", action="store_true", help="as --gpu-timing, but drain the queue after every timed submission so the per-pass windows are exclusive; costs throughput and is not a performance baseline")
     parser.add_argument("--uncapped", action="store_true",
                         help="remove the engine frame limiter (FRAMES_PER_SECOND=0); simulation stays at 20 turns/s and VSync stays off")
+    parser.add_argument("--offscreen", action="store_true",
+                        help="present into an offscreen texture ring instead of a swapchain; measurement mode, no window output")
+    parser.add_argument("--max-load", type=float, default=DEFAULT_MAX_LOAD,
+                        help="refuse the run when the one-minute load average per core exceeds this")
+    parser.add_argument("--ignore-guards", action="store_true",
+                        help="record environment guard findings without refusing; never applies to the timing lock")
     parser.add_argument("--headless", action="store_true", help="dummy/software smoke test, not a native performance baseline")
     args = parser.parse_args()
     if args.backend == "rust" and (args.headless or sys.platform != "darwin"):
         parser.error("--backend rust requires native macOS; --headless is only for the original backend")
+    if args.offscreen and (args.backend != "rust" or args.headless or sys.platform != "darwin"):
+        parser.error("--offscreen requires --backend rust on native macOS and is incompatible with --headless")
     if args.level is None:
         args.level = 20 if args.scene == "busy" else 1
     if not 1 <= args.warmup_turns <= 600 or not 20 <= args.turns <= 1200:
@@ -464,45 +597,76 @@ def main():
               "engine_sha256": sha256(engine), "settings": settings_for(args), "frame_cap": frame_cap_for(args)}
     write_json(output / "report.json", report)
     try:
-        with tempfile.TemporaryDirectory(prefix="profile-game-", dir=work_root) as temporary:
-            work = Path(temporary)
-            try:
-                capture.clone_assets(game, work, args.resolution)
-                configure(work, report["settings"])
-                (output / "keeperfx.cfg").write_bytes((work / "keeperfx.cfg").read_bytes())
-                report["assets"] = asset_identity(work)
-                report["config_sha256"] = sha256(work / "keeperfx.cfg")
-                command = [str(engine), "-nointro", "-nosound", "-altinput", "-skipheartzoom",
-                           "-campaign", args.campaign, "-level", str(args.level)]
-                environment = environment_for(args, output)
-                report.update(command=command, environment={key: value for key, value in environment.items()
-                              if key.startswith(("KFX_PERF_", "SDL_")) or key == "KFX_PRESENT_BACKEND"},
-                              timeout_seconds=120 + math.ceil((args.warmup_turns + args.turns) / 20), status="running")
-                write_json(output / "report.json", report)
-                result = subprocess.run(command, cwd=work, env=environment, capture_output=True,
-                                        text=True, timeout=report["timeout_seconds"])
-                (output / "stdout.log").write_text(result.stdout)
-                (output / "stderr.log").write_text(result.stderr)
-                report["returncode"] = result.returncode
-                if result.returncode:
-                    raise RuntimeError(f"engine exited with {result.returncode}")
-                if "Performance capture failed:" in result.stderr:
-                    raise RuntimeError("engine reported a performance capture failure")
-                report.update(summarize(output, args), status="complete")
-            except subprocess.TimeoutExpired as error:
-                for name, value in (("stdout.log", error.stdout), ("stderr.log", error.stderr)):
-                    (output / name).write_text(value.decode(errors="replace") if isinstance(value, bytes) else value or "")
-                raise RuntimeError(f"engine exceeded the {report['timeout_seconds']} second deadline") from error
-            finally:
-                if (work / "keeperfx.log").is_file():
-                    (output / "keeperfx.log").write_bytes((work / "keeperfx.log").read_bytes())
+        with timing_lock() as lock:
+            report["timing_lock"] = lock
+            guards = {"max_load": args.max_load, "ignored": bool(args.ignore_guards),
+                      "offscreen": offscreen(args), "console_locked": console_locked(),
+                      "load_per_core": load_per_core()}
+            guards["findings"] = evaluate_guards(args, guards["console_locked"], guards["load_per_core"])
+            report["environment_guards"] = guards
+            write_json(output / "report.json", report)
+            if guards["findings"] and not args.ignore_guards:
+                raise Refusal(guards["findings"][0]["reason"], guards["findings"][0]["detail"])
+            run_engine(output, engine, game, work_root, args, report, guards)
         write_report(output, report)
+    except Refusal as error:
+        report.update(status="refused", refusal={"reason": error.reason, "detail": error.detail})
+        write_json(output / "report.json", report)
+        raise RuntimeError(f"profiling refused ({error.reason}): {error.detail}; diagnostics preserved in {output}") from error
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
         report.update(status="failed", error=str(error))
         write_json(output / "report.json", report)
         raise RuntimeError(f"profiling failed: {error}; diagnostics preserved in {output}") from error
     write_json(output / "report.json", report)
     print(f"Profiled {args.turns} {args.scene} simulation turns ({report['frame_cap']['label']}): {output / 'report.md'}")
+
+
+def run_engine(output, engine, game, work_root, args, report, guards):
+    with tempfile.TemporaryDirectory(prefix="profile-game-", dir=work_root) as temporary:
+        work = Path(temporary)
+        try:
+            capture.clone_assets(game, work, args.resolution)
+            configure(work, report["settings"])
+            (output / "keeperfx.cfg").write_bytes((work / "keeperfx.cfg").read_bytes())
+            report["assets"] = asset_identity(work)
+            report["config_sha256"] = sha256(work / "keeperfx.cfg")
+            command = [str(engine), "-nointro", "-nosound", "-altinput", "-skipheartzoom",
+                       "-campaign", args.campaign, "-level", str(args.level)]
+            environment = environment_for(args, output)
+            report.update(command=command, environment={key: value for key, value in environment.items()
+                          if key.startswith(("KFX_PERF_", "SDL_")) or key == "KFX_PRESENT_BACKEND"},
+                          timeout_seconds=120 + math.ceil((args.warmup_turns + args.turns) / 20), status="running")
+            write_json(output / "report.json", report)
+            result = subprocess.run(command, cwd=work, env=environment, capture_output=True,
+                                    text=True, timeout=report["timeout_seconds"])
+            (output / "stdout.log").write_text(result.stdout)
+            (output / "stderr.log").write_text(result.stderr)
+            report["returncode"] = result.returncode
+            if result.returncode:
+                raise RuntimeError(f"engine exited with {result.returncode}")
+            occlusion = post_run_occlusion(output, result.stderr)
+            guards["occlusion"] = occlusion
+            if occlusion and not args.ignore_guards:
+                raise Refusal(occlusion["reason"], occlusion["detail"])
+            if "Performance capture failed:" in result.stderr:
+                raise RuntimeError("engine reported a performance capture failure")
+            report.update(summarize(output, args), status="complete")
+            guards["load_per_core_end"] = load_per_core()
+            if guards["load_per_core_end"] is not None and guards["load_per_core_end"] > args.max_load:
+                report["limitations"] += [
+                    f"Background load per core reached {guards['load_per_core_end']:.3f} by the end of the run, "
+                    f"above the --max-load {args.max_load} threshold; the run is annotated, not discarded."]
+            if args.ignore_guards:
+                report["limitations"] += [
+                    "--ignore-guards was set: environment guard findings were recorded in "
+                    "environment_guards but not enforced."]
+        except subprocess.TimeoutExpired as error:
+            for name, value in (("stdout.log", error.stdout), ("stderr.log", error.stderr)):
+                (output / name).write_text(value.decode(errors="replace") if isinstance(value, bytes) else value or "")
+            raise RuntimeError(f"engine exceeded the {report['timeout_seconds']} second deadline") from error
+        finally:
+            if (work / "keeperfx.log").is_file():
+                (output / "keeperfx.log").write_bytes((work / "keeperfx.log").read_bytes())
 
 
 if __name__ == "__main__":
