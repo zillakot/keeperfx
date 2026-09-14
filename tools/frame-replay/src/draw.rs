@@ -1145,7 +1145,7 @@ impl DrawRenderer {
             0,
         ];
         let mut parameters = [0u8; 32];
-        for (word, bytes) in words.iter().zip(parameters.chunks_exact_mut(4)) {
+        for (word, bytes) in words.iter().zip(parameters.as_chunks_mut::<4>().0) {
             bytes.copy_from_slice(&word.to_le_bytes());
         }
         self.queue.write_buffer(&slot.parameters, 0, &parameters);
