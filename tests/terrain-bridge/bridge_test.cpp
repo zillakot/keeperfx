@@ -620,6 +620,33 @@ int main()
         assert(bridge.GetCounters().cpu_replayed_spans == 3);
         assert(bridge.GetCounters().rejected_commands == 0 && bridge.GetCounters().rejected_spans == 0);
     }
+    {
+        // A run recorded against two views of the frame root has no single CPU replay buffer:
+        // the rasterizer would place the larger view's spans outside the smaller one, so the
+        // run is discarded for a full redraw instead of replayed.
+        std::vector<uint8_t> run(24 * 10, 0x6a);
+        const std::vector<uint8_t> untouched = run;
+        KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+        KfxGpolyTarget corner = {run.data(), 8, 4, 24};
+        const KfxGpolySpan small = {1, 1, 4, a.start_low, a.start_high, a.step_low, a.step_high};
+        WgpuTerrainBridge bridge(0, false, false, true);
+        assert(bridge.BeginFrame(run_target));
+        bridge.Boundary(true);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &run_target, &a, texture.data(), fade.data()) == 1);
+        assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &corner, &small, texture.data(), fade.data()) == 1);
+        assert(bridge.GetCounters().bridge_target_runs == 1);
+        assert(bridge.GetCounters().gpu_batches == 0 && bridge.FrameValid());
+        fail_target_create = true;
+        bridge.Flush();
+        fail_target_create = false;
+        assert(bridge.Failed());
+        assert(!bridge.FrameValid());
+        assert(run == untouched);
+        assert(bridge.GetCounters().cpu_replayed_spans == 0);
+        assert(bridge.GetCounters().rejected_spans == 2);
+        bridge.FullRedraw();
+        assert(bridge.FrameValid());
+    }
     for (const bool by_exception : {false, true}) {
         // Mixed run: the generic command has no CPU oracle here, so the frame must go invalid.
         std::vector<uint8_t> run(24 * 10, 0x6a);

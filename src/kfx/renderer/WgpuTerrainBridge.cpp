@@ -595,7 +595,8 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
         m_context = kfx_wgpu_draw_create(m_error.data(), m_error.size());
         if (m_context == nullptr) return Fail(nullptr);
     }
-    if (m_pending.size() >= kPendingSpanLimit) {
+    // Verification rasterizes the run itself, which needs the single-target invariant.
+    if (m_pending.size() >= kPendingSpanLimit || (m_verify && PendingTargetChanged(target))) {
         Flush();
         if (m_failed) return KFX_GPOLY_DECLINED;
     }
@@ -670,8 +671,8 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
     for (const auto& vertex : triangle.vertices)
         if (vertex.x < -32768 || vertex.x > 32767 || vertex.y < -32768 || vertex.y > 32767)
             return KFX_GPOLY_DECLINED;
-    if ((m_verify && !m_pending.empty()) || m_triangles.size() >= 128 ||
-        (m_rasterizer && m_rasterizer != rasterizer)) Flush();
+    if ((m_verify && (!m_pending.empty() || PendingTargetChanged(target))) ||
+        m_triangles.size() >= 128 || (m_rasterizer && m_rasterizer != rasterizer)) Flush();
     if (m_failed) return KFX_GPOLY_DECLINED;
     if (m_context == nullptr) {
         if (m_fail_init) return Fail("injected GPU drawing initialization failure");
@@ -712,6 +713,10 @@ bool WgpuTerrainBridge::PendingIsReplayable() const
     // Generic commands keep their oracle in the caller, so a mixed run has no CPU replay.
     for (const auto& command : m_pending)
         if (command.kind != KFX_WGPU_DRAW_GPOLY_SPAN) return false;
+    // RasterizePending writes one buffer its callers size from m_native_target, so a run
+    // recorded against several views would place an earlier, larger view's spans outside it.
+    for (const auto& run : m_order)
+        if (!SameRun(run.target, m_order.front().target)) return false;
     return true;
 }
 
