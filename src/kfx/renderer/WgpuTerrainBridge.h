@@ -53,6 +53,7 @@ public:
         uint64_t gpu_shadow_commands = 0, shadow_scratch_upload_bytes = 0, shadow_scratch_readback_bytes = 0, shadow_scratch_copy_bytes = 0;
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
         uint64_t bridge_solo_batches = 0;
+        uint64_t rejected_commands = 0, rejected_spans = 0;
     };
     WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify = false, bool resident = false);
     ~WgpuTerrainBridge();
@@ -119,15 +120,22 @@ private:
         const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
         size_t limit);
     int Fail(const char* reason);
+    // Marks the frame for the full CPU redraw RendererSoftware performs on an invalid frame.
+    void Invalidate();
     // Kinds the Rust packer whitelist and submit routing accept only as a single-command batch.
     static bool NeedsSoloBatch(const KfxWgpuDrawCommand& command);
+    // Only terrain spans and triangles have a CPU rasterizer the bridge can replay.
+    bool PendingIsReplayable() const;
     static bool OrderedSprite(const KfxWgpuDrawCommand& command);
     bool PendingTargetChanged(const KfxGpolyTarget& target) const;
     void AppendCommand(const KfxWgpuDrawCommand& command, uint64_t source);
     void AppendTriangle(const KfxWgpuTriangle& triangle);
     // Releases owned per-command sources, then drops every pending record.
     void ClearPending();
-    void ReplayPending();
+    // Clears the pending run and counts what the target never received.
+    void DiscardPending();
+    // True when the pending run was rasterized onto the target; false leaves it untouched.
+    bool ReplayPending();
     bool RasterizePending(uint8_t* pixels, uint32_t pitch) const;
     bool PrepareNativeTarget();
     bool ExecutePending(KfxWgpuNativeOracle oracle = nullptr, void* oracle_context = nullptr);
