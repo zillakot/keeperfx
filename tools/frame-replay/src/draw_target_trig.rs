@@ -31,7 +31,22 @@ impl DrawRenderer {
             self.check_queued_resource(c.source)?;
             self.check_queued_resource(c.table)?;
         }
-        self.arena_headroom(0)?;
+        let mut assets = std::collections::HashSet::new();
+        let mut demand = 0;
+        for id in commands
+            .iter()
+            .flat_map(|c| [c.source, c.table])
+            .chain(mask)
+        {
+            if assets.insert(id) {
+                let resource = self
+                    .resources
+                    .get(&id)
+                    .context("unknown triangle or mask asset")?;
+                demand += self.arena.allocation_words(id, resource.bytes.len())?;
+            }
+        }
+        self.arena_headroom(demand.saturating_sub(self.resource_bytes as u64))?;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
