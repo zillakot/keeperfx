@@ -29,24 +29,30 @@ pub struct RowLayout {
     pub rows: u32,
     pub width: u32,
     pub height: u32,
-    pad: [u32; 3],
 }
 
 /// A prefix sum over each triangle's covered row extent, with the total row count.
+/// The extent is the clamped vertex y range, which the setup kernel provably never
+/// writes outside: it sorts by y, starts at the lowest vertex, breaks at the highest
+/// or at the view edge, and writes no row below zero.
 pub fn row_layout(triangles: &[Triangle], extents: &[(u32, u32)]) -> (Vec<RowLayout>, u32) {
     let mut layout = Vec::with_capacity(triangles.len());
     let mut base = 0;
     for (triangle, &(width, height)) in triangles.iter().zip(extents) {
-        let _ = triangle;
+        let edge = i64::from(height);
+        let ys = triangle
+            .vertices
+            .map(|vertex| i64::from(vertex.y).clamp(0, edge) as u32);
+        let y_lo = ys.iter().copied().min().unwrap_or(0);
+        let y_hi = ys.iter().copied().max().unwrap_or(0);
         layout.push(RowLayout {
             base,
-            y_lo: 0,
-            rows: height,
+            y_lo,
+            rows: y_hi - y_lo,
             width,
             height,
-            pad: [0; 3],
         });
-        base += height;
+        base += y_hi - y_lo;
     }
     (layout, base)
 }
@@ -87,7 +93,7 @@ impl GpolyPreparer {
         layout: &[RowLayout],
         rows: &wgpu::Buffer,
         stamp: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) -> Result<()> {
+    ) -> Result<wgpu::Buffer> {
         ensure!(
             layout.len() == triangles.len(),
             "triangle row layout does not match the batch"
@@ -145,7 +151,7 @@ impl GpolyPreparer {
             contents: &bytes(&[count, 0, 0, 0]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let mut layout_words = Vec::with_capacity(layout.len() * 8);
+        let mut layout_words = Vec::with_capacity(layout.len() * 5);
         for entry in layout {
             layout_words.extend([
                 entry.base,
@@ -153,9 +159,6 @@ impl GpolyPreparer {
                 entry.rows,
                 entry.width,
                 entry.height,
-                0,
-                0,
-                0,
             ]);
         }
         let layout_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -194,6 +197,6 @@ impl GpolyPreparer {
             pass.set_bind_group(0, &bindings, &[]);
             pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
         }
-        Ok(())
+        Ok(layout_buffer)
     }
 }

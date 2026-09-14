@@ -173,6 +173,9 @@ pub struct Counters {
     pub buffer_bytes: u64,
     pub tile_allocations: u64,
     pub tile_entries: u64,
+    /// Rows the compressed prepared-terrain arena carried, and how often it grew.
+    pub prepared_row_words: u64,
+    pub prepared_row_allocations: u64,
     /// GPU time per pass kind, in `timing::PASS_NAMES` order; zero unless timing is on.
     pub pass_ns: [u64; PASS_KINDS],
     pub timed_passes: u64,
@@ -414,7 +417,9 @@ impl DrawRenderer {
     /// The renderer-owned prepared-row arena, grown in powers of two and reused.
     pub(super) fn prepared_rows(&mut self, rows: u64) -> wgpu::Buffer {
         let words = rows.max(1) * 8;
+        self.counters.prepared_row_words += words;
         if self.prepared_rows.words < words {
+            self.counters.prepared_row_allocations += 1;
             let size = words.next_power_of_two().max(1024) * 4;
             self.counters.buffers += 1;
             self.counters.buffer_bytes += size;

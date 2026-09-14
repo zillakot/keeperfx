@@ -289,6 +289,7 @@ void RendererSoftware::report_drawing()
         gpu.arena_evictions, gpu.arena_overflows, gpu.arena_bytes_uploaded,
         gpu.tile_allocations, gpu.tile_entries,
         counts.bridge_target_flushes, counts.bridge_target_runs,
+        gpu.prepared_row_words, gpu.prepared_row_allocations,
         gpu.pass_ns[0], gpu.pass_ns[1], gpu.pass_ns[2], gpu.pass_ns[3], gpu.pass_ns[4],
         gpu.pass_ns[5], gpu.pass_ns[6], gpu.pass_ns[7], gpu.pass_ns[8],
         gpu.timed_passes, gpu.untimed_passes,
@@ -311,6 +312,7 @@ void RendererSoftware::report_drawing()
                 "\"arena_bytes_uploaded\":%llu,\"arena_bytes_resident\":%llu,"
                 "\"bridge_solo_batches\":%llu,\"bridge_target_flushes\":%llu,"
                 "\"bridge_target_runs\":%llu,\"tile_allocations\":%llu,\"tile_entries\":%llu,"
+                "\"prepared_row_words\":%llu,\"prepared_row_allocations\":%llu,"
                 "\"gpu_raster_ns\":%llu,"
                 "\"gpu_terrain_prepare_ns\":%llu,\"gpu_terrain_render_ns\":%llu,"
                 "\"gpu_shadow_mask_ns\":%llu,\"gpu_target_trig_ns\":%llu,"
@@ -369,6 +371,8 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(counts.bridge_target_runs),
                 static_cast<unsigned long long>(gpu.tile_allocations),
                 static_cast<unsigned long long>(gpu.tile_entries),
+                static_cast<unsigned long long>(gpu.prepared_row_words),
+                static_cast<unsigned long long>(gpu.prepared_row_allocations),
                 static_cast<unsigned long long>(gpu.pass_ns[0]),
                 static_cast<unsigned long long>(gpu.pass_ns[1]),
                 static_cast<unsigned long long>(gpu.pass_ns[2]),

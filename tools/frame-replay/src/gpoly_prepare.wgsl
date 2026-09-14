@@ -7,7 +7,7 @@ struct Vertex {
 struct Triangle { a: Vertex, b: Vertex, c: Vertex }
 struct Span { bounds: vec4<u32>, accumulator: vec4<u32> }
 struct Parameters { count: u32, pad0: u32, pad1: u32, pad2: u32 }
-struct Layout { base: u32, y_lo: u32, rows: u32, width: u32, height: u32, pad0: u32, pad1: u32, pad2: u32 }
+struct Layout { base: u32, y_lo: u32, rows: u32, width: u32, height: u32 }
 @group(0) @binding(0) var<storage, read> triangles: array<Triangle>;
 @group(0) @binding(1) var<storage, read_write> spans: array<Span>;
 @group(0) @binding(2) var<uniform> parameters: Parameters;

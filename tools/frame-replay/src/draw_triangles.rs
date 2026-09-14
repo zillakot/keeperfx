@@ -117,7 +117,7 @@ impl DrawRenderer {
         let rows_buffer = self.prepared_rows(u64::from(rows));
         let mut encoder = self.begin_encoder();
         let stamp = self.stamp(PASS_TERRAIN_PREPARE);
-        self.triangles.as_ref().unwrap().prepare.encode(
+        let extent_buffer = self.triangles.as_ref().unwrap().prepare.encode(
             &self.device,
             &mut encoder,
             &triangles,
@@ -149,6 +149,7 @@ impl DrawRenderer {
                 entries: &[
                     entry(0, &rows_buffer),
                     entry(3, &params),
+                    entry(5, &extent_buffer),
                     entry(6, &self.status),
                 ],
             });
@@ -190,6 +191,7 @@ impl DrawRenderer {
                     entry(2, &target.indices),
                     entry(3, &params),
                     entry(4, &metadata_buffer),
+                    entry(5, &extent_buffer),
                     entry(6, self.status_binding()),
                 ],
             });

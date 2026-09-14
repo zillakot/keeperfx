@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use keeperfx_frame_replay::gpoly::{GpolyPreparer, Triangle, Vertex, row_layout};
+use keeperfx_frame_replay::gpoly::{GpolyPreparer, RowLayout, Triangle, Vertex, row_layout};
 use wgpu::util::DeviceExt;
 
 fn bytes(words: &[u32]) -> Vec<u8> {
@@ -102,8 +102,15 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
         (6, 1, "storage limit"),
         (65, 1, "dispatch"),
     ] {
-        let extents = vec![(width, rows); count];
-        let (limited_layout, _) = row_layout(&triangles[..count], &extents);
+        let limited_layout: Vec<_> = (0..count as u32)
+            .map(|index| RowLayout {
+                base: index * rows,
+                y_lo: 0,
+                rows,
+                width,
+                height: rows,
+            })
+            .collect();
         let error = limited_preparer
             .encode(
                 &limited_device,

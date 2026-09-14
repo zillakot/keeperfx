@@ -5,6 +5,8 @@ struct Parameters { width: u32, height: u32, count: u32, padding: u32, pitch: u3
 @group(0) @binding(2) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(3) var<uniform> parameters: Parameters;
 @group(0) @binding(4) var<storage, read> resources: array<vec2<u32>>;
+struct Layout { base: u32, y_lo: u32, rows: u32, width: u32, height: u32 }
+@group(0) @binding(5) var<storage, read> extents: array<Layout>;
 @group(0) @binding(6) var<storage, read_write> status: array<atomic<u32>, 8>;
 const STATUS_FRAME: u32 = 0u;
 const STATUS_TERRAIN_SHADE: u32 = 2u;
@@ -21,8 +23,8 @@ fn high_product(a: u32, b: u32) -> u32 {
 }
 @compute @workgroup_size(64)
 fn validate(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x >= parameters.height || gid.y >= parameters.count { return; }
-    let row = spans[gid.y * parameters.height + gid.x];
+    if gid.y >= parameters.count || gid.x >= extents[gid.y].rows { return; }
+    let row = spans[extents[gid.y].base + gid.x];
     var low = row.accumulator.x;
     for (var x = 0u; x < row.bounds.z; x++) {
         if (low & 0xff00u) >= 16384u { raise(STATUS_TERRAIN_SPAN); return; }
@@ -35,7 +37,9 @@ fn render(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pixel = parameters.offset + gid.y * parameters.pitch + gid.x;
     var color = pixels[pixel];
     for (var triangle = 0u; triangle < parameters.count; triangle++) {
-        let row = spans[triangle * parameters.height + gid.y];
+        let extent = extents[triangle];
+        if gid.y < extent.y_lo || gid.y - extent.y_lo >= extent.rows { continue; }
+        let row = spans[extent.base + (gid.y - extent.y_lo)];
         if gid.x < row.bounds.x || gid.x - row.bounds.x >= row.bounds.z { continue; }
         let offset = gid.x - row.bounds.x;
         let low = row.accumulator.x + row.accumulator.z * offset;
