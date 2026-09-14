@@ -16,7 +16,7 @@ M (a session) and L (more than one session).
 
 | # | Item | Size | Depends on |
 | --- | --- | --- | --- |
-| 1 | [GPU time attribution](#1-gpu-time-attribution) | M | 2 for reliable capture |
+| 1 | [GPU time attribution](#1-gpu-time-attribution) | M | 2 for reliable capture; counters delivered, trace profiler open |
 | 2 | [Offscreen measurement mode](#2-offscreen-measurement-mode) | M | None |
 | 3 | [Deterministic scene mode](#3-deterministic-scene-mode) | M | None |
 | 4 | [Command-stream capture and offline replay](#4-command-stream-capture-and-offline-replay) | L | 1 for per-pass timing, 3 for a stable capture |
@@ -32,19 +32,35 @@ and appeared to triple, although none of the binning commits touch the minimap.
 The per-pass windows are not exclusive: a pass that waits on a predecessor charges
 the stall to itself, so the measurement redistributed a roughly constant total.
 
-**Deliverable.** A frame-wide timestamp pair, `gpu_frame_ns`, spanning the whole
-encoder (in progress with the tight-bin-boxes PR); a statement in the renderer
-design and in [performance baselines](../performance-baselines.md) that per-pass
-windows include dependency stalls and are not an exclusive decomposition; and a
-profiling script that launches an isolated game session under
+**Deliverable.** Counter and statement parts delivered with the tight-bin-boxes PR;
+the trace profiler is open.
+
+`gpu_frame_ns` is **the union of the frame's timed pass intervals**, not the
+first-begin-to-last-end span this plan originally named. That span was implemented
+first and discarded: grouping stamps by frame let one stale absolute timestamp
+inflate a frame's window to about a second, whereas a union can only ever be wrong
+by one interval's own length. The union also excludes the host gaps between
+submissions, which the encoder span would have counted as GPU time. `KFX_WGPU_GPU_TIMING=2`
+(`profile-game.py --serial-gpu-timing`) drains the queue after every timed submission,
+so the per-pass windows become exclusive at a throughput cost — the diagnostic that
+settles an attribution question directly. The statement that per-pass windows include
+dependency stalls is in the renderer design, the
+[live guide](../live-rust-presentation.md), the profiler's own limitations and
+[performance baselines](../performance-baselines.md).
+
+Still open: a profiling script that launches an isolated game session under
 `xctrace record --template "Metal System Trace"` and summarizes per-pass GPU time
 from the trace.
 
-**Acceptance.** `gpu_frame_ns` is present and satisfies
-`gpu_frame_ns >= max(gpu_*_ns)` and `gpu_frame_ns <= presentation`; the script
-produces a per-pass summary for a busy 1080p run whose totals agree with
-`gpu_frame_ns`; every published pass attribution cites the profiler rather than
-the counter windows.
+**Acceptance.** `gpu_frame_ns >= max(gpu_*_ns)` — met: 7.779 ms against a 3.069 ms
+raster on a busy 1080p frame. **`gpu_frame_ns <= presentation` is not the right bound
+and is withdrawn**: `presentation` is a host scope that ends when the submission is
+handed over, while the GPU keeps running into the rest of the frame, so once the
+frame hit the 60 FPS cap the same run measured `gpu_frame_ns` 7.779 ms against a
+4.681 ms presentation mean. The frame interval bounds it instead, and does: 7.779 ms
+against 16.667 ms. Remaining acceptance for the trace profiler: a per-pass summary for
+a busy 1080p run whose totals agree with `gpu_frame_ns`, after which every published
+pass attribution cites the profiler rather than the counter windows.
 
 **Size.** M. **Dependencies.** Item 2 for a capture that does not depend on a
 visible window.
@@ -126,6 +142,16 @@ run's actual targets. Plus AddressSanitizer enabled on every C fixture in CI.
 on a deliberately widened or narrowed box; each of the four known defects is
 reproduced by the test against the pre-fix code; the C fixture jobs run under ASan
 with no suppressions beyond documented third-party ones.
+
+A partial down payment landed with the tight-bin-boxes PR:
+[`draw_record_binning_gpu.rs`](../../tools/frame-replay/tests/draw_record_binning_gpu.rs)
+renders each sprite, triangle and bitmap case twice — once through the tight box and
+once through the emitter's whole-target bounds with binning off — and asserts the
+readbacks are identical, with a mutation check (`an_undersized_box_is_caught`) that
+shrinks every derived box by one pixel and requires the comparison to fail. It is
+enumerated rather than randomised and does not cover every kind, so the property test
+above still stands; the two fixture hooks it uses, `tight_record_boxes` and
+`erode_record_boxes`, are what a randomised version would build on.
 
 **Size.** M. **Dependencies.** None; shares the fixture matrix with item 6.
 
