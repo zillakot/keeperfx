@@ -373,3 +373,206 @@ fn snapshot_resource_and_dispatch_limits_leave_targets_unchanged() {
         .unwrap();
     draw.check_status().unwrap();
 }
+
+struct Cycle {
+    root: Vec<u8>,
+    presented: Vec<u8>,
+    submits: u64,
+    checkpoints: u64,
+}
+
+/// Backup, composition, palette pass and restore over a flushed frame, either
+/// recorded into one present tail or submitted a step at a time.
+fn cursor_cycle(
+    renderer: &keeperfx_frame_replay::gpu::Renderer,
+    draw: &mut DrawRenderer,
+    per_step: bool,
+    present: bool,
+) -> Cycle {
+    let (width, height) = (16u32, 12u32);
+    let (cursor_width, cursor_height) = (5u32, 4u32);
+    let (x, y) = (6u32, 5u32);
+    let root = draw.create_target(width, height).unwrap();
+    let background = draw.create_target(cursor_width, cursor_height).unwrap();
+    let (sprite_target, _) = pattern(draw, cursor_width, cursor_height);
+    let sprite = draw
+        .create_target_snapshot(
+            sprite_target,
+            0,
+            0,
+            cursor_width,
+            cursor_height,
+            cursor_width,
+        )
+        .unwrap();
+    draw.tail_submit();
+    draw.frame_begin(root).unwrap();
+    let rows: Vec<_> = (0..width * height)
+        .map(|i| Command {
+            kind: RECT,
+            colour: u32::from((i * 29 + 3) as u8),
+            x: (i % width) as i32,
+            y: (i / width) as i32,
+            width: 1,
+            height: 1,
+            ..Default::default()
+        })
+        .collect();
+    draw.submit(root, &rows).unwrap();
+    draw.frame_flush().unwrap();
+    let palette: Vec<u8> = (0..256)
+        .flat_map(|i| [i as u8, (i * 3) as u8, (i * 7) as u8, 255])
+        .collect();
+    let texture = renderer.device().create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let submits = draw.counters().submits;
+    let checkpoints = draw.frame_counters().checkpoints;
+    let step = |draw: &mut DrawRenderer| {
+        if per_step {
+            draw.tail_submit();
+        }
+    };
+    let part = draw
+        .create_target_snapshot(root, x, y, cursor_width, cursor_height, cursor_width)
+        .unwrap();
+    step(draw);
+    draw.submit_target_images(background, &[image(part, cursor_width, cursor_height)])
+        .unwrap();
+    step(draw);
+    draw.release_target_snapshot(part).unwrap();
+    let backup = draw
+        .create_target_snapshot(background, 0, 0, cursor_width, cursor_height, cursor_width)
+        .unwrap();
+    step(draw);
+    let composed = Command {
+        x: x as i32,
+        y: y as i32,
+        transparent: 255,
+        ..image(sprite, cursor_width, cursor_height)
+    };
+    draw.submit_target_images(root, &[composed]).unwrap();
+    step(draw);
+    if present {
+        draw.present_into(
+            root,
+            &palette,
+            width,
+            height,
+            &texture.create_view(&Default::default()),
+        )
+        .unwrap();
+        step(draw);
+    }
+    let restored = Command {
+        x: x as i32,
+        y: y as i32,
+        ..image(backup, cursor_width, cursor_height)
+    };
+    draw.submit_target_images(root, &[restored]).unwrap();
+    draw.tail_submit();
+    let cycle = Cycle {
+        submits: draw.counters().submits - submits,
+        checkpoints: draw.frame_counters().checkpoints - checkpoints,
+        root: draw.readback(root).unwrap(),
+        presented: read_texture(renderer, &texture, width, height),
+    };
+    draw.release_target_snapshot(backup).unwrap();
+    draw.release_target_snapshot(sprite).unwrap();
+    draw.frame_abort().unwrap();
+    draw.release_target(root).unwrap();
+    draw.release_target(background).unwrap();
+    draw.release_target(sprite_target).unwrap();
+    cycle
+}
+
+fn read_texture(
+    renderer: &keeperfx_frame_replay::gpu::Renderer,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let stride = (width * 4).next_multiple_of(256);
+    let staging = renderer.device().create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(stride * height),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = renderer
+        .device()
+        .create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: None,
+            },
+        },
+        texture.size(),
+    );
+    renderer.queue().submit([encoder.finish()]);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    staging
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |r| sender.send(r).unwrap());
+    renderer
+        .device()
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(30)),
+        })
+        .unwrap();
+    receiver.recv().unwrap().unwrap();
+    let mapped = staging.slice(..).get_mapped_range().unwrap();
+    let rows: Vec<_> = (0..height)
+        .flat_map(|row| {
+            let start = (row * stride) as usize;
+            mapped[start..start + (width * 4) as usize].to_vec()
+        })
+        .collect();
+    drop(mapped);
+    staging.unmap();
+    rows
+}
+
+#[test]
+#[ignore = "requires GPU adapter"]
+fn a_present_tail_matches_one_submit_per_step_and_adds_no_checkpoint() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let renderer = keeperfx_frame_replay::gpu::Renderer::new(device, queue).unwrap();
+    let mut draw = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    cursor_cycle(&renderer, &mut draw, true, true);
+    let stepped = cursor_cycle(&renderer, &mut draw, true, true);
+    let tailed = cursor_cycle(&renderer, &mut draw, false, true);
+    assert_eq!(tailed.root, stepped.root);
+    assert_eq!(tailed.presented, stepped.presented);
+    assert_ne!(tailed.presented, vec![0; tailed.presented.len()]);
+    assert_eq!(tailed.checkpoints, 0);
+    assert_eq!(stepped.checkpoints, 0);
+    assert_eq!(tailed.submits, 1);
+    assert_eq!(stepped.submits, 6);
+    // An acquisition the surface skipped still finishes the tail, so the cursor
+    // background and the root stay where a presented frame leaves them.
+    let skipped = cursor_cycle(&renderer, &mut draw, false, false);
+    assert_eq!(skipped.root, stepped.root);
+    assert_eq!(skipped.checkpoints, 0);
+    assert_eq!(skipped.submits, 1);
+    draw.check_status().unwrap();
+}
