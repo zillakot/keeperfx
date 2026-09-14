@@ -15,6 +15,7 @@ impl DrawRenderer {
             slot < shadow::SLOTS,
             "shadow mask slot exceeds the resident ring"
         );
+        self.shadow_residency()?;
         let limit = self.storage_limit() as usize;
         ensure!(
             commands.len() <= MAX_COMMANDS && commands.len() * 112 <= limit,
@@ -152,7 +153,7 @@ impl DrawRenderer {
                 entry(2, &assets),
                 entry(3, &params),
                 entry(4, &tb),
-                entry(6, &self.shadow_slots),
+                entry(6, self.shadow_slot_binding()),
             ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());

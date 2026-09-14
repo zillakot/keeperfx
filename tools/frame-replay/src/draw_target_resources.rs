@@ -211,6 +211,7 @@ impl DrawRenderer {
                 entry(2, &assets),
                 entry(3, &parameters),
                 entry(4, &tile_buffer),
+                entry(6, self.shadow_slot_binding()),
             ],
         });
         {

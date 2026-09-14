@@ -170,8 +170,9 @@ pub struct DrawRenderer {
     effects: Option<wgpu::ComputePipeline>,
     trig_validate: Option<wgpu::ComputePipeline>,
     shadow: Option<wgpu::ComputePipeline>,
-    shadow_scratch: wgpu::Buffer,
-    shadow_slots: wgpu::Buffer,
+    shadow_scratch: Option<wgpu::Buffer>,
+    shadow_slots: Option<wgpu::Buffer>,
+    shadow_placeholder: wgpu::Buffer,
     shadow_next_slot: u32,
     minimap: Option<minimap::MinimapState>,
     triangles: Option<triangles::TrianglePipelines>,
@@ -249,17 +250,9 @@ impl DrawRenderer {
             cache: None,
         });
         renderer.check_status()?;
-        let shadow_scratch = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("resident creature shadow scratch"),
-            size: shadow::MASK_WORDS as u64 * 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let shadow_slots = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("resident creature shadow mask slots"),
-            size: shadow::MASK_WORDS as u64 * 4 * u64::from(shadow::SLOTS),
+        let shadow_placeholder = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unbound creature shadow mask slots"),
+            size: 4,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -271,8 +264,9 @@ impl DrawRenderer {
             effects: None,
             trig_validate: None,
             shadow: None,
-            shadow_scratch,
-            shadow_slots,
+            shadow_scratch: None,
+            shadow_slots: None,
+            shadow_placeholder,
             shadow_next_slot: 0,
             minimap: None,
             triangles: None,
@@ -535,7 +529,7 @@ impl DrawRenderer {
                 entry(2, &asset_buffer),
                 entry(3, &parameters),
                 entry(4, &tile_buffer),
-                entry(6, &self.shadow_slots),
+                entry(6, self.shadow_slot_binding()),
             ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());

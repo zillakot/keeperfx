@@ -70,6 +70,39 @@ fn descriptor(source: &Resource) -> Result<[u32; 8]> {
 }
 
 impl DrawRenderer {
+    pub(super) fn shadow_slot_binding(&self) -> &wgpu::Buffer {
+        self.shadow_slots
+            .as_ref()
+            .unwrap_or(&self.shadow_placeholder)
+    }
+
+    /// Allocates the cross-frame scratch and the mask slot ring on first shadow use.
+    pub(super) fn shadow_residency(&mut self) -> Result<()> {
+        if self.shadow_slots.is_some() {
+            return Ok(());
+        }
+        let scratch = MASK_WORDS as u64 * 4;
+        ensure!(
+            scratch * u64::from(SLOTS) <= self.storage_limit(),
+            "resident shadow slots exceed the device buffer limit"
+        );
+        self.shadow_scratch = Some(self.tracked_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident creature shadow scratch"),
+            size: scratch,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.shadow_slots = Some(self.tracked_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident creature shadow mask slots"),
+            size: scratch * u64::from(SLOTS),
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        }));
+        Ok(())
+    }
+
     pub(super) fn shadow_pipeline(&mut self) -> Result<&wgpu::ComputePipeline> {
         ensure!(
             self.device.limits().max_compute_workgroups_per_dimension >= 32,
@@ -114,6 +147,7 @@ impl DrawRenderer {
         );
         ensure!(slot < SLOTS, "shadow mask slot exceeds the resident ring");
         let values: Vec<_> = asset.bytes.iter().map(|&b| u32::from(b)).collect();
+        self.shadow_residency()?;
         self.shadow_pipeline()?;
         let input = buffer(
             &self.device,
@@ -127,12 +161,12 @@ impl DrawRenderer {
             label: None,
             layout: &pipeline.get_bind_group_layout(0),
             entries: &[
-                entry(0, &self.shadow_scratch),
+                entry(0, self.shadow_scratch.as_ref().unwrap()),
                 entry(1, &input),
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.shadow_slots,
+                        buffer: self.shadow_slots.as_ref().unwrap(),
                         offset: u64::from(slot) * MASK_WORDS as u64 * 4,
                         size: std::num::NonZeroU64::new(MASK_WORDS as u64 * 4),
                     }),
@@ -154,8 +188,11 @@ impl DrawRenderer {
     /// Clears the cross-frame shadow scratch; required after a full CPU redraw or device loss.
     pub fn shadow_scratch_reset(&mut self) -> Result<()> {
         self.check_status()?;
+        let Some(scratch) = self.shadow_scratch.clone() else {
+            return Ok(());
+        };
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        encoder.clear_buffer(&self.shadow_scratch, 0, None);
+        encoder.clear_buffer(&scratch, 0, None);
         self.submit_encoder(encoder);
         self.check_status()
     }
@@ -163,6 +200,9 @@ impl DrawRenderer {
     /// Blocking read of the resident scratch; verification and recovery only.
     pub fn shadow_scratch_read(&mut self) -> Result<Vec<u8>> {
         self.check_status()?;
+        let Some(scratch) = self.shadow_scratch.clone() else {
+            return Ok(vec![0; MASK_WORDS]);
+        };
         let size = MASK_WORDS as u64 * 4;
         let staging = self.tracked_buffer(&wgpu::BufferDescriptor {
             label: Some("shadow scratch verification"),
@@ -171,7 +211,7 @@ impl DrawRenderer {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(&self.shadow_scratch, 0, &staging, 0, size);
+        encoder.copy_buffer_to_buffer(&scratch, 0, &staging, 0, size);
         self.submit_encoder(encoder);
         let (sender, receiver) = std::sync::mpsc::channel();
         staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
