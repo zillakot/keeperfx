@@ -995,7 +995,11 @@ pub struct DrawCounters {
     wait_ns: u64,
     buffers: u64,
     buffer_bytes: u64,
+    arena_evictions: u64,
+    arena_overflows: u64,
+    arena_bytes_uploaded: u64,
     host_staged_asset_bytes: u64,
+    arena_bytes_resident: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1013,6 +1017,7 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
             );
             let drawing = &*handle.cast::<crate::draw::DrawRenderer>();
             let counters = drawing.counters();
+            let arena = drawing.arena_counters();
             output.write(DrawCounters {
                 batches: counters.batches,
                 commands: counters.commands,
@@ -1025,7 +1030,11 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 wait_ns: counters.wait_ns,
                 buffers: counters.buffers,
                 buffer_bytes: counters.buffer_bytes,
+                arena_evictions: arena.evictions,
+                arena_overflows: arena.overflows,
+                arena_bytes_uploaded: arena.bytes_uploaded,
                 host_staged_asset_bytes: drawing.staged_asset_bytes(),
+                arena_bytes_resident: arena.bytes_resident,
             });
             Ok(Some(1))
         });

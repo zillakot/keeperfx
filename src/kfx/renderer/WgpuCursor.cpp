@@ -167,6 +167,7 @@ struct WgpuCursor::State {
             COLLECT(command_upload_bytes); COLLECT(readback_bytes);
             COLLECT(submits); COLLECT(dispatches); COLLECT(waits); COLLECT(wait_ns);
             COLLECT(buffers); COLLECT(buffer_bytes);
+            COLLECT(arena_evictions); COLLECT(arena_overflows); COLLECT(arena_bytes_uploaded);
 #undef COLLECT
             reported = c;
         }
