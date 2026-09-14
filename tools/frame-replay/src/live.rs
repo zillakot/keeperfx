@@ -55,20 +55,45 @@ fn count_allocation(size: usize) {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[cfg(target_os = "macos")]
+#[derive(Default)]
+struct Slot {
+    texture: Option<wgpu::Texture>,
+    last: Option<wgpu::SubmissionIndex>,
+}
+
+/// Where a presented frame lands. Only acquisition and presentation differ between
+/// the two; the palette pass and the drawing context render into a plain view either way.
+#[cfg(target_os = "macos")]
+enum Target {
+    Swapchain {
+        surface: wgpu::Surface<'static>,
+        layer: *mut c_void,
+        config: wgpu::SurfaceConfiguration,
+        modes: Vec<wgpu::PresentMode>,
+        pending: Option<wgpu::SurfaceTexture>,
+        reconfigure: bool,
+    },
+    Offscreen {
+        slots: [Slot; 2],
+        next: usize,
+        size: (u32, u32),
+    },
+}
+
+#[cfg(target_os = "macos")]
 struct Presenter {
-    pending: Option<wgpu::SurfaceTexture>,
-    surface: wgpu::Surface<'static>,
+    target: Target,
+    format: wgpu::TextureFormat,
+    pending_view: Option<wgpu::TextureView>,
     renderer: Renderer,
     drawing: Option<Box<crate::draw::DrawRenderer>>,
     instance: wgpu::Instance,
-    layer: *mut c_void,
-    config: wgpu::SurfaceConfiguration,
-    modes: Vec<wgpu::PresentMode>,
     adapter: String,
-    reconfigure: bool,
     failed: bool,
     verify: bool,
     verified_frames: u64,
+    presented_frames: u64,
+    acquisition_skips: u64,
 }
 
 #[cfg(target_os = "macos")]
@@ -129,19 +154,61 @@ impl Presenter {
         surface.configure(renderer.device(), &config);
         renderer.check_status()?;
         Ok(Self {
-            pending: None,
-            surface,
+            target: Target::Swapchain {
+                surface,
+                layer,
+                config,
+                modes: capabilities.present_modes,
+                pending: None,
+                reconfigure: false,
+            },
+            format,
+            pending_view: None,
             renderer,
             drawing: None,
             instance,
-            layer,
-            config,
-            modes: capabilities.present_modes,
             adapter: format!("{} ({:?})", info.name, info.backend),
-            reconfigure: false,
             failed: false,
             verify,
             verified_frames: 0,
+            presented_frames: 0,
+            acquisition_skips: 0,
+        })
+    }
+
+    /// Measurement mode: the same palette pass into a two-slot texture ring, with no
+    /// surface, no drawable and therefore no dependence on an unlocked, unoccluded display.
+    fn offscreen(width: u32, height: u32) -> Result<Self> {
+        crate::frame::dimensions(width, height)?;
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::METAL;
+        let instance = wgpu::Instance::new(descriptor);
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))?;
+        let info = adapter.get_info();
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&crate::draw::timing::device_descriptor(&adapter)),
+        )?;
+        // What the Metal surface selects, so pipelines and the palette shader are identical.
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let renderer = Renderer::with_format(device, queue, format)?;
+        renderer.check_status()?;
+        Ok(Self {
+            target: Target::Offscreen {
+                slots: Default::default(),
+                next: 0,
+                size: (width, height),
+            },
+            format,
+            pending_view: None,
+            renderer,
+            drawing: None,
+            instance,
+            adapter: format!("{} ({:?})", info.name, info.backend),
+            failed: false,
+            verify: std::env::var("KFX_WGPU_VERIFY").is_ok_and(|value| value == "1"),
+            verified_frames: 0,
+            presented_frames: 0,
+            acquisition_skips: 0,
         })
     }
 
@@ -151,67 +218,134 @@ impl Presenter {
         if self.drawing.is_none() {
             self.drawing = Some(Box::new(crate::draw::DrawRenderer::new(
                 &self.renderer,
-                self.config.format,
+                self.format,
             )?));
         }
         Ok(self.drawing.as_mut().unwrap())
     }
 
+    fn pending_texture(&self) -> Option<&wgpu::Texture> {
+        match &self.target {
+            Target::Swapchain { pending, .. } => pending.as_ref().map(|frame| &frame.texture),
+            Target::Offscreen { slots, next, .. } => slots[*next].texture.as_ref(),
+        }
+    }
+
     fn acquire(&mut self, width: u32, height: u32, vsync: bool) -> Result<bool> {
         ensure!(!self.failed, "presenter is terminal");
-        ensure!(self.pending.is_none(), "previous frame was not presented");
+        ensure!(
+            self.pending_view.is_none(),
+            "previous frame was not presented"
+        );
         self.renderer.device().poll(wgpu::PollType::Poll)?;
         self.renderer.check_status()?;
         if width == 0 || height == 0 {
+            self.acquisition_skips += 1;
             return Ok(false);
         }
         crate::frame::dimensions(width, height)?;
-        let mode = present_mode(&self.modes, vsync)?;
-        if self.reconfigure
-            || (
-                self.config.width,
-                self.config.height,
-                self.config.present_mode,
-            ) != (width, height, mode)
-        {
-            self.config.width = width;
-            self.config.height = height;
-            self.config.present_mode = mode;
-            self.surface.configure(self.renderer.device(), &self.config);
-            self.reconfigure = false;
-        }
-        for _ in 0..2 {
-            match self.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(frame) => {
-                    self.pending = Some(frame);
-                    return Ok(true);
+        let Self {
+            target,
+            renderer,
+            instance,
+            pending_view,
+            format,
+            acquisition_skips,
+            ..
+        } = self;
+        let device = renderer.device();
+        match target {
+            Target::Offscreen { slots, next, size } => {
+                if *size != (width, height) {
+                    *size = (width, height);
+                    for slot in slots.iter_mut() {
+                        slot.texture = None;
+                    }
                 }
-                wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                    self.pending = Some(frame);
-                    self.reconfigure = true;
-                    return Ok(true);
+                let slot = &mut slots[*next];
+                // The ring is the offscreen path's only back-pressure: `nextDrawable`
+                // was what kept an uncapped host from running away from the GPU.
+                if let Some(index) = slot.last.take() {
+                    device.poll(wgpu::PollType::Wait {
+                        submission_index: Some(index),
+                        timeout: Some(std::time::Duration::from_secs(10)),
+                    })?;
                 }
-                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                    return Ok(false);
+                let texture = slot.texture.get_or_insert_with(|| {
+                    device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("offscreen presentation"),
+                        size: wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: *format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::COPY_SRC,
+                        view_formats: &[],
+                    })
+                });
+                *pending_view = Some(texture.create_view(&Default::default()));
+                renderer.check_status()?;
+                Ok(true)
+            }
+            Target::Swapchain {
+                surface,
+                layer,
+                config,
+                modes,
+                pending,
+                reconfigure,
+            } => {
+                let mode = present_mode(modes, vsync)?;
+                if *reconfigure
+                    || (config.width, config.height, config.present_mode) != (width, height, mode)
+                {
+                    config.width = width;
+                    config.height = height;
+                    config.present_mode = mode;
+                    surface.configure(device, config);
+                    *reconfigure = false;
                 }
-                wgpu::CurrentSurfaceTexture::Outdated => {
-                    self.surface.configure(self.renderer.device(), &self.config)
+                for _ in 0..2 {
+                    match surface.get_current_texture() {
+                        wgpu::CurrentSurfaceTexture::Success(frame) => {
+                            *pending_view = Some(frame.texture.create_view(&Default::default()));
+                            *pending = Some(frame);
+                            return Ok(true);
+                        }
+                        wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                            *pending_view = Some(frame.texture.create_view(&Default::default()));
+                            *pending = Some(frame);
+                            *reconfigure = true;
+                            return Ok(true);
+                        }
+                        wgpu::CurrentSurfaceTexture::Timeout
+                        | wgpu::CurrentSurfaceTexture::Occluded => {
+                            *acquisition_skips += 1;
+                            return Ok(false);
+                        }
+                        wgpu::CurrentSurfaceTexture::Outdated => surface.configure(device, config),
+                        wgpu::CurrentSurfaceTexture::Lost => {
+                            renderer.check_status()?;
+                            *surface = unsafe {
+                                instance.create_surface_unsafe(
+                                    wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(*layer),
+                                )
+                            }?;
+                            surface.configure(device, config);
+                        }
+                        wgpu::CurrentSurfaceTexture::Validation => {
+                            bail!("surface acquisition validation failed")
+                        }
+                    }
                 }
-                wgpu::CurrentSurfaceTexture::Lost => {
-                    self.renderer.check_status()?;
-                    self.surface = unsafe {
-                        self.instance.create_surface_unsafe(
-                            wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(self.layer),
-                        )
-                    }?;
-                    self.surface.configure(self.renderer.device(), &self.config);
-                }
-                wgpu::CurrentSurfaceTexture::Validation => {
-                    bail!("surface acquisition validation failed")
-                }
+                bail!("surface unavailable after recovery")
             }
         }
-        bail!("surface unavailable after recovery")
     }
 }
 
@@ -274,6 +408,21 @@ pub unsafe extern "C" fn kfx_wgpu_create(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(target_os = "macos")]
+pub unsafe extern "C" fn kfx_wgpu_create_offscreen(
+    width: u32,
+    height: u32,
+    error: *mut c_char,
+    capacity: usize,
+) -> *mut c_void {
+    unsafe {
+        boundary(error, capacity, || {
+            Ok(Box::into_raw(Box::new(Presenter::offscreen(width, height)?)).cast())
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 #[cfg(target_os = "macos")]
 pub unsafe extern "C" fn kfx_wgpu_submit(
@@ -312,12 +461,7 @@ pub unsafe extern "C" fn kfx_wgpu_submit(
             if !presenter.acquire(output_width, output_height, vsync != 0)? {
                 return Ok(Some(0));
             }
-            let view = presenter
-                .pending
-                .as_ref()
-                .unwrap()
-                .texture
-                .create_view(&Default::default());
+            let view = presenter.pending_view.clone().unwrap();
             presenter.renderer.render_into(
                 width,
                 height,
@@ -331,7 +475,9 @@ pub unsafe extern "C" fn kfx_wgpu_submit(
             if presenter.verify {
                 verify_surface(
                     &presenter.renderer,
-                    &presenter.pending.as_ref().unwrap().texture,
+                    presenter
+                        .pending_texture()
+                        .context("no acquired frame to verify")?,
                     std::slice::from_raw_parts(indices, length),
                     width,
                     height,
@@ -370,11 +516,30 @@ pub unsafe extern "C" fn kfx_wgpu_present(
             if let Some(drawing) = presenter.drawing.as_mut() {
                 drawing.frame_submit()?;
             }
-            let Some(frame) = presenter.pending.take() else {
+            if presenter.pending_view.take().is_none() {
                 presenter.renderer.check_status()?;
                 return Ok(Some(0));
-            };
-            presenter.renderer.queue().present(frame);
+            }
+            let Presenter {
+                target, renderer, ..
+            } = presenter;
+            match target {
+                Target::Swapchain { pending, .. } => {
+                    let frame = pending.take().context("acquired frame was lost")?;
+                    renderer.queue().present(frame);
+                }
+                Target::Offscreen { slots, next, .. } => {
+                    // The empty submit names the frame's place in the queue; the ring
+                    // waits on it before this slot's texture is rendered into again.
+                    slots[*next].last = Some(
+                        renderer
+                            .queue()
+                            .submit(std::iter::empty::<wgpu::CommandBuffer>()),
+                    );
+                    *next = (*next + 1) % slots.len();
+                }
+            }
+            presenter.presented_frames += 1;
             presenter.renderer.check_status()?;
             Ok(Some(1))
         })
@@ -404,15 +569,25 @@ pub unsafe extern "C" fn kfx_wgpu_details(
         boundary(text, capacity, || {
             ensure!(!handle.is_null(), "null presenter");
             let presenter = &*handle.cast::<Presenter>();
-            let details = serde_json::json!({
+            let mut details = serde_json::json!({
                 "adapter": presenter.adapter, "backend": "Metal",
-                "format": format!("{:?}", presenter.config.format),
-                "present_mode": format!("{:?}", presenter.config.present_mode),
-                "color_space": format!("{:?}", presenter.config.color_space),
-                "latency": presenter.config.desired_maximum_frame_latency,
-            "verified_frames": presenter.verified_frames,
-            })
-            .to_string();
+                "format": format!("{:?}", presenter.format),
+                "verified_frames": presenter.verified_frames,
+                "presented_frames": presenter.presented_frames,
+                "acquisition_skips": presenter.acquisition_skips,
+            });
+            match &presenter.target {
+                Target::Swapchain { config, .. } => {
+                    details["present_mode"] = format!("{:?}", config.present_mode).into();
+                    details["color_space"] = format!("{:?}", config.color_space).into();
+                    details["latency"] = config.desired_maximum_frame_latency.into();
+                }
+                Target::Offscreen { slots, .. } => {
+                    details["present_mode"] = "Offscreen".into();
+                    details["latency"] = slots.len().into();
+                }
+            }
+            let details = details.to_string();
             ensure!(details.len() < capacity, "details buffer too small");
             write_text(text, capacity, &details);
             Ok(1)
@@ -666,9 +841,63 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a native Metal adapter"]
+    fn offscreen_ring_bounds_frames_in_flight() {
+        let frame = crate::frame::Frame::fixture();
+        let (width, height) = (frame.width, frame.height);
+        let mut presenter = Presenter::offscreen(width, height).unwrap();
+        let mut error = [0i8; 512];
+        for index in 0..3usize {
+            let Target::Offscreen { slots, next, .. } = &presenter.target else {
+                unreachable!()
+            };
+            assert_eq!(slots[*next].last.is_some(), index >= 2);
+            assert!(presenter.acquire(width, height, false).unwrap());
+            let Target::Offscreen { slots, next, .. } = &presenter.target else {
+                unreachable!()
+            };
+            assert!(
+                slots[*next].last.is_none(),
+                "slot {next} was reused without waiting for its submission"
+            );
+            let view = presenter.pending_view.clone().unwrap();
+            presenter
+                .renderer
+                .render_into(
+                    width,
+                    height,
+                    &frame.indices,
+                    width,
+                    &frame.palette,
+                    width,
+                    height,
+                    &view,
+                )
+                .unwrap();
+            assert_eq!(
+                unsafe {
+                    kfx_wgpu_present((&raw mut presenter).cast(), error.as_mut_ptr(), error.len())
+                },
+                1,
+                "{}",
+                unsafe { std::ffi::CStr::from_ptr(error.as_ptr()) }.to_string_lossy()
+            );
+        }
+        assert_eq!(presenter.presented_frames, 3);
+        assert_eq!(presenter.acquisition_skips, 0);
+        let Target::Offscreen { slots, next, .. } = &presenter.target else {
+            unreachable!()
+        };
+        assert_eq!(*next, 1);
+        assert!(slots.iter().all(|slot| slot.last.is_some()));
+    }
+
+    #[test]
     fn rejects_null_handles_and_invalid_modes() {
         let mut error = [0i8; 100];
         unsafe {
+            assert!(kfx_wgpu_create_offscreen(0, 0, error.as_mut_ptr(), error.len()).is_null());
+            assert_ne!(error[0], 0);
             assert!(
                 kfx_wgpu_create(
                     std::ptr::null_mut(),
@@ -969,12 +1198,7 @@ pub unsafe extern "C" fn kfx_wgpu_draw_prepare_present(
                 // palette pass omitted.
                 return Ok(Some(0));
             }
-            let view = presenter
-                .pending
-                .as_ref()
-                .unwrap()
-                .texture
-                .create_view(&Default::default());
+            let view = presenter.pending_view.clone().unwrap();
             presenter.drawing()?.present_into(
                 target,
                 std::slice::from_raw_parts(palette, palette_length),
@@ -986,9 +1210,12 @@ pub unsafe extern "C" fn kfx_wgpu_draw_prepare_present(
             if presenter.verify {
                 let (width, height) = presenter.drawing()?.target_dimensions(target)?;
                 let indices = presenter.drawing()?.readback(target)?;
+                let texture = presenter
+                    .pending_texture()
+                    .context("no acquired frame to verify")?;
                 verify_surface(
                     &presenter.renderer,
-                    &presenter.pending.as_ref().unwrap().texture,
+                    texture,
                     &indices,
                     width,
                     height,
