@@ -129,6 +129,47 @@ fn actual_native_shadow_masks_and_triangles() {
 /// triangles, so slot reuse or a hoisted mask pass would show up as a pixel or scratch mismatch.
 #[test]
 #[ignore = "requires GPU and native shadow fixture"]
+fn a_shadow_that_bins_to_nothing_still_records_its_mask() {
+    let (table_bytes, cases) = fixture();
+    let mut draw = drawing();
+    let target = draw.create_target(79, 61).unwrap();
+    let table = draw.create_resource(&table_bytes, 256, 320, 256).unwrap();
+    clear(&mut draw, target);
+    let empty = draw.readback(target).unwrap();
+    draw.shadow_scratch_reset().unwrap();
+    // Collapse both vertex triples onto one point: the triangles' tight box is empty, so
+    // they have nothing to dispatch over. The mask is built from the descriptor and the
+    // RLE, which sit either side of the vertex block, so the resident chain must still
+    // advance to exactly this case's mask.
+    let mut asset = cases[0].asset.clone();
+    asset[32..152].fill(0);
+    let source = draw.create_resource(&asset, 1, 1, 1).unwrap();
+    draw.submit_shadow(target, &shadow(source, table, cases[0].colour))
+        .unwrap();
+    draw.release_resource(source).unwrap();
+    assert!(
+        cases[0].mask.iter().any(|&v| v != 0),
+        "the fixture mask is empty"
+    );
+    assert_eq!(
+        draw.shadow_scratch_read().unwrap(),
+        cases[0].mask,
+        "a shadow whose triangles bin to nothing must still record its mask"
+    );
+    assert_eq!(
+        draw.readback(target).unwrap(),
+        empty,
+        "degenerate shadow triangles must not write a pixel"
+    );
+    assert_eq!(
+        draw.frame_status().1,
+        0,
+        "a degenerate shadow raised a flag"
+    );
+}
+
+#[test]
+#[ignore = "requires GPU and native shadow fixture"]
 fn interleaved_frame_shadow_chain() {
     let (table_bytes, cases) = fixture();
     let mut draw = drawing();
