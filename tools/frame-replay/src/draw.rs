@@ -572,6 +572,23 @@ impl DrawRenderer {
         }
     }
 
+    /// Reserves arena capacity for the batch about to be packed, submitting the
+    /// frame's recording first when growth is needed. Growth replaces the buffer the
+    /// open encoder's bind groups name, and its forward copy would be overtaken by
+    /// every staged write of that submission, so it can only happen between them.
+    /// Every live resource plus `extra` bounds what one batch can need, so a batch
+    /// that passes here cannot be refused inside the frame.
+    pub(super) fn arena_headroom(&mut self, extra: u64) -> Result<()> {
+        let words = self.resource_bytes as u64 + extra;
+        if self.arena.fits(words) {
+            return Ok(());
+        }
+        self.frame_submit()?;
+        self.arena
+            .grow_to(&self.device, &self.queue, &mut self.counters, words);
+        Ok(())
+    }
+
     /// Whether a queued frame owns the encoder. `frame_flush` takes the frame out of
     /// its slot for the length of the replay, which is where most of a frame's passes
     /// are recorded, so the replay flag is part of the answer.
@@ -765,6 +782,7 @@ impl DrawRenderer {
         }
         let (target_width, target_height) = self.target_dimensions(target)?;
         let limit = self.storage_limit() as usize;
+        self.arena_headroom(0)?;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,

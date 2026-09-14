@@ -225,6 +225,7 @@ impl DrawRenderer {
             (target.width, target.height)
         };
         let limit = self.storage_limit() as usize;
+        self.arena_headroom(0)?;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
@@ -272,6 +273,7 @@ impl DrawRenderer {
             .context("unknown sprite target")?
             .clone();
         let limit = self.storage_limit() as usize;
+        self.arena_headroom(0)?;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,

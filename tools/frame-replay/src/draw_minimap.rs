@@ -146,6 +146,7 @@ impl DrawRenderer {
             }
         }
         let limit = self.storage_limit() as usize;
+        self.arena_headroom(0)?;
         let bytes = &self.resources[&c.source].bytes;
         let mut packer = asset_packer(
             &self.device,

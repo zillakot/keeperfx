@@ -146,21 +146,29 @@ impl Arena {
         self.locked = locked;
     }
 
-    pub(super) fn pregrow(
+    /// Whether `words` more can be suballocated without growing. Conservative: it
+    /// ignores the free lists, so a true answer is a guarantee and a false one only
+    /// means growth is possible.
+    pub(super) fn fits(&self, words: u64) -> bool {
+        !self.enabled || u64::from(self.high_water) + words <= u64::from(self.capacity)
+    }
+
+    /// Grows to hold `words` more past the high-water mark. The caller must have no
+    /// encoder open: growth replaces the buffer bind groups name and copies it
+    /// forward through its own submission.
+    pub(super) fn grow_to(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         counters: &mut super::Counters,
+        words: u64,
     ) {
-        if !self.enabled || self.locked {
+        if !self.enabled {
             return;
         }
-        // The growth a locked frame had to refuse, plus a margin that takes the next
-        // doubling a frame early rather than inside one.
-        let need = self
-            .wanted
-            .saturating_sub(self.high_water)
-            .max(self.high_water / 16)
+        let need = words.min(u64::from(u32::MAX)) as u32;
+        let need = need
+            .max(self.wanted.saturating_sub(self.high_water))
             .max(ALIGN_WORDS);
         self.reserve(device, queue, counters, need);
     }

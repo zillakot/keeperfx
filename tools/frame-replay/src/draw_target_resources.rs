@@ -158,6 +158,7 @@ impl DrawRenderer {
             limit,
         )?;
         self.checkpoint_target(target)?;
+        self.arena_headroom(batch.asset_words as u64)?;
         let (assets, base) = if self.arena.enabled() {
             self.arena.begin_batch();
             let words =

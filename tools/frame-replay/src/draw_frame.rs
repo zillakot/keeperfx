@@ -177,8 +177,12 @@ impl DrawRenderer {
         ensure!(self.frame.is_none(), "frame already active");
         // Growth is forbidden once the encoder is open, so it happens here, sized to
         // the demand the previous frames showed.
-        self.arena
-            .pregrow(&self.device, &self.queue, &mut self.counters);
+        self.arena.grow_to(
+            &self.device,
+            &self.queue,
+            &mut self.counters,
+            self.resource_bytes as u64,
+        );
         let target = self.targets.get(&root).context("unknown frame target")?;
         ensure!(target.root == root, "frame target must be canonical");
         let (mut stream, mut views, mut serials) = self.frame_buffers.take().unwrap_or_default();
@@ -540,6 +544,7 @@ impl DrawRenderer {
         let mut raster = None;
         let mut prepare = None;
         if !boundaries.is_empty() {
+            self.arena_headroom(0)?;
             let mut packer = asset_packer(
                 &self.device,
                 &self.queue,

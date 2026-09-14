@@ -131,6 +131,7 @@ impl DrawRenderer {
             self.effects = Some(pipeline);
         }
         let limit = self.storage_limit() as usize;
+        self.arena_headroom(0)?;
         let bytes = &self.resources[&command.source].bytes;
         let mut packer = asset_packer(
             &self.device,

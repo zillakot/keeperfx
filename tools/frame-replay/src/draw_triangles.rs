@@ -63,6 +63,7 @@ impl DrawRenderer {
         let extents = vec![(view.width, view.height); geometry.len()];
         let (layout, rows) = row_layout(&geometry, &extents);
         let records: Vec<_> = commands.iter().copied().map(Record::Terrain).collect();
+        self.arena_headroom(0)?;
         let mut packer = asset_packer(
             &self.device,
             &self.queue,
