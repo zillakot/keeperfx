@@ -1,5 +1,6 @@
 #include "kfx/renderer/WgpuTerrainBridge.h"
 #include "kfx/renderer/WgpuShadow.h"
+#include "kfx/renderer/WgpuMinimap.h"
 #include "kfx/renderer/KfxWgpuFrame.h"
 #include <algorithm>
 #include <cassert>
@@ -29,10 +30,26 @@ extern "C" uint64_t kfx_wgpu_draw_target_view(void* handle, uint64_t root, uint3
     return id;
 }
 extern "C" void* kfx_wgpu_draw_context(void* presenter, char*, size_t) { return presenter; }
+static std::vector<std::vector<uint32_t>> submit_log;
+static bool packable(uint32_t kind)
+{
+    return kind <= KFX_WGPU_DRAW_TRIG || kind == KFX_WGPU_DRAW_MOVIE ||
+        kind == KFX_WGPU_DRAW_MAP_VIEW || kind == KFX_WGPU_DRAW_BITMAP;
+}
 extern "C" int32_t kfx_wgpu_draw_submit_shadow(void*, uint64_t, const KfxWgpuDrawCommand*, uint8_t*, size_t, char*, size_t) { return -1; }
 extern "C" uint64_t kfx_wgpu_draw_target_snapshot(void*, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, char*, size_t) { return 0; }
 extern "C" int32_t kfx_wgpu_draw_target_snapshot_release(void*, uint64_t, char*, size_t) { return -1; }
-extern "C" int32_t kfx_wgpu_draw_submit_target_images(void*, uint64_t, const KfxWgpuDrawCommand*, size_t, char*, size_t) { return -1; }
+static bool mock_target_images = false;
+extern "C" int32_t kfx_wgpu_draw_submit_target_images(void* handle, uint64_t id,
+    const KfxWgpuDrawCommand* commands, size_t count, char*, size_t)
+{
+    if (!mock_target_images) return -1;
+    if (count != 1) return -1;
+    submit_log.push_back({commands[0].kind});
+    auto& target = static_cast<FakeContext*>(handle)->targets.at(id);
+    target.bytes[commands[0].y * target.pitch + commands[0].x] = commands[0].colour;
+    return 1;
+}
 static bool fail_readback = false;
 static bool mock_triangles = false, mismatch_triangles = false;
 extern "C" int32_t kfx_wgpu_draw_submit_triangles(void* handle, uint64_t target, const KfxWgpuTriangle*, size_t, char*, size_t)
@@ -76,8 +93,25 @@ extern "C" int32_t kfx_wgpu_draw_submit(void* handle, uint64_t id, const KfxWgpu
     const auto view = context.views.find(id);
     auto& target = context.targets.at(view == context.views.end() ? id : view->second.root);
     const size_t offset = view == context.views.end() ? 0 : view->second.y * target.pitch + view->second.x;
+    std::vector<uint32_t> kinds;
+    for (size_t i = 0; i < count; ++i) kinds.push_back(commands[i].kind);
+    if (count != 0) submit_log.push_back(kinds);
+    // The Rust packer whitelist rejects any unpackable kind outside a single-command batch.
+    for (size_t i = 0; i < count; ++i)
+        if (!packable(commands[i].kind) && count != 1) return -1;
     for (size_t i = 0; i < count; ++i) {
         const auto& c = commands[i];
+        if (c.kind == KFX_WGPU_DRAW_RECT || c.kind == KFX_WGPU_DRAW_LENS_EFFECT ||
+            c.kind == KFX_WGPU_DRAW_MINIMAP) {
+            for (uint32_t y = 0; y < c.height; ++y)
+                std::fill_n(target.bytes.data() + offset + (c.y + y) * target.pitch + c.x, c.width, c.colour);
+            continue;
+        }
+        if (c.kind == KFX_WGPU_DRAW_SPRITE) {
+            const auto& sprite = context.resources.at(c.source);
+            target.bytes[offset + c.y * target.pitch + c.x] = sprite.bytes[0];
+            continue;
+        }
         if (c.kind == KFX_WGPU_DRAW_CLEAR) {
             for (uint32_t y = 0; y < c.height; ++y)
                 std::fill_n(target.bytes.data() + offset + y * target.pitch, c.width, c.colour);
@@ -513,6 +547,116 @@ int main()
         assert(bridge.GetCounters().gpu_spans == 0 && bridge.GetCounters().cpu_replayed_spans == 1);
         fail_readback = false;
     }
+    // Seeded interleave: batching must match per-command flushing and isolate solo kinds.
+    std::vector<uint8_t> interleave_expected;
+    WgpuTerrainBridge::Counters interleave_flushed = {};
+    for (const bool flush_each : {true, false}) {
+        std::vector<uint8_t> frame_pixels(24 * 10, 0x6a);
+        KfxGpolyTarget frame = {frame_pixels.data(), 20, 10, 24};
+        std::vector<uint8_t> sprite_bytes(64, 0), image_bytes(200, 0);
+        KfxWgpuNativeResource sprite_source = {sprite_bytes.data(), sprite_bytes.size(), 8, 8, 8};
+        KfxWgpuNativeResource image_source = {image_bytes.data(), image_bytes.size(), 20, 10, 20};
+        submit_log.clear();
+        mock_triangles = true;
+        mismatch_triangles = false;
+        mock_target_images = true;
+        unsigned commands_issued = 0;
+        WgpuTerrainBridge bridge(0, false, false, true);
+        assert(bridge.BeginFrame(frame));
+        uint32_t seed = 0x5eed1234u;
+        auto next = [&seed]() { seed = seed * 1664525u + 1013904223u; return seed >> 16; };
+        for (unsigned step = 0; step < 180; ++step) {
+            const unsigned pick = next() % 12u;
+            const uint8_t colour = static_cast<uint8_t>(next() & 0x7fu);
+            if (pick < 3) {
+                if (step % 5u == 0) bridge.Boundary(false);
+                bridge.Boundary(true);
+                if (pick < 2) {
+                    assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &frame, &a, texture.data(), fade.data()) == 1);
+                } else {
+                    KfxWgpuTriangle triangle = {};
+                    triangle.abi_version = 1;
+                    assert(kfx_gpoly_triangle_sink(kfx_gpoly_triangle_context, &frame,
+                        &triangle, texture.data(), fade.data(), triangle_oracle) == 1);
+                }
+                if (flush_each) bridge.Flush();
+                continue;
+            }
+            KfxWgpuDrawCommand c = {};
+            c.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+            c.clip_width = 20;
+            c.clip_height = 10;
+            c.transparent = KFX_WGPU_DRAW_OPAQUE;
+            c.colour = colour;
+            c.x = static_cast<int32_t>(next() % 16u);
+            c.y = static_cast<int32_t>(next() % 8u);
+            c.width = 1 + next() % 4u;
+            c.height = 1 + next() % 2u;
+            const KfxWgpuNativeResource* source = nullptr;
+            switch (pick) {
+            case 3:
+                c.kind = KFX_WGPU_DRAW_IMAGE;
+                c.x = c.y = 0;
+                c.width = c.source_width = 20;
+                c.height = c.source_height = 10;
+                std::fill(image_bytes.begin(), image_bytes.end(), colour);
+                source = &image_source;
+                break;
+            case 4:
+            case 5: c.kind = KFX_WGPU_DRAW_RECT; break;
+            case 6:
+                c.kind = KFX_WGPU_DRAW_CLEAR;
+                c.x = c.y = 0;
+                c.width = 20;
+                c.height = 10;
+                break;
+            case 7:
+            case 8:
+            case 9:
+                c.kind = KFX_WGPU_DRAW_SPRITE;
+                c.source_x = pick == 9 ? 8u : 0u;
+                c.source_width = c.source_height = 8;
+                sprite_bytes[0] = colour;
+                source = &sprite_source;
+                break;
+            case 10: c.kind = KFX_WGPU_DRAW_LENS_EFFECT; break;
+            default:
+                if (step & 1u) {
+                    c.kind = KFX_WGPU_DRAW_MINIMAP;
+                } else {
+                    c.kind = KFX_WGPU_DRAW_TRANSITION;
+                    c.width = c.height = 1;
+                }
+                break;
+            }
+            assert(bridge.SubmitNative(frame, c, source, nullptr, nullptr, nullptr) == 1);
+            ++commands_issued;
+            if (flush_each) bridge.Flush();
+        }
+        assert(bridge.EndFrame(true));
+        const auto counts = bridge.GetCounters();
+        assert(counts.failures == 0 && bridge.FrameValid());
+        for (const auto& batch : submit_log)
+            for (const uint32_t kind : batch)
+                assert(packable(kind) || batch.size() == 1);
+        mock_triangles = false;
+        mock_target_images = false;
+        if (flush_each) {
+            interleave_expected = frame_pixels;
+            interleave_flushed = counts;
+            continue;
+        }
+        assert(frame_pixels == interleave_expected);
+        assert(counts.native_commands == interleave_flushed.native_commands);
+        assert(counts.gpu_spans == interleave_flushed.gpu_spans);
+        assert(counts.gpu_pixels == interleave_flushed.gpu_pixels);
+        assert(counts.gpu_triangles == interleave_flushed.gpu_triangles);
+        assert(counts.gpu_sprite_commands == interleave_flushed.gpu_sprite_commands);
+        assert(counts.gpu_ordered_sprites == interleave_flushed.gpu_ordered_sprites);
+        assert(counts.bridge_solo_batches == interleave_flushed.bridge_solo_batches);
+        assert(counts.gpu_batches < interleave_flushed.gpu_batches);
+        assert(counts.gpu_batches < commands_issued);
+    }
     {
         // Registered pages are keyed by pointer: two pages drawn in one frame must
         // not collide, and each must render its own bytes.
@@ -562,5 +706,5 @@ int main()
         assert(!kfx_render_asset_stable(texture.data(), texture.size()));
     }
 #endif
-    std::puts("Terrain bridge ordering, resource ownership, CPU interleave and failure reconstruction passed");
+    std::puts("Terrain bridge ordering, batching, resource ownership, CPU interleave and failure reconstruction passed");
 }

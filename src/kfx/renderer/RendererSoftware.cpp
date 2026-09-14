@@ -302,7 +302,8 @@ void RendererSoftware::report_drawing()
                 "\"gpu_buffers\":%llu,\"gpu_buffer_bytes\":%llu,"
                 "\"gpu_ordered_sprites\":%llu,\"gpu_host_staged_asset_bytes\":%llu,"
                 "\"arena_evictions\":%llu,\"arena_overflows\":%llu,"
-                "\"arena_bytes_uploaded\":%llu,\"arena_bytes_resident\":%llu}\n",
+                "\"arena_bytes_uploaded\":%llu,\"arena_bytes_resident\":%llu,"
+                "\"bridge_solo_batches\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
                 static_cast<unsigned long long>(counts.cpu_gpoly_spans), static_cast<unsigned long long>(counts.cpu_replayed_spans),
@@ -342,7 +343,8 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.arena_evictions),
                 static_cast<unsigned long long>(gpu.arena_overflows),
                 static_cast<unsigned long long>(gpu.arena_bytes_uploaded),
-                static_cast<unsigned long long>(gpu.arena_bytes_resident));
+                static_cast<unsigned long long>(gpu.arena_bytes_resident),
+                static_cast<unsigned long long>(counts.bridge_solo_batches));
             fclose(output);
         }
     }
