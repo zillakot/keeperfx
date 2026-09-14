@@ -144,6 +144,7 @@ def launch(args):
     manifest = dict(format="KFXCONTROL1", token=secrets.token_hex(32), session_id=secrets.token_hex(16), port=port, work=str(work),
                     engine=str(engine), engine_sha256=hashlib.sha256(engine.read_bytes()).hexdigest(),
                     backend=args.backend, verify=args.verify, lifetime=args.lifetime,
+                    draw_backend=args.draw_backend, draw_verify=args.draw_verify,
                     args=["-nointro", "-altinput", "-skipheartzoom"])
     if args.level:
         manifest["args"] += ["-campaign", args.campaign, "-level", str(args.level)]
@@ -179,6 +180,10 @@ def supervise(path):
         env["SDL_VIDEO_DRIVER"] = "cocoa"
     if data["verify"]:
         env["KFX_WGPU_VERIFY"] = "1"
+    if data.get("draw_backend", "software") != "software":
+        env["KFX_DRAW_BACKEND"] = data["draw_backend"]
+    if data.get("draw_verify"):
+        env["KFX_WGPU_DRAW_VERIFY"] = "1"
     with (work / "stdout.log").open("w") as stdout, (work / "stderr.log").open("w") as stderr:
         process = subprocess.Popen([data["engine"], *data["args"]], cwd=work, env=env,
                                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
@@ -206,6 +211,8 @@ def main():
     launch_parser.add_argument("--engine", type=Path, default=ROOT / "out/macos/keeperfx")
     launch_parser.add_argument("--backend", choices=("sdl", "wgpu"), default="sdl")
     launch_parser.add_argument("--verify", action="store_true")
+    launch_parser.add_argument("--draw-backend", choices=("software", "wgpu"), default="software")
+    launch_parser.add_argument("--draw-verify", action="store_true", help="compare GPU drawing against the CPU oracle; not a performance run")
     launch_parser.add_argument("--copy-saves", action="store_true")
     launch_parser.add_argument("--lifetime", type=int, default=1200)
     launch_parser.add_argument("--campaign", default="keeporig")

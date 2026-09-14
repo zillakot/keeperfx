@@ -565,27 +565,15 @@ impl DrawRenderer {
                 .arena
                 .binding(&self.device, &self.queue, &mut self.counters),
         };
-        let parameters = buffer(
-            &self.device,
-            &mut self.counters,
-            "drawing dimensions",
-            &[
-                target.width,
-                target.height,
-                commands.len() as u32,
-                target.width.div_ceil(16),
-                target.pitch,
-                target.offset,
-                0,
-                self.tile_index.tiles,
-            ],
-            wgpu::BufferUsages::UNIFORM,
-        );
         if let Some(assets) = &assets {
             self.counters.asset_upload_bytes += assets.len() as u64 * 4;
         }
         self.counters.command_upload_bytes +=
             (words.len() + self.tile_index.data().len()) as u64 * 4;
+        let pass = self.tile_index.passes()[0];
+        let Some((parameters, span_x, span_y)) = self.pass_parameters(&target, &pass) else {
+            return Ok(());
+        };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered drawing batch"),
             layout: &self.compute.get_bind_group_layout(0),
@@ -607,7 +595,7 @@ impl DrawRenderer {
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &binding, &[]);
-            pass.dispatch_workgroups(target.width.div_ceil(8), target.height.div_ceil(8), 1);
+            pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
         self.submit_encoder(encoder);
@@ -618,17 +606,18 @@ impl DrawRenderer {
         Ok(())
     }
 
-    /// One raster pass over the whole root for one segment of the frame's stream;
-    /// the segment's row of the shared tile index bounds what each pixel iterates.
-    fn raster_segment(
+    /// The uniform for one raster pass, with the dispatch extent its records need;
+    /// `None` when the pass covers nothing.
+    fn pass_parameters(
         &mut self,
         target: &Target,
-        buffers: &(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer),
-        tiles: u32,
-        segment: usize,
-        commands: usize,
-    ) -> Result<()> {
-        let (command_buffer, tile_buffer, asset_buffer) = buffers;
+        pass: &Pass,
+    ) -> Option<(wgpu::Buffer, u32, u32)> {
+        let boxed = pass_box(pass, target.width, target.height);
+        let (span_x, span_y) = (boxed[2] - boxed[0], boxed[3] - boxed[1]);
+        if span_x == 0 || span_y == 0 {
+            return None;
+        }
         let parameters = buffer(
             &self.device,
             &mut self.counters,
@@ -636,15 +625,35 @@ impl DrawRenderer {
             &[
                 target.width,
                 target.height,
-                commands as u32,
-                target.width.div_ceil(16),
+                boxed[2],
+                pass.columns(),
                 target.pitch,
                 target.offset,
-                segment as u32 * tiles,
-                tiles,
+                pass.header,
+                boxed[0],
+                boxed[1],
+                boxed[3],
+                0,
+                0,
             ],
             wgpu::BufferUsages::UNIFORM,
         );
+        Some((parameters, span_x, span_y))
+    }
+
+    /// One raster pass over one segment of the frame's stream; the segment's header in
+    /// the shared tile index bounds both what each pixel iterates and the dispatch box.
+    fn raster_segment(
+        &mut self,
+        target: &Target,
+        buffers: &(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer),
+        pass: &Pass,
+        commands: usize,
+    ) -> Result<()> {
+        let (command_buffer, tile_buffer, asset_buffer) = buffers;
+        let Some((parameters, span_x, span_y)) = self.pass_parameters(target, pass) else {
+            return Ok(());
+        };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered drawing segment"),
             layout: &self.compute.get_bind_group_layout(0),
@@ -666,7 +675,7 @@ impl DrawRenderer {
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &binding, &[]);
-            pass.dispatch_workgroups(target.width.div_ceil(8), target.height.div_ceil(8), 1);
+            pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
         self.submit_encoder(encoder);
@@ -1224,19 +1233,58 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 
 /// One ascending per-tile list of record indices for the whole frame, built by a
 /// counting sort into buffers the renderer keeps. `segments` are the exclusive
-/// record ends of the raster passes the frame is cut into; the uploaded index is
-/// `segments + 1` rows of per-tile range starts followed by the entries, so pass
-/// `s` reads `[row[s][tile], row[s + 1][tile])` and the passes together iterate
-/// each tile list exactly once.
+/// record ends of the raster passes the frame is cut into. Each pass gets a header
+/// of `(offset, length)` pairs covering only the tiles its own records touch,
+/// followed by the shared entry array, so the passes together iterate each tile
+/// list exactly once and a pass costs nothing for tiles it never reaches.
 #[derive(Default)]
 pub(super) struct TileIndex {
     counts: Vec<u32>,
     cursors: Vec<u32>,
     packed: Vec<u32>,
+    passes: Vec<Pass>,
     length: usize,
     header: usize,
-    tiles: u32,
     allocations: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct Pass {
+    /// Tile box, half-open, in tile units.
+    tiles: [u32; 4],
+    header: u32,
+    counts: usize,
+}
+
+impl Pass {
+    fn columns(&self) -> u32 {
+        self.tiles[2].saturating_sub(self.tiles[0])
+    }
+
+    fn rows(&self) -> u32 {
+        self.tiles[3].saturating_sub(self.tiles[1])
+    }
+
+    fn cells(&self) -> usize {
+        self.columns() as usize * self.rows() as usize
+    }
+
+    fn cell(&self, x: u32, y: u32) -> usize {
+        (y - self.tiles[1]) as usize * self.columns() as usize + (x - self.tiles[0]) as usize
+    }
+}
+
+/// The pixel box a pass must dispatch over, empty when it draws nothing.
+pub(super) fn pass_box(pass: &Pass, width: u32, height: u32) -> [u32; 4] {
+    if pass.columns() == 0 || pass.rows() == 0 {
+        return [0; 4];
+    }
+    [
+        pass.tiles[0] * 16,
+        pass.tiles[1] * 16,
+        (pass.tiles[2] * 16).min(width),
+        (pass.tiles[3] * 16).min(height),
+    ]
 }
 
 fn tile_span(
@@ -1287,66 +1335,93 @@ impl TileIndex {
         height: u32,
         limit: usize,
     ) -> Result<()> {
-        let columns = width.div_ceil(16) as usize;
-        let tiles = columns * height.div_ceil(16) as usize;
-        let passes = segments.len().max(1);
-        self.tiles = u32::try_from(tiles).context("tile count overflow")?;
-        grow(&mut self.counts, passes * tiles, &mut self.allocations);
-        grow(&mut self.cursors, passes * tiles, &mut self.allocations);
-        self.counts[..passes * tiles].fill(0);
         let records = words.as_chunks::<RECORD_WORDS>().0;
-        let header = (passes + 1) * tiles;
-        let mut length = header;
-        let mut pass = 0;
+        let count = segments.len().max(1);
+        self.passes.clear();
+        self.passes.resize(count, Pass::default());
+        for pass in self.passes.iter_mut() {
+            pass.tiles = [u32::MAX, u32::MAX, 0, 0];
+        }
+        let mut entries = 0usize;
+        let mut at = 0;
         for (index, command) in records.iter().enumerate() {
-            while segments.get(pass).is_some_and(|end| index >= *end) {
-                pass += 1;
+            while segments.get(at).is_some_and(|end| index >= *end) {
+                at += 1;
             }
             let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
                 continue;
             };
-            let count = (x1 - x0) as usize * (y1 - y0) as usize;
-            length = length
-                .checked_add(count)
+            entries = entries
+                .checked_add((x1 - x0) as usize * (y1 - y0) as usize)
                 .context("tile list length overflow")?;
-            ensure!(length <= limit / 4, "tile lists exceed storage limit");
+            let box_of = &mut self.passes[at].tiles;
+            box_of[0] = box_of[0].min(x0);
+            box_of[1] = box_of[1].min(y0);
+            box_of[2] = box_of[2].max(x1);
+            box_of[3] = box_of[3].max(y1);
+        }
+        let mut header = 0usize;
+        let mut cells = 0usize;
+        for pass in self.passes.iter_mut() {
+            pass.header = u32::try_from(header).context("tile header overflow")?;
+            pass.counts = cells;
+            header += pass.cells() * 2;
+            cells += pass.cells();
+        }
+        let length = header
+            .checked_add(entries)
+            .context("tile list length overflow")?;
+        ensure!(length <= limit / 4, "tile lists exceed storage limit");
+        grow(&mut self.counts, cells.max(1), &mut self.allocations);
+        grow(&mut self.cursors, cells.max(1), &mut self.allocations);
+        grow(&mut self.packed, length.max(1), &mut self.allocations);
+        self.counts[..cells].fill(0);
+        self.length = length;
+        self.header = header;
+        at = 0;
+        for (index, command) in records.iter().enumerate() {
+            while segments.get(at).is_some_and(|end| index >= *end) {
+                at += 1;
+            }
+            let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
+                continue;
+            };
+            let pass = self.passes[at];
             for y in y0..y1 {
                 for x in x0..x1 {
-                    self.counts[pass * tiles + y as usize * columns + x as usize] += 1;
+                    self.counts[pass.counts + pass.cell(x, y)] += 1;
                 }
             }
         }
-        grow(&mut self.packed, length, &mut self.allocations);
-        self.length = length;
-        self.header = header;
         let mut offset = header as u32;
-        for tile in 0..tiles {
-            for pass in 0..passes {
-                self.packed[pass * tiles + tile] = offset;
-                self.cursors[pass * tiles + tile] = offset;
-                offset += self.counts[pass * tiles + tile];
+        for pass in &self.passes {
+            for cell in 0..pass.cells() {
+                let total = self.counts[pass.counts + cell];
+                self.packed[pass.header as usize + cell * 2] = offset;
+                self.packed[pass.header as usize + cell * 2 + 1] = total;
+                self.cursors[pass.counts + cell] = offset;
+                offset += total;
             }
-            self.packed[passes * tiles + tile] = offset;
         }
-        pass = 0;
+        at = 0;
         for (index, command) in records.iter().enumerate() {
-            while segments.get(pass).is_some_and(|end| index >= *end) {
-                pass += 1;
+            while segments.get(at).is_some_and(|end| index >= *end) {
+                at += 1;
             }
             let Some((x0, y0, x1, y1)) = tile_span(command, width, height) else {
                 continue;
             };
+            let pass = self.passes[at];
             for y in y0..y1 {
                 for x in x0..x1 {
-                    let cursor =
-                        &mut self.cursors[pass * tiles + y as usize * columns + x as usize];
+                    let cursor = &mut self.cursors[pass.counts + pass.cell(x, y)];
                     self.packed[*cursor as usize] = index as u32;
                     *cursor += 1;
                 }
             }
         }
         counters.tile_allocations = self.allocations;
-        counters.tile_entries += self.entries();
+        counters.tile_entries += entries as u64;
         Ok(())
     }
 
@@ -1354,8 +1429,8 @@ impl TileIndex {
         &self.packed[..self.length]
     }
 
-    fn entries(&self) -> u64 {
-        (self.length - self.header) as u64
+    fn passes(&self) -> Vec<Pass> {
+        self.passes.clone()
     }
 }
 
@@ -1477,17 +1552,19 @@ mod tests {
         .unwrap();
         let mut index = TileIndex::default();
         let mut counters = Counters::default();
+        let list = |index: &TileIndex, pass: usize, x: u32, y: u32| {
+            let pass = index.passes()[pass];
+            let tiles = index.data();
+            let cell = pass.header as usize + pass.cell(x, y) * 2;
+            let begin = tiles[cell] as usize;
+            tiles[begin..begin + tiles[cell + 1] as usize].to_vec()
+        };
         index
             .build(&mut counters, &words, &[commands.len()], 32, 32, 4096)
             .unwrap();
-        let tiles = index.data();
-        for (tile, expected) in [&[0, 1, 2][..], &[0, 1], &[0, 1], &[0, 1]]
-            .iter()
-            .enumerate()
-        {
-            let begin = tiles[tile] as usize;
-            let end = tiles[tile + 4] as usize;
-            assert_eq!(&tiles[begin..end], *expected);
+        assert_eq!(list(&index, 0, 0, 0), [0, 1, 2]);
+        for (x, y) in [(1, 0), (0, 1), (1, 1)] {
+            assert_eq!(list(&index, 0, x, y), [0, 1]);
         }
         assert_eq!(counters.tile_entries, 9);
         let allocations = counters.tile_allocations;
@@ -1502,9 +1579,14 @@ mod tests {
         index
             .build(&mut counters, &words, &[1, commands.len()], 32, 32, 4096)
             .unwrap();
-        let split = index.data();
-        assert_eq!(&split[split[0] as usize..split[8] as usize], &[0, 1, 2]);
-        assert_eq!(&split[split[0] as usize..split[4] as usize], &[0]);
+        assert_eq!(list(&index, 0, 0, 0), [0]);
+        assert_eq!(list(&index, 1, 0, 0), [1, 2]);
+        assert_eq!(list(&index, 1, 1, 1), [1]);
+        assert_eq!(
+            pass_box(&index.passes()[1], 32, 32),
+            [0, 0, 32, 32],
+            "a pass covers only the tiles its own records reach"
+        );
         assert!(
             index
                 .build(&mut counters, &words, &[commands.len()], 32, 32, 8 * 4)

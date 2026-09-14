@@ -198,22 +198,6 @@ impl DrawRenderer {
             self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
-        let parameters = buffer(
-            &self.device,
-            &mut self.counters,
-            "snapshot image dimensions",
-            &[
-                width,
-                height,
-                commands.len() as u32,
-                width.div_ceil(16),
-                self.targets[&target].pitch,
-                self.targets[&target].offset,
-                0,
-                self.tile_index.tiles,
-            ],
-            wgpu::BufferUsages::UNIFORM,
-        );
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let mut copied = 0;
         for (&id, &offset) in &batch.snapshots {
@@ -239,6 +223,11 @@ impl DrawRenderer {
                 .write_buffer(&assets, u64::from(base + offset) * 4, &bytes);
             uploaded += bytes.len() as u64;
         }
+        let pass = self.tile_index.passes()[0];
+        let target_view = self.targets[&target].clone();
+        let Some((parameters, span_x, span_y)) = self.pass_parameters(&target_view, &pass) else {
+            return Ok(());
+        };
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ordered GPU snapshot sampling"),
             layout: &self.compute.get_bind_group_layout(0),
@@ -259,7 +248,7 @@ impl DrawRenderer {
             });
             pass.set_pipeline(&self.compute);
             pass.set_bind_group(0, &binding, &[]);
-            pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
+            pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
         self.submit_encoder(encoder);

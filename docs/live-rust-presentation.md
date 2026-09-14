@@ -137,8 +137,15 @@ records the measurement, the diagnosis and the single-stream restructure that
 follows.
 
 The [indexed backend](../tools/frame-replay/src/draw.rs) stores one `u32` palette
-index per pixel. CPU binning preserves command order within 16×16 tiles; each GPU
-invocation owns one destination pixel and evaluates its ordered commands. Exact
+index per pixel. A frame is one immutable command stream in the root's coordinates:
+every record carries the origin of the view it was issued against, so views are
+offset aliases of the root and a target change is not a boundary. One counting sort
+over renderer-owned scratch bins the whole stream into 16×16 tiles, preserving
+command order; each GPU invocation owns one destination pixel and evaluates its
+ordered commands. The stream is cut into raster passes only at genuinely serial work
+— ordered sprites, the alias lens, minimap modes that read the target, snapshot
+copies, creature shadows and terrain triangles — and each pass dispatches over the
+box its own records reach, reading only that pass's slice of the shared tile index. Exact
 integer operations preserve texture/shade lookup and destination-index palette
 composition. The [drawing C ABI](../src/kfx/renderer/WgpuDraw.h) owns copied,
 immutable resource versions and validates complete batches before submission.
@@ -160,9 +167,12 @@ no prepared rows are read back to construct draw commands. Each destination pixe
 consumes the bounded triangle batch in submission order. A four-byte GPU shade
 validation flag is read back before target writes. Pending terrain spans, terrain
 triangles and generic commands share one ordered record list, so the span and
-triangle paths no longer flush each other. Inside a resident frame a batch closes
+triangle paths no longer flush each other. A record carries the view it was issued
+against, so a target or view change opens a run inside that list instead of closing
+it: `bridge_target_flushes` is structurally zero and `bridge_target_runs` counts the
+changes that used to flush. Inside a resident frame a batch closes
 only at a kind the GPU packer accepts alone (transition, minimap, lens effect),
-an ordered sprite, a target or view change, a snapshot, readback or
+an ordered sprite, a snapshot, readback or
 barrier, a rasterizer change, texture or fade cache eviction, 128 pending
 triangles, 32,768 pending spans, the 4,096 command cap, or verification mode. A
 world-bucket boundary and an emitter head only stop terrain from continuing;
@@ -287,6 +297,8 @@ native evidence and its source/binary limits are in the coverage ledger.
 - `rejected_commands` / `rejected_spans`: pending generic commands and terrain spans the target never received because the run was dropped without a CPU replay; each such drop invalidates the frame.
 - `frame_checkpoints`, `frame_gpu_checkpoint_copy_bytes`, `frame_validation_waits` and `frame_validation_bytes`: queued-frame flushes and what they used to cost. The copy bytes and both validation figures are structurally zero: a flush records the batches straight into the root and publishes the status word instead of aggregating per-batch flags under a blocking poll.
 - `frame_flagged_invalid`, `frame_status_reads` and `frame_status_stalls`: frames a kernel flagged as having an out-of-range lookup, completed status ring reads, and publishes skipped because every ring slot was still mapped. A stall only defers the flag to the next publish; it never loses it.
+- `tile_allocations` counts growths of the persistent binning scratch and is zero after warm-up; `tile_entries` is the per-frame size of the tile index the raster passes share.
+- `bridge_target_flushes`: pending work flushed because the target was not a view of the frame root at all. Target and view changes inside the frame root no longer flush; `bridge_target_runs` counts those.
 - `gpu_batches` counts bridge submission routes, not GPU submissions. Inside a queued frame a route is an `enqueue_commands` call that may still merge with its neighbour, so a lower count means fewer FFI crossings and fewer command copies, not fewer dispatches; `gpu_submits` and `gpu_dispatches` measure those.
 - No GPU execution time is collected. It was not attempted because the Metal adapter reports `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`, so a timestamp per submission is unavailable and the copy-only submissions carry no pass for `timestamp_writes`.
 

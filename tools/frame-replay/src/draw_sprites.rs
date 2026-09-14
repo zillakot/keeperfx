@@ -188,6 +188,10 @@ impl DrawRenderer {
                     target.offset,
                     0,
                     0,
+                    0,
+                    0,
+                    0,
+                    0,
                 ],
                 wgpu::BufferUsages::UNIFORM,
             );

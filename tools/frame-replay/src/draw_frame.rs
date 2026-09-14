@@ -551,15 +551,15 @@ impl DrawRenderer {
             };
             self.counters.command_upload_bytes +=
                 (words.len() + self.tile_index.data().len()) as u64 * 4;
-            raster = Some(((commands, tiles, arena), self.tile_index.tiles));
+            raster = Some(((commands, tiles, arena), self.tile_index.passes()));
         }
         let mut segment = 0;
         let mut prior = 0;
         for (at, serial) in serials {
             if at > prior {
-                let (buffers, tiles) = raster.as_ref().unwrap();
-                let (buffers, tiles) = (buffers.clone(), *tiles);
-                self.raster_segment(&target, &buffers, tiles, segment, at - prior)?;
+                let (buffers, passes) = raster.as_ref().unwrap();
+                let (buffers, pass) = (buffers.clone(), passes[segment]);
+                self.raster_segment(&target, &buffers, &pass, at - prior)?;
                 segment += 1;
                 prior = at;
             }
@@ -572,9 +572,9 @@ impl DrawRenderer {
             }
         }
         if stream.len() > prior {
-            let (buffers, tiles) = raster.as_ref().unwrap();
-            let (buffers, tiles) = (buffers.clone(), *tiles);
-            self.raster_segment(&target, &buffers, tiles, segment, stream.len() - prior)?;
+            let (buffers, passes) = raster.as_ref().unwrap();
+            let (buffers, pass) = (buffers.clone(), passes[segment]);
+            self.raster_segment(&target, &buffers, &pass, stream.len() - prior)?;
         }
         Ok(())
     }
