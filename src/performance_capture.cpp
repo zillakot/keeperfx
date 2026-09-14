@@ -177,10 +177,10 @@ void finish(Profile& p)
     const Resources end_resources = resources();
     const bool cpu_available = p.start_resources.cpu_available && end_resources.cpu_available;
     const uint64_t wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end_resources.wall - p.start_resources.wall).count();
-    const char* names[] = {"simulation", "draw", "presentation", "present_wait", "replay", "draw_scene", "draw_raster", "draw_front_raster", "draw_overlays", "frame_interval"};
+
     std::fprintf(p.file, "kind,turn,wall_ns\n");
     for (const Sample& s : p.samples)
-        std::fprintf(p.file, "%s,%lu,%llu\n", names[s.scope], s.turn, static_cast<unsigned long long>(s.ns));
+        std::fprintf(p.file, "%s,%lu,%llu\n", PerformanceScopeNames[s.scope], s.turn, static_cast<unsigned long long>(s.ns));
     bool failed = std::ferror(p.file) != 0;
     failed = std::fclose(p.file) != 0 || failed;
     p.file = nullptr;
@@ -234,9 +234,9 @@ void finish(Profile& p)
     std::fprintf(info, "]},\"replay_scope\":true,\"presenter\":{\"per_frame\":[");
     for (size_t frame = 0; frame < p.presenter_frames.size(); ++frame) {
         const auto& c = p.presenter_frames[frame];
-        std::fprintf(info, "%s[%llu,%llu,%llu,%llu,%llu,%llu,%llu]", frame ? "," : "",
+        std::fprintf(info, "%s[%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu]", frame ? "," : "",
             c.acquire_ns, c.acquire_block_ns, c.reconfigure_count, c.present_record_ns, c.submit_ns,
-            c.allocations, c.allocated_bytes);
+            c.replay_ns, c.allocations, c.allocated_bytes);
     }
     std::fprintf(info, "]}}\n");
     failed = std::ferror(info) != 0;

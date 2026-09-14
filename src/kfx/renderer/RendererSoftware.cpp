@@ -507,6 +507,7 @@ bool RendererSoftware::present_rust_frame()
     LbMouseOnBeginSwap();
     SDL_Palette* palette = SDL_GetSurfacePalette(lbDrawSurface);
     int result = -1;
+    uint64_t replay_ns = 0;
     if (palette != nullptr && palette->ncolors == 256) {
         const KfxGpolyTarget native = {static_cast<uint8_t*>(lbDrawSurface->pixels),
             static_cast<uint32_t>(lbDrawSurface->w), static_cast<uint32_t>(lbDrawSurface->h),
@@ -514,7 +515,7 @@ bool RendererSoftware::present_rust_frame()
         uint64_t replay_start = 0, replay_bytes_start = 0;
         kfx_wgpu_allocation_counts(&replay_start, &replay_bytes_start);
         performance_begin(PerfReplay);
-        const uint64_t target = m_drawing && m_drawing->UsesPresenter() ? m_drawing->ResidentTarget(native) : 0;
+        const uint64_t target = m_drawing && m_drawing->UsesPresenter() ? m_drawing->ResidentTarget(native, &replay_ns) : 0;
         performance_end(PerfReplay);
         kfx_wgpu_allocation_counts(&replay_allocations, &replay_bytes);
         replay_allocations -= replay_start;
@@ -568,7 +569,7 @@ bool RendererSoftware::present_rust_frame()
     kfx_wgpu_allocation_counts(&end_allocations, &end_bytes);
     kfx_wgpu_present_counters(m_rust, &host);
     const PerformancePresenterCounters sample = {host.acquire_ns, host.acquire_block_ns,
-        host.reconfigure_count, host.present_record_ns, host.submit_ns,
+        host.reconfigure_count, host.present_record_ns, host.submit_ns, replay_ns,
         end_allocations - allocations - replay_allocations, end_bytes - allocated_bytes - replay_bytes};
     performance_presenter_frame(&sample);
     if (m_vsync != (vsync_enabled ? 1 : 0)) {

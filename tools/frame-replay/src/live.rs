@@ -941,6 +941,73 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a native Metal adapter"]
+    fn presenter_host_timers_cover_software_and_gpu_paths() {
+        let mut presenter = Presenter::offscreen(2, 2).unwrap();
+        let palette = [255u8; 1024];
+        let mut error = [0i8; 1024];
+        for gpu in [false, true] {
+            let handle = (&raw mut presenter).cast();
+            let result = if gpu {
+                let drawing = presenter.drawing().unwrap();
+                let root = drawing.create_target(2, 2).unwrap();
+                drawing.frame_begin(root).unwrap();
+                unsafe {
+                    kfx_wgpu_draw_prepare_present(
+                        handle,
+                        root,
+                        palette.as_ptr(),
+                        1024,
+                        3,
+                        3,
+                        0,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                }
+            } else {
+                unsafe {
+                    kfx_wgpu_submit(
+                        handle,
+                        [0u8; 4].as_ptr(),
+                        4,
+                        2,
+                        2,
+                        2,
+                        palette.as_ptr(),
+                        1024,
+                        2,
+                        2,
+                        0,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                }
+            };
+            assert_eq!(result, 1);
+            assert_eq!(
+                unsafe { kfx_wgpu_present(handle, error.as_mut_ptr(), error.len()) },
+                1
+            );
+            let mut counters = PresentCounters::default();
+            unsafe {
+                kfx_wgpu_present_counters(handle, &mut counters);
+            }
+            assert!(counters.acquire_ns >= counters.acquire_block_ns);
+            assert!(counters.acquire_block_ns > 0);
+            assert!(counters.present_record_ns > 0);
+            assert!(counters.submit_ns > 0);
+            assert_eq!(counters.reconfigure_count, u64::from(gpu));
+            unsafe {
+                kfx_wgpu_present_counters(handle, &mut counters);
+            }
+            assert_eq!(counters.acquire_ns, 0);
+            assert_eq!(counters.submit_ns, 0);
+            assert_eq!(counters.present_record_ns, 0);
+        }
+    }
+
+    #[test]
     fn rejects_null_handles_and_invalid_modes() {
         let mut error = [0i8; 100];
         unsafe {

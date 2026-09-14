@@ -4,6 +4,7 @@
 #include "kfx/renderer/KfxWgpuFrame.h"
 #ifdef KFX_RUST_PRESENTER
 #include "kfx/renderer/WgpuDraw.h"
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -410,12 +411,19 @@ void WgpuTerrainBridge::DetachPresenter()
     m_borrowed_context = false;
 }
 
-uint64_t WgpuTerrainBridge::ResidentTarget(const KfxGpolyTarget& target)
+uint64_t WgpuTerrainBridge::ResidentTarget(const KfxGpolyTarget& target, uint64_t* replay_ns)
 {
     Flush();
-    if (m_queue_active && kfx_wgpu_draw_frame_flush(m_context, m_error.data(), m_error.size()) != 1) {
-        Fail(nullptr);
-        return 0;
+    if (replay_ns) *replay_ns = 0;
+    if (m_queue_active) {
+        const auto start = replay_ns ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        const int result = kfx_wgpu_draw_frame_flush(m_context, m_error.data(), m_error.size());
+        if (replay_ns) *replay_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        if (result != 1) {
+            Fail(nullptr);
+            return 0;
+        }
     }
     return !m_failed && !m_frame_invalid && m_resident_lease && m_gpu_valid &&
         target.pixels == m_gpu_native_target.pixels && target.width == m_width && target.height == m_height &&

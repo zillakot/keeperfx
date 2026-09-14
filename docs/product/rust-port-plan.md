@@ -237,6 +237,14 @@ inside a frame, because `fits()` counts only resource bytes, taking the rare
 arena until the next `frame_begin`; and peak GPU memory is unmeasured and higher by
 construction, about 38 shadow arenas coexisting.
 
+**Presenter cost, PR A:** host acquisition/record/submit timers, a separate replay
+scope, upload attribution and retained palette/parameter buffers are implemented.
+The steady-state palette path replaces two buffer creations per frame with reuse;
+GPU fixtures cover palette changes, target/resize invalidation and multiple passes
+in one submission. Host cost, allocation reductions and parity numbers are pending
+measurement by the lead: this implementer's sandbox exposes neither displays nor
+a Metal adapter. This slice does not establish the FPS or 1 ms acceptance targets.
+
 Next, in order:
 
 1. **Presenter cost.** Host timers for drawable acquisition and for the frame

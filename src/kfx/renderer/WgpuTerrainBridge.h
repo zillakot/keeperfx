@@ -82,7 +82,7 @@ public:
     // Detach before destroying a borrowed presenter.
     bool AttachPresenter(void* presenter);
     void DetachPresenter();
-    uint64_t ResidentTarget(const KfxGpolyTarget& target);
+    uint64_t ResidentTarget(const KfxGpolyTarget& target, uint64_t* replay_ns = nullptr);
     uint64_t BorrowTarget(const KfxGpolyTarget& target);
     void* Context() const { return m_context; }
     void* CursorContext() const { return m_verify ? nullptr : m_context; }

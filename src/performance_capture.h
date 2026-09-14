@@ -17,6 +17,13 @@ enum PerformanceScope {
     PerfScopeCount,
 };
 
+#ifdef __cplusplus
+inline constexpr const char* PerformanceScopeNames[] = {
+    "simulation", "draw", "presentation", "present_wait", "replay", "draw_scene",
+    "draw_raster", "draw_front_raster", "draw_overlays", "frame_interval"};
+static_assert(sizeof(PerformanceScopeNames) / sizeof(*PerformanceScopeNames) == PerfScopeCount + 1);
+#endif
+
 /* Cumulative drawing-backend counters sampled once per presented frame.
  * The capture stores per-frame deltas for the measured window only. */
 struct PerformanceDrawingCounters {
@@ -49,7 +56,7 @@ void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulati
 
 struct PerformancePresenterCounters {
     unsigned long long acquire_ns, acquire_block_ns, reconfigure_count, present_record_ns, submit_ns;
-    unsigned long long allocations, allocated_bytes;
+    unsigned long long replay_ns, allocations, allocated_bytes;
 };
 void performance_presenter_frame(const struct PerformancePresenterCounters* counters);
 

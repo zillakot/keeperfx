@@ -75,15 +75,15 @@ and drawing run at different rates.
 | --- | --- |
 | `simulation` | One `update()` call; excludes input polling, packet exchange and turn pacing |
 | `draw` | One `keeper_screen_redraw()` call drawing world and HUD into CPU pixels; excludes light-area setup, focus waiting, direct-message overlays and presentation |
-| `presentation` | Per-frame cursor composition, palette/pixel processing and upload, rendering/present submission and cursor cleanup. Original SDL includes texture lock, indexed-to-RGBA blit, texture unlock/upload and clear/draw/present. Rust includes its surface acquisition, uploads, submission and polling. Excludes target setup and metadata queries. |
+| `replay` | GPU frame replay through `ResidentTarget`, including bridge flush/target lookup; zero for software drawing. Recorded as a child but subtracted from exported `presentation`, so `draw + replay + presentation` is additive. |
+| `presentation` | Excludes `replay`. Per-frame cursor composition, palette/pixel processing and upload, rendering/present submission and cursor cleanup. Original SDL includes texture lock, indexed-to-RGBA blit, texture unlock/upload and clear/draw/present. Rust includes its surface acquisition, uploads, submission and polling. Excludes target setup and metadata queries. |
 | `present_wait` | Nested SDL or Rust present call, including host work and blocking inside that call; **already included in presentation**. Backend implementations distribute work differently, so this is a diagnostic, not a common GPU/VSync-cost measurement. |
 | `frame_interval` | Time between starts of successive measured presentation calls; includes simulation, drawing, event handling, pacing and scheduling between them |
 
 All series measure elapsed **wall time**, including descheduling or waiting.
 `draw` measures work implemented on the CPU, but is not a thread/process CPU-time
 counter. `present_wait` is not a pure VSync wait: drivers can also block on texture
-lock/upload or elsewhere. No GPU timestamps or GPU completion latency are
-collected. Do not add nested series or call them GPU benchmarks.
+lock/upload or elsewhere. GPU timestamps are separately opt-in; these scopes do not measure GPU completion latency. Do not add nested series or call them GPU benchmarks.
 
 Separate measured-window counters record process user and system CPU time using
 `getrusage(RUSAGE_SELF)` on macOS/Linux or `GetProcessTimes` on Windows. They include
@@ -210,6 +210,32 @@ Counters cover the drawing context the bridge owns. Surface acquisition,
 presentation by the Rust presenter, and a cursor that owns its own drawing context
 rather than borrowing the bridge's are not counted, so the counters explain the
 drawing scopes rather than the whole frame.
+
+## Presenter host attribution
+
+Rust-presenter runs include one `presenter.per_frame` sample per presentation;
+SDL and older reports leave it unavailable. `acquire_ns` covers all of acquisition,
+including polling and reconfiguration. `acquire_block_ns` covers only
+`get_current_texture()` (all attempts), or offscreen ring-slot acquisition;
+it is included in `acquire_ns`. `reconfigure_count` counts runtime reconfigurations.
+`present_record_ns` covers `present_into` or `render_into`; `submit_ns` covers the
+frame submit and present call and is included in `present_wait`. `replay_ns` times
+`frame_flush` in the bridge; the `replay` scope also includes bridge orchestration.
+Allocation calls and requested bytes are sampled across presentation, excluding
+its replay child; they cover the Rust global allocator, not native or GPU memory.
+
+`presentation_cpu = presentation - acquire_block_ns - present_wait` is computed
+per frame before its mean and percentiles are taken, in milliseconds. It remains
+host wall time, including scheduling, rather than process CPU time. The attribution
+residual is `presentation - acquire_ns - present_record_ns - submit_ns`; report its
+mean and fraction of presentation. Do not add the nested acquire block, present
+wait, or the separately exported replay to that timer sum.
+
+The frame-interval anchor and cursor composition/restore order are unchanged.
+For comparisons with older GPU reports, use `presentation + replay` to recover
+the previous presentation boundary. Drawing counters retain `upload_bytes` as
+`asset_upload_bytes + command_upload_bytes`; existing gauges and GPU timestamps
+keep their meanings. Counters are buffered and written only at capture completion.
 
 ## Collection bounds and outputs
 

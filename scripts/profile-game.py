@@ -24,7 +24,7 @@ capture = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(capture)
 KINDS = ("simulation", "draw", "presentation", "present_wait", "frame_interval")
 PRESENTER_COUNTERS = ("acquire_ns", "acquire_block_ns", "reconfigure_count", "present_record_ns",
-                      "submit_ns", "allocations", "allocated_bytes")
+                      "submit_ns", "replay_ns", "allocations", "allocated_bytes")
 DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "checkpoint_copy_bytes", "validation_waits",
@@ -426,7 +426,6 @@ def summarize_presenter(presenter, samples):
     samples["presentation_cpu"] = cpu
     counters = {name: drawing_distribution([row[index] for row in rows])
                 for index, name in enumerate(PRESENTER_COUNTERS)}
-    counters["replay_ns"] = drawing_distribution(samples["replay"])
     residual = [present - row[0] - row[3] - row[4]
                 for present, row in zip(samples["presentation"], rows)]
     return {"frames": len(rows), "per_frame": counters,
