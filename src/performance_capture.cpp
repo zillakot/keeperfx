@@ -84,6 +84,7 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "validation_waits", "flagged_invalid_frames", "status_stalls",
     "upload_bytes", "readback_bytes", "full_readbacks", "full_readback_bytes",
     "buffers", "buffer_bytes", "batches", "commands", "ordered_sprites",
+    "ordered_sprite_layers", "ordered_sprite_passes",
     "arena_evictions", "arena_overflows", "arena_bytes_uploaded",
     "tile_allocations", "tile_entries", "bridge_target_flushes", "bridge_target_runs",
     "terrain_tile_entries", "prepared_row_words", "prepared_row_allocations",
