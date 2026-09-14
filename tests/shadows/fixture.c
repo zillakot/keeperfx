@@ -30,6 +30,8 @@ static uint32_t random32(void) { seed = seed * 1664525u + 1013904223u; return se
 static FILE *output;
 static unsigned emitted;
 static unsigned char carried[65536];
+/* Simulation code writes big_scratch from offset 0; set to model a prior the GPU cannot know. */
+unsigned shadow_perturb_cases;
 uint64_t shadow_hash, shadow_scratch_hash;
 static void word(FILE *f, uint32_t n) { unsigned char b[] = {n,n>>8,n>>16,n>>24}; if(fwrite(b,1,4,f)!=4)abort(); }
 #ifndef KFX_SHADOW_NATIVE
@@ -90,6 +92,7 @@ int shadow_cases(FILE *file, int expected_accept) {
             rle[n++]=0;
         }
         memcpy(big_scratch,carried,65536);
+        if(shadow_perturb_cases&&c>=1&&c<=2)for(unsigned i=0;i<65536;i++)big_scratch[i]^=0x5au;
         struct PolyPoint v[]={{3,53,0,(fh-1)<<16,0},{7,4,0,0,0},
             {72,2,(fw-1)<<16,0,0},{75,49,(fw-1)<<16,(fh-1)<<16,0}};
         if(c%3==0){v[0].X-=20;v[1].X-=20;v[2].X+=20;v[3].X+=20;}

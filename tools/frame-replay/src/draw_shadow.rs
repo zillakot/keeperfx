@@ -302,7 +302,7 @@ impl DrawRenderer {
         result
     }
 
-    /// Records the mask immediately before the triangles that sample its slot.
+    /// Submits the mask immediately ahead of the triangles that sample its slot.
     pub(super) fn submit_shadow_batch(
         &mut self,
         target: u64,

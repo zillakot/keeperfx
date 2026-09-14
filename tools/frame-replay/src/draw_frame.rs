@@ -218,8 +218,8 @@ impl DrawRenderer {
         Ok(true)
     }
 
-    /// Each mask and its triangles share one submission, which is what keeps a later mask
-    /// from overwriting a slot an earlier queued batch still reads.
+    /// A mask and the triangles reading its slot are adjacent submissions on one queue,
+    /// which is what keeps a later mask from overwriting a slot an earlier one still reads.
     pub(super) fn enqueue_shadow(
         &mut self,
         target: u64,

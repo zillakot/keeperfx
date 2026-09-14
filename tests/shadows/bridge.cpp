@@ -2,6 +2,7 @@
 #include <cstdio>
 extern "C" int shadow_cases(FILE*, int);
 extern "C" uint64_t shadow_hash, shadow_scratch_hash;
+extern "C" unsigned shadow_perturb_cases;
 static WgpuTerrainBridge* active;
 // RendererSoftware answers an invalidated frame with a full CPU redraw; model that here.
 extern "C" void shadow_native_recover(void) { if (active) active->FullRedraw(); }
@@ -52,6 +53,20 @@ int main() {
             shadow_scratch_hash != expected_scratch || !bridge.Failed() ||
             bridge.GetCounters().gpu_shadow_commands != 1) return 4;
     }
-    std::fprintf(stderr, "192 verified and 192 production native shadows, initialization and later batch fallback exact\n");
+    {
+        // Two consecutive shadows whose CPU prior the resident chain cannot know: each is
+        // counted and skipped, and verification resumes from the GPU prior straight after.
+        WgpuTerrainBridge bridge(0, false, true);
+        shadow_perturb_cases = 1;
+        const int result = run(bridge, 1);
+        shadow_perturb_cases = 0;
+        const auto &c = bridge.GetCounters();
+        if (result || bridge.Failed() || c.shadow_prior_divergence != 2 ||
+            c.verified_batches != 190 || c.gpu_shadow_commands != 192 ||
+            c.shadow_scratch_copy_bytes != 2 * 65536) {
+            std::fprintf(stderr, "diverged shadow prior: %s\n", bridge.GetError());return 6;
+        }
+    }
+    std::fprintf(stderr, "192 verified and 192 production native shadows, two counted prior divergences, initialization and later batch fallback exact\n");
     return 0;
 }

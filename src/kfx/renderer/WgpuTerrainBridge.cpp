@@ -940,6 +940,12 @@ bool WgpuTerrainBridge::ExecutePending(KfxWgpuNativeOracle oracle, void* oracle_
                     std::snprintf(m_error.data(), m_error.size(), "GPU shadow scratch index comparison failed");
                     return false;
                 }
+                // Resume from the resident prior so divergence counts events, not every
+                // later shadow, and the next masks are verified on their own terms.
+                if (prior_diverged) {
+                    std::memcpy(m_shadow_scratch, resident.data(), 65536);
+                    m_counts.shadow_scratch_copy_bytes += 65536;
+                }
                 m_shadow_prior = std::move(resident);
             }
             m_counts.verification_cpu_commands += m_pending.size();
