@@ -115,6 +115,7 @@ private:
     uint64_t ResourceFor(std::vector<Resource>& cache, const void* key, uint64_t generation,
         const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
         size_t limit);
+    void PurgeResources();
     int Fail(const char* reason);
     void ReplayPending();
     bool RasterizePending(uint8_t* pixels, uint32_t pitch) const;
@@ -148,7 +149,7 @@ private:
     KfxGpolyRasterizer m_rasterizer = nullptr;
     bool m_fail_init, m_verify, m_failed = false;
     std::array<char, 1024> m_error = {};
-    std::vector<Resource> m_textures, m_fades;
+    std::vector<Resource> m_terrain_textures, m_terrain_fades, m_native_tables;
     std::vector<uint8_t> m_readback;
     Counters m_counts;
 };
