@@ -161,6 +161,7 @@ impl DrawRenderer {
                 entry(3, &params),
                 entry(4, &tb),
                 entry(6, self.shadow_slot_binding()),
+                entry(7, self.status_binding()),
             ],
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());

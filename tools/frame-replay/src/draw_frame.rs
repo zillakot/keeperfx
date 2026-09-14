@@ -42,6 +42,10 @@ impl DrawRenderer {
         self.frame_counters
     }
 
+    pub(super) fn status_binding(&self) -> &wgpu::Buffer {
+        &self.status
+    }
+
     /// Records the status copy and reset into an encoder the caller submits; the
     /// returned slot must then be mapped with `status_map`.
     pub(super) fn status_record(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<usize> {

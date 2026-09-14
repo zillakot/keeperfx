@@ -13,6 +13,10 @@ struct Command {
 @group(0) @binding(4) var<storage, read> tiles: array<u32>;
 struct DrawParameters { x: u32, y: u32, z: u32, w: u32, pitch: u32, offset: u32, pad0: u32, pad1: u32 }
 @group(0) @binding(3) var<uniform> parameters: DrawParameters;
+@group(0) @binding(7) var<storage, read_write> status: array<atomic<u32>, 8>;
+const STATUS_FRAME: u32 = 0u;
+const STATUS_TRIG_LOOKUP: u32 = 1u;
+fn raise(cause: u32) { atomicStore(&status[STATUS_FRAME], 1u); atomicStore(&status[cause], 1u); }
 fn pixel_address(i: u32) -> u32 { return parameters.offset + (i / parameters.x) * parameters.pitch + i % parameters.x; }
 
 fn mul_high(a: u32, b: u32) -> u32 {
@@ -102,7 +106,9 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
             source = assets[c.assets.y + shade + assets[c.assets.x + uv]];
         }
         if c.operation.x == 9u {
-            destination = trig_sample(c, pixel, destination);
+            let sampled = trig_sample(c, pixel, destination);
+            if sampled == 257u { raise(STATUS_TRIG_LOOKUP); continue; }
+            destination = sampled;
             continue;
         }
         if c.operation.x == 16u { source = transition_sample(c, id.xy); }

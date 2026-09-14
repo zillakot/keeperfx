@@ -225,6 +225,7 @@ impl DrawRenderer {
                     entry(2, &target.indices),
                     entry(3, &params),
                     entry(4, &metadata_buffer),
+                    entry(6, self.status_binding()),
                 ],
             });
             let mut pass = encoder.begin_compute_pass(&Default::default());
