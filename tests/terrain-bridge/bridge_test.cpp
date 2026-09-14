@@ -554,8 +554,8 @@ int main()
         std::vector<uint8_t> frame_pixels(24 * 10, 0x6a);
         KfxGpolyTarget frame = {frame_pixels.data(), 20, 10, 24};
         std::vector<uint8_t> sprite_bytes(64, 0), image_bytes(200, 0);
-        KfxWgpuNativeResource sprite_source = {sprite_bytes.data(), sprite_bytes.size(), 8, 8, 8};
-        KfxWgpuNativeResource image_source = {image_bytes.data(), image_bytes.size(), 20, 10, 20};
+        KfxWgpuNativeResource sprite_source = {sprite_bytes.data(), sprite_bytes.size(), 8, 8, 8, nullptr, 0};
+        KfxWgpuNativeResource image_source = {image_bytes.data(), image_bytes.size(), 20, 10, 20, nullptr, 0};
         submit_log.clear();
         mock_triangles = true;
         mismatch_triangles = false;
