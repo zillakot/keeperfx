@@ -419,7 +419,7 @@ mode cycle, which the control-tooling fault in
 `out/wgpu-migration/minimap-box-runs/`. These are offscreen observations and establish no
 windowed ceiling.
 
-### Minimap payload split, oracle sessions measured 2026-09-15
+### Minimap payload split, measured 2026-09-15
 
 [PR #54](https://github.com/zillakot/keeperfx/pull/54), branch
 `perf/minimap-residency-split`, binary SHA256
@@ -427,8 +427,8 @@ windowed ceiling.
 `5ee89a7e9173f25e249b650415f3d9620401e55e`, binary SHA256
 `97088818a726beab08d860b17e52a020778d0fd36fbbb996afd5934f4e075aa0`. Apple M5, macOS 26.6.2.
 
-These are `scripts/drawing-coverage.py` control sessions with `KFX_WGPU_DRAW_VERIFY=1`,
-one per binary, over the `dungeon-busy` and `front-view` scenes. Windowed, `VSYNC=ON`,
+Oracle sessions. These are `scripts/drawing-coverage.py` control sessions with
+`KFX_WGPU_DRAW_VERIFY=1`, one per binary, over the `dungeon-busy` and `front-view` scenes. Windowed, `VSYNC=ON`,
 `TURNS_PER_SECOND=20`, `FRAMES_PER_SECOND=0` so draws interpolate between turns, smoothing
 off, campaign `keeporig` level 20 in both scenes, `front-view` additionally launched with
 `rotate_mode=2`. `dungeon-busy` runs at 640x480 and resizes through 800x600 and back;
@@ -500,6 +500,41 @@ The per-command minimap uniform grows from 40 to 60 words, so
 The two sessions are separate control runs over the same scene scripts, so the frame counts
 are not identical and these are matched scenes rather than matched frames. Run outputs are
 under `out/wgpu-migration/minimap-split-runs/`.
+
+Timing cells. Branch source `c8687e108385954ce040758bc0747ae5d3a8dcfb` (BUILD_NUMBER 5746),
+binary SHA256 `3359fe9a45a81a867e1cf48a274b795c9c6984acd00676764a2fd509b22ec0b4`; reference
+source `5ee89a7e9173f25e249b650415f3d9620401e55e` (PR #50 head), binary SHA256
+`97088818a726beab08d860b17e52a020778d0fd36fbbb996afd5934f4e075aa0`. Apple M5, offscreen
+presentation (`--offscreen`, no swapchain), busy scene at 1920x1080, capped and uncapped,
+guards enabled, `KFX_SCHEDULE_SKIP_CYCLE=1`, the timing lock held by the schedule, 40 warmup
+/ 200 measured turns, 600 replay-host frames per cell, `--gpu-timing`, two matched pairs per
+cap mode with the order alternated. Per presented frame:
+
+| Cell | FPS | Replay ms | Submit ms | Replay upload ms | `arena_bytes_uploaded` | `arena_minimap_bytes` | `arena_minimap_hits` | GPU union ms | Minimap pass ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| capped p1 reference | 60.0 | 1.402 | 0.636 | 0.877 | 1,132,642 | 559,427 | 0.0 | 9.352 | 0.231 |
+| capped p1 branch | 60.0 | 1.430 | 0.622 | 0.846 | 775,290 | 214,002 | 14.1 | 8.611 | 0.208 |
+| capped p2 reference | 60.0 | 1.394 | 0.641 | 0.872 | 1,122,157 | 559,427 | 0.0 | 9.416 | 0.228 |
+| capped p2 branch | 60.0 | 1.442 | 0.643 | 0.860 | 779,767 | 213,996 | 14.1 | 9.303 | 0.235 |
+| uncapped p1 reference | 298.1 | 0.932 | 0.385 | 0.572 | 1,118,125 | 559,427 | 0.0 | 3.213 | 0.083 |
+| uncapped p1 branch | 277.9 | 1.034 | 0.502 | 0.584 | 628,327 | 46,164 | 21.0 | 3.458 | 0.084 |
+| uncapped p2 reference | 294.9 | 0.954 | 0.394 | 0.587 | 1,112,593 | 559,427 | 0.0 | 3.246 | 0.083 |
+| uncapped p2 branch | 297.5 | 0.917 | 0.380 | 0.516 | 608,907 | 43,135 | 21.1 | 3.229 | 0.084 |
+
+All 8 cells complete, surface gates verified at 640 and 1080, drawing gate passed, waits 0
+and `arena_overflows` 0 in every cell. Submits are 1.000/frame on the reference and 1.003
+capped and 1.0004-1.0007 uncapped on the branch — one or two extra submits per 600-frame
+cell, at session start.
+
+Reading: capped stays on the 60 FPS cap in all four cells. `arena_bytes_uploaded` is down
+31% capped and 45% uncapped, with `arena_minimap_bytes` 559,427 → 214,002/213,996 capped
+and → 46,164/43,135 uncapped. FPS and replay are inside matched-run variability: the
+uncapped FPS pairs disagree in sign (-20.2 and +2.6) and the two runs' reference cells span
+278-298 FPS. No regression is shown and no gain is claimed; capped replay is +0.03 to
++0.05 ms on the branch in both pairs, within the 18% pair-to-pair spread recorded for
+capped replay host time, and the minimap pass is unchanged. The first run, on the earlier
+head `8c594954e33eddfba94eafaaf9969dcc02445a79`, reproduces the byte figures. Records:
+`timing-c8687e1.md` and `timing-8c594954e.md` under `out/wgpu-migration/minimap-split-runs/`.
 
 ## Presenter host attribution
 
@@ -1039,9 +1074,9 @@ The existing source-validation ceiling is retained. The `packed-arena` Cargo fea
 is enabled by default after both complete fixture matrices passed.
 `--no-default-features` selects the expanded control; CI retains both builds.
 Performance, snapshot operation budgets and acquired-surface parity remain host gates.
-PR #43 is not included: its split descriptors must use these byte accessors and its
-physical cache budget must change from 9 MiB to 2.25 MiB if integrated, keeping logical
-admission and raw-source hashes unchanged in both controls.
+PR #43 is not included; it was closed as superseded by PR #54, whose split segments use
+these byte accessors and whose cache budget is counted in arena source bytes so that the
+same commands are admitted in both controls.
 
 Packed LE16/LE32 reads fetch one storage word, or two when crossing a word
 boundary; sprite colour/coverage pairs share the LE16 fetch. Minimap dictionary
