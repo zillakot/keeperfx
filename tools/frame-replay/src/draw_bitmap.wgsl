@@ -6,25 +6,25 @@ fn bitmap_sample(c: Command, pixel: vec2<u32>) -> u32 {
         while lo < hi {
             let mid = lo + (hi-lo)/2u;
             let row = base+mid*16u;
-            if pixel.y >= sprite_word(row)+sprite_word(row+4u) { lo=mid+1u; }
+            if pixel.y >= asset_word(row)+asset_word(row+4u) { lo=mid+1u; }
             else { hi=mid; }
         }
         if lo == c.source.w { return 256u; }
         let row = base+lo*16u;
-        if pixel.y < sprite_word(row) { return 256u; }
-        let records = base+sprite_word(row+8u);
-        let count = sprite_word(row+12u);
+        if pixel.y < asset_word(row) { return 256u; }
+        let records = base+asset_word(row+8u);
+        let count = asset_word(row+12u);
         lo=0u; hi=count;
         while lo < hi {
             let mid=lo+(hi-lo)/2u;
             let record=records+mid*12u;
-            if pixel.x >= sprite_word(record)+sprite_word(record+4u) { lo=mid+1u; }
+            if pixel.x >= asset_word(record)+asset_word(record+4u) { lo=mid+1u; }
             else { hi=mid; }
         }
         if lo == count { return 256u; }
         let record=records+lo*12u;
-        if pixel.x < sprite_word(record) { return 256u; }
-        return sprite_word(record+8u);
+        if pixel.x < asset_word(record) { return 256u; }
+        return asset_word(record+8u);
     }
     let origin=vec2<i32>(c.accumulator.xy);
     let size=vec2<i32>(c.accumulator.zw);
@@ -43,9 +43,9 @@ fn bitmap_sample(c: Command, pixel: vec2<u32>) -> u32 {
         }
         let ink=(byte(base+12u+bit/8u) & (128u>>(bit&7u)))!=0u;
         if layer==0u {
-            if ink { result=sprite_word(base+8u); }
+            if ink { result=asset_word(base+8u); }
         } else {
-            let colour=sprite_word(base+select(4u,0u,ink));
+            let colour=asset_word(base+select(4u,0u,ink));
             if colour!=256u { result=colour; }
         }
     }
