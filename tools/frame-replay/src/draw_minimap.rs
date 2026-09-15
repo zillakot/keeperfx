@@ -2,16 +2,201 @@ use super::upload;
 use super::*;
 pub const MINIMAP: u32 = 12;
 const HEADER: usize = 96;
+/// One complete style table: `PnC_End` palette indices for one background colour.
+const TABLE: usize = 38569;
+const STYLES: usize = 16;
+
 pub(super) struct MinimapState {
     pipeline: wgpu::ComputePipeline,
+    resident: Resident,
     pub(super) background: Option<(u64, u32)>,
+}
+
+/// Live cached size classes, counted in arena source bytes so the bound holds in both
+/// asset formats; the GPU cost is this times `assets::STRIDE`. It holds the advertised
+/// retention at the validated maximum of 16 background colours: 16 x `STYLE_VERSIONS`
+/// tables, one cell and one dictionary version and `PREFIX_VERSIONS` prefixes.
+const CACHE_CLASS_BYTES: u64 = 5 << 20;
+const PREFIX_VERSIONS: usize = 16;
+const STYLE_VERSIONS: usize = 4;
+const ROLE_PREFIX: u32 = 0;
+const ROLE_DICTIONARY: u32 = 1;
+const ROLE_CELLS: u32 = 2;
+/// One role per style table, so a table that did not change is not re-uploaded
+/// when its neighbours did.
+const ROLE_STYLE: u32 = 3;
+/// Bytes sampled at each end of a segment to reject a changed one without reading it
+/// all. `update_panel_colors` rewrites entries 3, 4 and 10 of every style table, so the
+/// leading sample alone rejects the common style change.
+const PROBE: usize = 16;
+
+/// Versions one role retains. The dictionary and the cells describe the current
+/// world, so a change replaces them; the style tables recur over the blink and
+/// highlight phases and are worth keeping.
+fn versions(role: u32) -> usize {
+    match role {
+        ROLE_PREFIX => PREFIX_VERSIONS,
+        ROLE_DICTIONARY | ROLE_CELLS => 1,
+        _ => STYLE_VERSIONS,
+    }
+}
+
+/// Whether the byte budget may retire this role. The single-version roles are the base
+/// the next world command needs, so table pressure must not evict them.
+fn evictable(role: u32) -> bool {
+    versions(role) > 1
+}
+
+/// The arena's rounded class for a segment, in arena source bytes.
+fn class_bytes(length: usize) -> u64 {
+    (length.max(256) as u64).next_power_of_two()
+}
+
+type Probe = (usize, [u8; PROBE], [u8; PROBE]);
+
+fn probe(bytes: &[u8]) -> Probe {
+    let mut head = [0; PROBE];
+    let mut tail = [0; PROBE];
+    let taken = bytes.len().min(PROBE);
+    head[..taken].copy_from_slice(&bytes[..taken]);
+    tail[..taken].copy_from_slice(&bytes[bytes.len() - taken..]);
+    (bytes.len(), head, tail)
+}
+
+struct Segment {
+    id: u64,
+    role: u32,
+    layout: [u32; 2],
+    probe: Probe,
+    bytes: Vec<u8>,
+    used: u64,
+}
+
+/// Immutable minimap segments kept by exact content. Its identities are private to
+/// the renderer and outlive the transient source each command carries; a hit here
+/// is an identity, not a promise of arena residency.
+#[derive(Default)]
+pub(super) struct Resident {
+    entries: Vec<Segment>,
+    clock: u64,
+    evictions: u64,
+}
+
+impl Resident {
+    /// Live arena source bytes; multiply by `assets::STRIDE` for the GPU figure.
+    fn class_bytes(&self) -> u64 {
+        self.entries
+            .iter()
+            .map(|e| class_bytes(e.bytes.len()))
+            .sum()
+    }
+
+    /// The owning host copies this cache holds, separate from the C, bridge and
+    /// renderer copies of the whole source that already exist per command.
+    fn cpu_bytes(&self) -> u64 {
+        self.entries.iter().map(|e| e.bytes.len() as u64).sum()
+    }
+
+    fn oldest(&self, mut wanted: impl FnMut(&Segment) -> bool) -> Option<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| wanted(e))
+            .min_by_key(|(_, e)| e.used)
+            .map(|(index, _)| index)
+    }
+
+    fn retire(&mut self, arena: &mut arena::Arena, index: usize) {
+        self.evictions += 1;
+        arena.release(self.entries.remove(index).id);
+    }
+
+    /// Exact role, layout and byte identity. Only the retained versions of this role
+    /// and layout are candidates, and the length and end samples reject a changed
+    /// segment before the full comparison reads it.
+    fn resolve(
+        &mut self,
+        arena: &mut arena::Arena,
+        role: u32,
+        layout: [u32; 2],
+        bytes: &[u8],
+    ) -> Result<(u64, bool)> {
+        self.clock += 1;
+        let probe = probe(bytes);
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.role == role && e.layout == layout && e.probe == probe && e.bytes == bytes)
+        {
+            entry.used = self.clock;
+            return Ok((entry.id, true));
+        }
+        while self.entries.iter().filter(|e| e.role == role).count() >= versions(role) {
+            let index = self
+                .oldest(|e| e.role == role)
+                .context("empty minimap role")?;
+            self.retire(arena, index);
+        }
+        while self.class_bytes() + class_bytes(bytes.len()) > CACHE_CLASS_BYTES {
+            let Some(index) = self.oldest(|e| evictable(e.role)) else {
+                break;
+            };
+            self.retire(arena, index);
+        }
+        let id = next_handle()?;
+        self.entries.push(Segment {
+            id,
+            role,
+            layout,
+            probe,
+            bytes: bytes.to_vec(),
+            used: self.clock,
+        });
+        Ok((id, false))
+    }
+}
+
+/// Role, identity layout and source range of every segment one command carries.
+/// The prefix holds the header and the pattern the kernel still addresses through
+/// `h()`; the dictionary is resident for identity and accounting, since the kernel
+/// resolves background colours through the uniform nibble table instead.
+fn segment_plan(h: &[u32; 24], prefix: std::ops::Range<usize>) -> Vec<(u32, [u32; 2], Range)> {
+    let mut plan = vec![(ROLE_PREFIX, [h[0], h[5]], prefix)];
+    if h[0] == 0 {
+        let tables = h[15] as usize / TABLE;
+        plan.push((ROLE_DICTIONARY, [tables as u32, 0], range(h[12], h[13])));
+        plan.push((ROLE_CELLS, [h[10], h[11]], range(h[13], h[14])));
+        for table in 0..tables {
+            let start = h[14] as usize + table * TABLE;
+            plan.push((
+                ROLE_STYLE + table as u32,
+                [tables as u32, table as u32],
+                start..start + TABLE,
+            ));
+        }
+    }
+    plan
+}
+
+/// Only an arena overflow is worth retrying on the contiguous path; a device or
+/// validation failure must reach the host as itself.
+fn overflowed(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string() == arena::OVERFLOW)
+}
+
+type Range = std::ops::Range<usize>;
+
+fn range(start: u32, end: u32) -> Range {
+    start as usize..end as usize
 }
 
 fn background_colours(header: &[u32; 24], bytes: &[u8]) -> [u32; 32] {
     let mut colours = [0; 32];
     if header[0] == 0 {
         let start = header[12] as usize;
-        for (index, &colour) in bytes[start..start + (header[15] / 38569) as usize]
+        for (index, &colour) in bytes[start..start + (header[15] / TABLE as u32) as usize]
             .iter()
             .enumerate()
             .rev()
@@ -164,7 +349,7 @@ fn validate(c: &Command, b: &[u8], width: u32, height: u32) -> Result<[u32; 24]>
                 && h[12] as usize == pattern_end
                 && h[13] == h[12] + 256
                 && h[15] > 0
-                && h[15] <= 16 * 38569,
+                && h[15] as usize <= STYLES * TABLE,
             "invalid minimap world descriptor"
         );
         let cell_end = u64::from(h[13]) + (u64::from(h[10]) + 1) * (u64::from(h[11]) + 1) * 2;
@@ -172,12 +357,18 @@ fn validate(c: &Command, b: &[u8], width: u32, height: u32) -> Result<[u32; 24]>
             u64::from(h[14]) == cell_end && b.len() as u64 == cell_end + u64::from(h[15]),
             "invalid minimap world extent"
         );
-        ensure!(h[15].is_multiple_of(38569), "invalid minimap palette size");
+        ensure!(
+            h[15].is_multiple_of(TABLE as u32),
+            "invalid minimap palette size"
+        );
         for cell in b[h[13] as usize..h[14] as usize].as_chunks::<2>().0 {
-            ensure!(u16::from_le_bytes(*cell) < 38569, "invalid minimap cell");
+            ensure!(
+                usize::from(u16::from_le_bytes(*cell)) < TABLE,
+                "invalid minimap cell"
+            );
         }
-        let n = h[15] / 38569;
-        ensure!(n <= 16, "too many minimap backgrounds");
+        let n = h[15] / TABLE as u32;
+        ensure!(n as usize <= STYLES, "too many minimap backgrounds");
         for j in 0..n {
             ensure!(
                 !b[h[12] as usize..h[12] as usize + j as usize]
@@ -243,6 +434,7 @@ impl DrawRenderer {
                         compilation_options: Default::default(),
                         cache: None,
                     }),
+                resident: Resident::default(),
                 background: None,
             });
         }
@@ -269,18 +461,100 @@ impl DrawRenderer {
             }
         }
         let limit = self.storage_limit() as usize;
-        self.arena_headroom(0)?;
-        let bytes = &self.resources[&c.source].bytes;
-        let mut packer = asset_packer(
-            &self.device,
-            &self.queue,
-            &mut self.arena,
-            &mut self.counters,
-            self.asset_generation,
-            limit,
-        );
-        let base = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
-        let words = packer.finish();
+        let plan = segment_plan(&h, 0..HEADER + h[23] as usize * 8);
+        let mut split = self.arena.enabled()
+            && plan
+                .iter()
+                .map(|(_, _, r)| class_bytes(r.len()))
+                .sum::<u64>()
+                <= CACHE_CLASS_BYTES;
+        let mut segments = Vec::new();
+        if split {
+            let source = &self.resources[&c.source].bytes;
+            let resident = &mut self.minimap.as_mut().unwrap().resident;
+            for (role, layout, range) in &plan {
+                let (id, _) =
+                    resident.resolve(&mut self.arena, *role, *layout, &source[range.clone()])?;
+                segments.push(id);
+            }
+            self.counters.minimap_cache_class_bytes =
+                resident.class_bytes() * assets::STRIDE as u64;
+            self.counters.minimap_cache_cpu_bytes = resident.cpu_bytes();
+            self.counters.minimap_cache_evictions = resident.evictions;
+        }
+        let (bases, words) = loop {
+            let demand = if split {
+                segments
+                    .iter()
+                    .zip(&plan)
+                    .try_fold(0, |sum, (id, (_, _, range))| {
+                        self.arena
+                            .allocation_bytes(*id, range.len())
+                            .map(|n| sum + n)
+                    })?
+            } else {
+                self.arena
+                    .allocation_bytes(c.source, self.resources[&c.source].bytes.len())?
+            };
+            self.arena_headroom(demand.saturating_sub(self.resource_bytes as u64))?;
+            let bytes = &self.resources[&c.source].bytes;
+            let mut packer = asset_packer(
+                &self.device,
+                &self.queue,
+                &mut self.arena,
+                &mut self.counters,
+                self.asset_generation,
+                limit,
+            );
+            let mut bases = [0; 2 + STYLES];
+            let packed = (|| -> Result<()> {
+                if split {
+                    for (index, (id, (role, _, range))) in segments.iter().zip(&plan).enumerate() {
+                        let offset =
+                            packer.offset(*id, &bytes[range.clone()], ResourceKind::Minimap)?;
+                        let slot = match *role {
+                            ROLE_PREFIX => 0,
+                            ROLE_DICTIONARY => continue,
+                            ROLE_CELLS => 1,
+                            _ => 2 + (index - 3),
+                        };
+                        bases[slot] = offset;
+                    }
+                } else {
+                    let base = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
+                    bases[0] = base;
+                    if h[0] == 0 {
+                        bases[1] = base + h[13];
+                        for table in 0..h[15] as usize / TABLE {
+                            bases[2 + table] = base + h[14] + (table * TABLE) as u32;
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            let words = packer.finish();
+            match packed {
+                Ok(()) => break (bases, words),
+                // A segment plan can fragment where one contiguous class still fits.
+                // Earlier readers of this encoder still own the released regions
+                // until retirement, and the counters already carry what was uploaded.
+                Err(error) if split && overflowed(&error) => {
+                    for id in &segments {
+                        self.arena.release(*id);
+                    }
+                    split = false;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let base = bases[0];
+        let styles: [u32; STYLES] = std::array::from_fn(|table| {
+            if table < (h[15] as usize / TABLE).max(1) {
+                bases[2 + table]
+            } else {
+                bases[2]
+            }
+        });
         if span_x == 0 || span_y == 0 {
             if let Some(words) = &words {
                 self.counters.asset_upload_bytes += words.len() as u64 * assets::STRIDE as u64;
@@ -310,10 +584,12 @@ impl DrawRenderer {
             &dummy
         };
         let target = &self.targets[&target_id];
-        let mut view_words = [0; 40];
+        let mut view_words = [0; 60];
         view_words[..4].copy_from_slice(&[target.width, target.pitch, target.offset, base]);
         view_words[4..36].copy_from_slice(&colours);
-        view_words[36..].copy_from_slice(&bounds);
+        view_words[36..40].copy_from_slice(&bounds);
+        view_words[40] = bases[1];
+        view_words[44..].copy_from_slice(&styles);
         let view = upload::stage(
             &self.uploads,
             &self.device,
@@ -357,6 +633,244 @@ impl DrawRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn styles(header: &[u32; 24]) -> usize {
+        header[15] as usize / TABLE
+    }
+
+    fn world_header() -> [u32; 24] {
+        let mut h = [0u32; 24];
+        h[1] = 64;
+        h[2] = 64;
+        h[5] = 32;
+        h[10] = 3;
+        h[11] = 5;
+        h[22] = 96;
+        h[23] = 36;
+        h[12] = 384;
+        h[13] = h[12] + 256;
+        h[14] = h[13] + (h[10] + 1) * (h[11] + 1) * 2;
+        h[15] = 3 * TABLE as u32;
+        h
+    }
+
+    #[test]
+    fn the_segment_plan_partitions_the_validated_payload() {
+        let h = world_header();
+        let plan = segment_plan(&h, 0..384);
+        assert_eq!(plan.len(), 3 + styles(&h));
+        let mut covered = 0;
+        for (_, _, range) in &plan {
+            assert_eq!(range.start, covered);
+            covered = range.end;
+        }
+        assert_eq!(covered as u32, h[14] + h[15]);
+        let roles: Vec<_> = plan.iter().map(|(role, _, _)| *role).collect();
+        assert_eq!(roles, [ROLE_PREFIX, ROLE_DICTIONARY, ROLE_CELLS, 3, 4, 5]);
+        let mut overlay = h;
+        overlay[0] = 1;
+        assert_eq!(segment_plan(&overlay, 0..384).len(), 1);
+    }
+
+    #[test]
+    fn style_tables_version_independently_of_their_neighbours() {
+        let mut arena = arena::Arena::new(32 << 20);
+        let mut resident = Resident::default();
+        let table = |value: u8| vec![value; TABLE];
+        let mut resolve = |resident: &mut Resident, index: u32, value: u8| {
+            resident
+                .resolve(&mut arena, ROLE_STYLE + index, [2, index], &table(value))
+                .unwrap()
+        };
+        let first = resolve(&mut resident, 0, 1);
+        let second = resolve(&mut resident, 1, 9);
+        assert!(!first.1 && !second.1);
+        assert_ne!(first.0, second.0);
+
+        let changed = resolve(&mut resident, 0, 2);
+        assert!(!changed.1);
+        assert_eq!(resolve(&mut resident, 1, 9), (second.0, true));
+        assert_eq!(resolve(&mut resident, 0, 1), (first.0, true));
+
+        for value in 3..3 + STYLE_VERSIONS as u8 {
+            resolve(&mut resident, 0, value);
+        }
+        assert_eq!(
+            resident
+                .entries
+                .iter()
+                .filter(|e| e.role == ROLE_STYLE)
+                .count(),
+            STYLE_VERSIONS
+        );
+        assert_ne!(resolve(&mut resident, 0, 1).0, first.0);
+        assert_eq!(resolve(&mut resident, 1, 9), (second.0, true));
+    }
+
+    #[test]
+    fn the_cache_budget_retires_the_least_recently_used_segment() {
+        let mut arena = arena::Arena::new(32 << 20);
+        let mut resident = Resident::default();
+        let slots = (CACHE_CLASS_BYTES / class_bytes(TABLE)) as usize;
+        let mut resolve = |resident: &mut Resident, index: usize, value: usize| {
+            resident
+                .resolve(
+                    &mut arena,
+                    ROLE_STYLE + index as u32,
+                    [16, 0],
+                    &vec![value as u8; TABLE],
+                )
+                .unwrap()
+        };
+        let first = resolve(&mut resident, 0, 0);
+        for step in 1..=slots {
+            resolve(&mut resident, step / STYLE_VERSIONS, step);
+            assert!(resident.class_bytes() <= CACHE_CLASS_BYTES);
+        }
+        assert_eq!(
+            resident.cpu_bytes(),
+            resident.entries.len() as u64 * TABLE as u64
+        );
+        assert_ne!(resolve(&mut resident, 0, 0).0, first.0);
+    }
+
+    #[test]
+    fn the_budget_holds_the_advertised_retention_at_sixteen_backgrounds() {
+        let base = class_bytes(384) * PREFIX_VERSIONS as u64
+            + class_bytes(256)
+            + class_bytes(256 * 256 * 2);
+        let styles = STYLES as u64 * STYLE_VERSIONS as u64 * class_bytes(TABLE);
+        assert!(base + styles <= CACHE_CLASS_BYTES, "{base} + {styles}");
+    }
+
+    #[test]
+    fn table_pressure_never_retires_the_cells_or_the_dictionary() {
+        let mut arena = arena::Arena::new(32 << 20);
+        let mut resident = Resident::default();
+        let cells = vec![3u8; 131072];
+        let dictionary = [7u8; 256];
+        let cell_id = resident
+            .resolve(&mut arena, ROLE_CELLS, [255, 255], &cells)
+            .unwrap()
+            .0;
+        let dictionary_id = resident
+            .resolve(&mut arena, ROLE_DICTIONARY, [16, 0], &dictionary)
+            .unwrap()
+            .0;
+        let slots = (CACHE_CLASS_BYTES / class_bytes(TABLE)) as usize;
+        for step in 0..slots + STYLE_VERSIONS {
+            resident
+                .resolve(
+                    &mut arena,
+                    ROLE_STYLE + (step / STYLE_VERSIONS) as u32,
+                    [16, 0],
+                    &vec![step as u8; TABLE],
+                )
+                .unwrap();
+        }
+        assert!(resident.evictions > 0);
+        assert_eq!(
+            resident
+                .resolve(&mut arena, ROLE_CELLS, [255, 255], &cells)
+                .unwrap(),
+            (cell_id, true)
+        );
+        assert_eq!(
+            resident
+                .resolve(&mut arena, ROLE_DICTIONARY, [16, 0], &dictionary)
+                .unwrap(),
+            (dictionary_id, true)
+        );
+    }
+
+    #[test]
+    fn the_end_samples_narrow_candidates_without_deciding_identity() {
+        let mut arena = arena::Arena::new(32 << 20);
+        let mut resident = Resident::default();
+        let mut first = vec![1u8; TABLE];
+        let mut second = first.clone();
+        second[TABLE / 2] = 2;
+        assert_eq!(probe(&first), probe(&second));
+        let a = resident
+            .resolve(&mut arena, ROLE_STYLE, [1, 0], &first)
+            .unwrap();
+        let b = resident
+            .resolve(&mut arena, ROLE_STYLE, [1, 0], &second)
+            .unwrap();
+        assert_ne!(a.0, b.0);
+        assert!(!b.1);
+        assert_eq!(
+            resident
+                .resolve(&mut arena, ROLE_STYLE, [1, 0], &first)
+                .unwrap(),
+            (a.0, true)
+        );
+        first[3] = 9;
+        assert_ne!(probe(&first), probe(&second));
+        assert!(
+            !resident
+                .resolve(&mut arena, ROLE_STYLE, [1, 0], &first)
+                .unwrap()
+                .1
+        );
+    }
+
+    #[test]
+    fn only_an_arena_overflow_is_retried_on_the_contiguous_path() {
+        assert!(overflowed(&anyhow::anyhow!(arena::OVERFLOW)));
+        assert!(overflowed(
+            &anyhow::anyhow!(arena::OVERFLOW).context("minimap segment")
+        ));
+        assert!(!overflowed(&anyhow::anyhow!("GPU error: device lost")));
+        assert!(!overflowed(&anyhow::anyhow!("asset length overflow")));
+    }
+
+    #[test]
+    fn a_changed_layout_replaces_the_single_cell_and_dictionary_version() {
+        let mut arena = arena::Arena::new(32 << 20);
+        let mut resident = Resident::default();
+        let cells = vec![0u8; 131072];
+        let first = resident
+            .resolve(&mut arena, ROLE_CELLS, [255, 255], &cells)
+            .unwrap();
+        assert_eq!(
+            resident
+                .resolve(&mut arena, ROLE_CELLS, [255, 255], &cells)
+                .unwrap(),
+            (first.0, true)
+        );
+        let resized = resident
+            .resolve(&mut arena, ROLE_CELLS, [511, 127], &cells)
+            .unwrap();
+        assert_ne!(resized.0, first.0);
+        assert!(!resized.1);
+        assert_eq!(
+            resident
+                .entries
+                .iter()
+                .filter(|e| e.role == ROLE_CELLS)
+                .count(),
+            1
+        );
+        let dictionary = resident
+            .resolve(&mut arena, ROLE_DICTIONARY, [11, 0], &[7; 256])
+            .unwrap();
+        assert!(!dictionary.1);
+        assert!(
+            !resident
+                .resolve(&mut arena, ROLE_DICTIONARY, [11, 0], &[8; 256])
+                .unwrap()
+                .1
+        );
+        assert_eq!(
+            resident
+                .entries
+                .iter()
+                .filter(|e| e.role == ROLE_DICTIONARY)
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn malformed_semantic_resources() {
         let mut h = [0u32; 24];
@@ -406,7 +920,7 @@ mod tests {
     fn table(dictionary: &[u8]) -> [u32; 32] {
         let mut header = [0; 24];
         header[12] = 4;
-        header[15] = dictionary.len() as u32 * 38569;
+        header[15] = dictionary.len() as u32 * TABLE as u32;
         let mut bytes = vec![0; 4];
         bytes.extend_from_slice(dictionary);
         background_colours(&header, &bytes)

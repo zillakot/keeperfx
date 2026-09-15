@@ -206,6 +206,13 @@ pub struct Counters {
     pub replay: ReplayCounters,
     pub arena_by_kind: [arena_kinds::ArenaKindCounters; arena_kinds::ARENA_KINDS],
     pub arena_trig_texture_source_bytes: u64,
+    /// The minimap content cache: live arena size classes in GPU bytes, the owning host
+    /// copies it holds, and how many entries it has retired. Renderer-private and not
+    /// part of the C counter ABI; the host copies are separate from the whole-source
+    /// copies C, the bridge and this renderer already stage per command.
+    pub minimap_cache_class_bytes: u64,
+    pub minimap_cache_cpu_bytes: u64,
+    pub minimap_cache_evictions: u64,
     pub batches: u64,
     pub commands: u64,
     pub asset_upload_bytes: u64,

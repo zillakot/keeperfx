@@ -1,9 +1,8 @@
-struct MinimapView { viewport: vec4<u32>, colours: array<vec4<u32>, 8>, bounds: vec4<u32>, }
+struct MinimapView { viewport: vec4<u32>, colours: array<vec4<u32>, 8>, bounds: vec4<u32>, segments: vec4<u32>, styles: array<vec4<u32>, 4>, }
 @group(0) @binding(3) var<uniform> view: MinimapView;
 fn address(i: u32) -> u32 { return view.viewport.z + (i / view.viewport.x) * view.viewport.y + i % view.viewport.x; }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<storage, read> assets: array<u32>;
-fn data(i:u32)->u32 {return byte(view.viewport.w+i);}
 @group(0) @binding(2) var<storage, read> background: array<u32>;
 fn word(o:u32)->u32 {return le32(view.viewport.w+o);}
 fn h(i:u32)->u32 {return word(i*4);}
@@ -21,9 +20,9 @@ fn minimap(@builtin(global_invocation_id) id:vec3<u32>) {
  if mode==0u {
   let wx=si(8)+p.y*si(6)+p.x*si(7);let wy=si(9)+p.y*si(7)-p.x*si(6);
   if wx<0||wy<0||wx>=i32(h(10)<<16)||wy>=i32(h(11)<<16){return;}
-  let o=h(13)+2*(u32(wx>>16)+u32(wy>>16)*(h(10)+1));let cell=le16(view.viewport.w+o);let bk=background[u32(p.y)*d+u32(p.x)];
+  let o=view.segments.x+2*(u32(wx>>16)+u32(wy>>16)*(h(10)+1));let cell=le16(o);let bk=background[u32(p.y)*d+u32(p.x)];
   let colours=view.colours[bk>>5u][(bk>>3u)&3u];let colour=(colours>>((bk&7u)*4u))&15u;
-  col=data(h(14)+colour*38569u+cell);write=true;
+  col=byte(view.styles[colour>>2u][colour&3u]+cell);write=true;
  } else if mode==1u {write=pattern(p,vec2<i32>(si(16),si(17)),si(19));}
  else if mode==2u {
   let q=p-vec2<i32>(si(16),si(17));let hi=max(abs(q.x),abs(q.y));let lo=min(abs(q.x),abs(q.y));var y=si(18);var x=0;var decision=3-2*y;
