@@ -202,6 +202,50 @@ through one renderer, pending-work resource lifetimes, exact RGBA restoration af
 rejected inputs, deliberate mismatches and terminal validation/device-loss errors.
 They require a GPU adapter; the regular unit tests remain GPU-independent.
 
+## Backend coverage
+
+The GPU suites are backend-agnostic: each one asks for whatever adapter the host
+offers and runs if that adapter meets `wgpu::Limits::default()`. Nothing selects
+Metal, and the library's GPU unit tests name the adapter they ran on and the limit
+they lacked when they skip.
+
+| Suite | Metal (host) | Vulkan lavapipe (Linux CI) | DX12 software (Windows CI) |
+| --- | --- | --- | --- |
+| `lib` (`--lib --ignored`) | pass | pass | see the PR's run |
+| `gpoly_gpu` | pass | pass | see the PR's run |
+| `draw_triangles_gpu` | pass | pass | see the PR's run |
+| `draw_trig_gpu` | pass | pass | see the PR's run |
+| `draw_shadow_gpu` | pass | pass | see the PR's run |
+| `draw_sprite_layers_gpu` | pass | pass | see the PR's run |
+| `draw_bitmap_gpu` | pass | pass | see the PR's run |
+| `draw_minimap_gpu` | pass | pass | see the PR's run |
+| `draw_map_view_gpu` | pass | pass | see the PR's run |
+| `draw_transition_gpu` | pass | pass | see the PR's run |
+| `draw_movie_gpu` | pass | pass | see the PR's run |
+| `draw_raw_gpu` | pass | pass | see the PR's run |
+| `draw_lenses_gpu` | pass | pass | see the PR's run |
+| `draw_target_resources_gpu` | pass | pass | see the PR's run |
+| `draw_views_gpu` | pass | pass | see the PR's run |
+| `draw_frame_order_gpu` | pass | pass | see the PR's run |
+| `draw_terrain_binning_gpu` | pass | pass | see the PR's run |
+| `draw_record_binning_gpu` | pass | pass | see the PR's run |
+| `draw_asset_bytes_gpu` | pass | pass | see the PR's run |
+| `draw_one_submit_gpu` | pass | pass | see the PR's run |
+| `draw_limits_gpu` | pass | pass | see the PR's run |
+| `draw_status_gpu` | pass | pass | see the PR's run |
+| `draw_replay_host_gpu` | pass | pass | see the PR's run |
+
+Metal is an Apple M5 host over both arena formats; Linux is the `replay` job over
+both formats; Windows is the `windows` job over the packed arena only, since the
+packed and expanded accessors differ in host code, not in submitted GPU work. The
+Windows job runs one suite per log group and reports every failure in one pass, so
+a backend difference is attributed rather than hidden behind the first failure; its
+`windows-suite-results` artifact carries the same table for that run.
+
+The C oracle generators are cmake/POSIX targets built only on the Linux job, which
+publishes their fixtures as `native-oracle-fixtures` for the Windows job to replay
+against. `draw_sprite_interning_gpu` has no `--ignored` step on any backend.
+
 ## Validation scope
 
 [PR #9](https://github.com/zillakot/keeperfx/pull/9) extends the shared palette

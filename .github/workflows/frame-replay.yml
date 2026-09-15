@@ -228,3 +228,71 @@ jobs:
         with:
           name: synthetic-frame-reports-${{ matrix.format }}
           path: out/synthetic-replay
+      - name: Publish the native oracle fixtures for the Windows job
+        if: matrix.format == 'packed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-oracle-fixtures
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            out/gpoly-fixture.bin
+            out/gpoly-tests/triangles.bin
+            out/minimap-tests/minimap.bin
+            out/transition-tests/transitions.bin
+            out/map-view-tests/map-views.bin
+            out/movie-frame-tests/movie-frames.bin
+            out/raw-image-tests/raw-images.bin
+            out/sprite-tests/sprite-copies.bin
+            out/sprite-tests/sprites.bin
+            out/shadow-tests/shadows.bin
+            out/trig-tests/trig.bin
+            out/lens-tests/lenses.bin
+            out/primitive-tests/primitives.bin
+            out/bitmap-tests/bitmaps.bin
+
+  # The C oracle generators are cmake/POSIX targets that are not built on Windows CI,
+  # so this leg replays the Rust suites against the fixtures the Linux leg produced.
+  # It runs the packed arena only; the expanded accessors are format-independent and
+  # already covered on Linux.
+  windows:
+    needs: replay
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/out/rust-target
+      KFX_GPOLY_FIXTURE: ${{ github.workspace }}/out/gpoly-fixture.bin
+      KFX_GPOLY_TRIANGLE_FIXTURE: ${{ github.workspace }}/out/gpoly-tests/triangles.bin
+      KFX_MINIMAP_FIXTURE: ${{ github.workspace }}/out/minimap-tests/minimap.bin
+      KFX_TRANSITION_FIXTURE: ${{ github.workspace }}/out/transition-tests/transitions.bin
+      KFX_MAP_VIEW_FIXTURE: ${{ github.workspace }}/out/map-view-tests/map-views.bin
+      KFX_MOVIE_FRAME_FIXTURE: ${{ github.workspace }}/out/movie-frame-tests/movie-frames.bin
+      KFX_RAW_IMAGE_FIXTURE: ${{ github.workspace }}/out/raw-image-tests/raw-images.bin
+      KFX_SPRITE_COPY_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprite-copies.bin
+      KFX_SPRITE_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprites.bin
+      KFX_SHADOW_FIXTURE: ${{ github.workspace }}/out/shadow-tests/shadows.bin
+      KFX_TRIG_FIXTURE: ${{ github.workspace }}/out/trig-tests/trig.bin
+      KFX_LENS_FIXTURE: ${{ github.workspace }}/out/lens-tests/lenses.bin
+      KFX_PRIMITIVE_FIXTURE: ${{ github.workspace }}/out/primitive-tests/primitives.bin
+      KFX_BITMAP_FIXTURE: ${{ github.workspace }}/out/bitmap-tests/bitmaps.bin
+      ASSET_FLAGS: --no-default-features --features packed-arena
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-oracle-fixtures
+          path: out
+      - name: Check Rust
+        run: |
+          rustup update stable
+          cargo clippy --no-default-features --features packed-arena --locked --manifest-path tools/frame-replay/Cargo.toml --all-targets -- -D warnings
+          cargo test --no-default-features --features packed-arena --locked --manifest-path tools/frame-replay/Cargo.toml
+      - name: Replay the GPU suites on the software adapter
+        run: bash .github/scripts/windows-gpu-suites.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-suite-results
+          path: out/windows-suites.md

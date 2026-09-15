@@ -706,6 +706,45 @@ mod tests {
     use super::*;
     use crate::gpoly::Vertex;
 
+    /// Backend-agnostic entry for the GPU tests below: any adapter that meets the
+    /// drawing context's limits runs them, so the same bodies cover Metal on a host,
+    /// Vulkan (lavapipe) on the Linux job and DX12 (WARP) on the Windows job. A host
+    /// whose adapter is short of a limit names it and skips instead of failing.
+    fn headless_or_skip(test: &str) -> Option<DrawRenderer> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                eprintln!("skipping {test}: no wgpu adapter on this host: {error}");
+                return None;
+            }
+        };
+        let mut missing = None;
+        wgpu::Limits::default().check_limits_with_fail_fn(
+            &adapter.limits(),
+            true,
+            |limit, required, available| {
+                missing = Some(format!(
+                    "{limit} needs {required}, adapter offers {available}"
+                ));
+            },
+        );
+        let info = adapter.get_info();
+        if let Some(missing) = missing {
+            eprintln!(
+                "skipping {test} on {:?} adapter {:?}: {missing}",
+                info.backend, info.name
+            );
+            return None;
+        }
+        eprintln!("{test} on {:?} adapter {:?}", info.backend, info.name);
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&super::timing::device_descriptor(&adapter)))
+                .expect("an adapter within the drawing limits must yield a device");
+        let renderer = crate::gpu::Renderer::new(device, queue).unwrap();
+        Some(DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap())
+    }
+
     fn rectangle(colour: u32, x: i32, y: i32, width: u32, height: u32) -> Command {
         Command {
             colour,
@@ -718,9 +757,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a Metal adapter"]
+    #[ignore = "requires a GPU adapter"]
     fn gpu_frame_counters_account_for_submits_waits_buffers_and_dispatches() {
-        let mut draw = DrawRenderer::headless().unwrap();
+        let Some(mut draw) =
+            headless_or_skip("gpu_frame_counters_account_for_submits_waits_buffers_and_dispatches")
+        else {
+            return;
+        };
         let root = draw.create_target(16, 16).unwrap();
         let baseline = draw.counters();
         assert_eq!(baseline.buffers, 1);
@@ -774,9 +817,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a Metal adapter"]
+    #[ignore = "requires a GPU adapter"]
     fn gpu_deferred_resource_releases_are_a_set_and_track_arena_bytes() {
-        let mut draw = DrawRenderer::headless().unwrap();
+        let Some(mut draw) =
+            headless_or_skip("gpu_deferred_resource_releases_are_a_set_and_track_arena_bytes")
+        else {
+            return;
+        };
         let root = draw.create_target(8, 8).unwrap();
         let first = draw.create_resource(&[1u8; 32], 8, 4, 8).unwrap();
         let second = draw.create_resource(&[2u8; 16], 8, 2, 8).unwrap();
@@ -797,9 +844,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a Metal adapter"]
+    #[ignore = "requires a GPU adapter"]
     fn gpu_queued_views_copy_inputs_batch_and_checkpoint() {
-        let mut draw = DrawRenderer::headless().unwrap();
+        let Some(mut draw) = headless_or_skip("gpu_queued_views_copy_inputs_batch_and_checkpoint")
+        else {
+            return;
+        };
         let root = draw.create_target(13, 9).unwrap();
         let view = draw.create_target_view(root, 3, 2, 6, 4).unwrap();
         let nested = draw.create_target_view(view, 2, 1, 3, 2).unwrap();
@@ -980,9 +1030,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a Metal adapter"]
+    #[ignore = "requires a GPU adapter"]
     fn gpu_queued_mixed_triangles_flag_and_present_invalid_frames() {
-        let mut draw = DrawRenderer::headless().unwrap();
+        let Some(mut draw) =
+            headless_or_skip("gpu_queued_mixed_triangles_flag_and_present_invalid_frames")
+        else {
+            return;
+        };
         let root = draw.create_target(12, 11).unwrap();
         let view = draw.create_target_view(root, 2, 2, 8, 8).unwrap();
         let reference = draw.create_target(12, 11).unwrap();
@@ -1068,9 +1122,13 @@ mod tests {
         assert_eq!(draw.readback(root).unwrap(), expected);
     }
     #[test]
-    #[ignore = "requires a Metal adapter"]
+    #[ignore = "requires a GPU adapter"]
     fn gpu_queued_ordered_sprite_and_alias_lens_keep_view_pitch() {
-        let mut draw = DrawRenderer::headless().unwrap();
+        let Some(mut draw) =
+            headless_or_skip("gpu_queued_ordered_sprite_and_alias_lens_keep_view_pitch")
+        else {
+            return;
+        };
         let root = draw.create_target(11, 9).unwrap();
         let view = draw.create_target_view(root, 3, 2, 6, 6).unwrap();
         let reference = draw.create_target(6, 6).unwrap();
