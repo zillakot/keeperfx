@@ -706,10 +706,12 @@ mod tests {
     use super::*;
     use crate::gpoly::Vertex;
 
-    /// Backend-agnostic entry for the GPU tests below: any adapter that meets the
-    /// drawing context's limits runs them, so the same bodies cover Metal on a host,
-    /// Vulkan (lavapipe) on the Linux job and DX12 (WARP) on the Windows job. A host
-    /// whose adapter is short of a limit names it and skips instead of failing.
+    /// Backend-agnostic entry for the GPU tests below: the same bodies cover Metal on a
+    /// host, Vulkan (lavapipe) on the Linux job and DX12 (WARP) on the Windows job, and
+    /// each one prints the backend and adapter it ran on. Only a host with no adapter at
+    /// all stands down, printing why; an adapter that is short of a limit the drawing
+    /// context needs is a finding on a backend we claim to cover, so it panics naming the
+    /// limit rather than passing quietly.
     fn headless_or_skip(test: &str) -> Option<DrawRenderer> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
@@ -731,11 +733,10 @@ mod tests {
         );
         let info = adapter.get_info();
         if let Some(missing) = missing {
-            eprintln!(
-                "skipping {test} on {:?} adapter {:?}: {missing}",
+            panic!(
+                "{test} on {:?} adapter {:?}: {missing}",
                 info.backend, info.name
             );
-            return None;
         }
         eprintln!("{test} on {:?} adapter {:?}", info.backend, info.name);
         let (device, queue) =
@@ -970,7 +971,9 @@ mod tests {
     #[ignore = "requires a GPU adapter"]
     fn gpu_queued_replay_host_partition_and_counts() {
         const TIMER_SLACK_NS: u64 = 64_000;
-        let mut draw = DrawRenderer::headless().unwrap();
+        let Some(mut draw) = headless_or_skip("gpu_queued_replay_host_partition_and_counts") else {
+            return;
+        };
         let root = draw.create_target(16, 16).unwrap();
         let mut tightest_unaccounted = u64::MAX;
         let mut tightest_elapsed = 0;

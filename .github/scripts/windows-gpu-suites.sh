@@ -2,24 +2,46 @@
 # Runs every GPU fixture suite on the Windows runner's software adapter, one suite at
 # a time, so a backend difference is attributed to the suite that shows it instead of
 # stopping the job at the first failure. Exits non-zero if any suite failed.
+#
+# A row is `pass` only when the suite exited 0, reported a non-zero passed count and
+# printed no stand-down; a suite that exits 0 having run nothing is `skip`, which is a
+# gap in the matrix rather than evidence of a working backend.
 set -u
 
+: "${ASSET_FLAGS:=--no-default-features --features packed-arena}"
+
 results=out/windows-suites.md
-mkdir -p out
+logs=out/windows-suite-logs
+mkdir -p "$logs"
 : > "$results"
 status=0
+
+row() {
+  echo "| \`$1\` | $2 | $3 |" >> "$results"
+}
 
 suite() {
   local name=$1
   shift
+  local log="$logs/$name.log"
+  local code=0
   echo "::group::$name"
-  if "$@"; then
-    echo "| \`$name\` | pass | |" >> "$results"
-  else
-    echo "| \`$name\` | fail | see the \`$name\` group in this job's log |" >> "$results"
-    status=1
-  fi
+  "$@" > "$log" 2>&1 || code=$?
+  cat "$log"
   echo "::endgroup::"
+  local passed
+  passed=$(grep -oE 'test result: ok\. [0-9]+ passed' "$log" |
+    grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' | awk '{total += $1} END {print total + 0}')
+  if [ "$code" -ne 0 ]; then
+    row "$name" fail "exited $code; see the \`$name\` group in this job's log"
+    status=1
+  elif grep -q "skipping" "$log"; then
+    row "$name" skip "$(grep -m 1 -o "skipping.*" "$log")"
+  elif [ "$passed" -eq 0 ]; then
+    row "$name" skip "exited 0 without running a test"
+  else
+    row "$name" pass "$passed passed"
+  fi
 }
 
 # shellcheck disable=SC2329 # invoked through `suite`

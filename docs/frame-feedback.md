@@ -204,12 +204,16 @@ They require a GPU adapter; the regular unit tests remain GPU-independent.
 
 ## Backend coverage
 
-The GPU suites are backend-agnostic: each one asks for whatever adapter the host
-offers and runs if that adapter meets `wgpu::Limits::default()`. Nothing selects
-Metal, and the library's GPU unit tests name the adapter they ran on and the limit
-they lacked when they skip.
+Every suite below asks for whatever adapter the host offers rather than naming a
+backend, and the run proves each one works on all three. The library's GPU unit tests
+and `draw_sprite_interning_gpu` print the backend and adapter they ran on; a limit or
+device the drawing context needs and the adapter cannot give panics naming it, and
+only a host with no adapter at all stands down.
 
-| Suite | Metal (host) | Vulkan lavapipe (Linux CI) | DX12 software (Windows CI) |
+`draw_limits_gpu`, `draw_target_resources_gpu` and `draw_sprite_interning_gpu` ask for
+non-default limits on purpose; the rest need no more than `wgpu::Limits::default()`.
+
+| Suite | Metal (local host) | Vulkan lavapipe (Linux CI) | DX12 software (Windows CI) |
 | --- | --- | --- | --- |
 | `lib` (`--lib --ignored`) | pass | pass | pass |
 | `gpoly_gpu` | pass | pass | pass |
@@ -236,19 +240,32 @@ they lacked when they skip.
 | `draw_status_gpu` | pass | pass | pass |
 | `draw_replay_host_gpu` | pass | pass | pass |
 
-Metal is an Apple M5 host over both arena formats; Linux is the `replay` job over
-both formats on lavapipe; Windows is the `windows` job over the packed arena only,
-on the runner's `Microsoft Basic Render Driver` DX12 software adapter, since the
-packed and expanded accessors differ in host code, not in submitted GPU work. No
-suite needed a limit beyond `wgpu::Limits::default()` on any of the three, and no
-test skipped. The Windows job runs one suite per log group and reports every failure
-in one pass, so a backend difference is attributed rather than hidden behind the
-first failure; its `windows-suite-results` artifact carries the same table for that
-run.
+Metal is a local macOS run on an Apple M5 host over both arena formats — there is no
+Metal leg in CI, so that column is only as current as the last local run. Linux is the
+`replay` job over both formats on lavapipe. Windows is the `windows` job over the
+packed arena only, on the runner's `Microsoft Basic Render Driver` DX12 software
+adapter, since the packed and expanded accessors differ in host code, not in submitted
+GPU work. Both CI columns refresh on every pull request and every push to `master`.
+
+A row is `pass` only when the suite exited zero, reported a non-zero passed count and
+printed no stand-down; a suite that exits zero having run nothing is `skip`. The
+Windows job runs one suite per log group and reports every failure in one pass, so a
+backend difference is attributed rather than hidden behind the first failure; its
+`windows-suite-results` artifact carries the table and each suite's captured output.
 
 The C oracle generators are cmake/POSIX targets built only on the Linux job, which
 publishes their fixtures as `native-oracle-fixtures` for the Windows job to replay
-against. `draw_sprite_interning_gpu` builds its own artwork and needs no fixture.
+against. `draw_sprite_interning_gpu` builds its own artwork and needs no fixture. The
+Windows leg is serialized after the Linux matrix and takes about eighteen minutes.
+
+The next gap is the labelling this run contradicts: 23 `#[ignore = "requires a Metal
+adapter"]` attributes remain in `draw_sprite_layers_gpu`, `draw_record_binning_gpu`,
+`draw_terrain_binning_gpu`, `draw_views_gpu` and `draw_frame_order_gpu`, with
+`requires Metal/Vulkan` in `draw_triangles_gpu`, `draw_trig_gpu` and `draw_lenses_gpu`
+and `requires a native Metal adapter` in `src/live.rs`. `draw_target_resources_gpu`
+also asserts the backend is Metal under `cfg(target_os = "macos")`. All of these pass
+on lavapipe and on the DX12 software adapter, so the reasons describe the host their
+author had, not a constraint.
 
 ## Validation scope
 
