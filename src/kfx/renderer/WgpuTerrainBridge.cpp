@@ -1247,8 +1247,11 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
         if (source != nullptr) {
             if (sprite != nullptr && sprite->identity != nullptr) {
                 /* Artwork the emitter can name stays resident under one handle, so the
-                   arena keeps it across frames instead of re-uploading it per command. */
-                source_handle = KeyedResourceRaw(KFX_WGPU_DRAW_KEY_SPRITE_ARTWORK,
+                   arena keeps it across frames instead of re-uploading it per command.
+                   The cursor expands the same address into different coverage bytes than
+                   the sprite path, so the two never share a namespace. */
+                source_handle = KeyedResourceRaw(source->cursor
+                        ? KFX_WGPU_DRAW_KEY_CURSOR_ARTWORK : KFX_WGPU_DRAW_KEY_SPRITE_ARTWORK,
                     (static_cast<uint64_t>(command.source_width) << 32) | command.source_height,
                     static_cast<uint64_t>(reinterpret_cast<uintptr_t>(sprite->identity)),
                     sprite->generation, source->bytes,
