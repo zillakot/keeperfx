@@ -184,10 +184,17 @@ The run holds `/private/tmp/keeperfx-timing.lock` throughout, waits for the cons
 unlock and for any other game to exit, and never starts two sessions at once. Each scene
 keeps its isolated session directory under `out/drawing-coverage/<scene>/` with
 `drawing.json`, the per-operation replies, screenshots and `scene.json`; `summary.json` and
-`summary.md` hold the matrix. A scene directory that already has `scene.json` is skipped, so
-an interrupted run resumes, and a failed scene does not stop the others.
+`summary.md` hold the matrix, and a run over part of the scenes writes a `summary-<scenes>`
+pair instead so it cannot overwrite the full one. Only a scene recorded as complete is
+skipped on a later run, so an interrupted or failed scene is retried while its partial record
+is kept, and a failed scene does not stop the others. Every scene writes the isolated
+`save/settings.toml`, because a session without that file keeps the unclamped defaults
+(`shadows` 4) while a session with one takes the load path and its sanity clamps
+(`shadows` 3); writing it everywhere keeps the scenes comparable.
 
-Counters are not one per family. DBC glyphs and huge bitmaps share the bitmap arena kind,
+Counters are not one per family, and some rows have no counter that is theirs at all: the
+front view, primitives, text sprites and the clear only move counters every scene moves, so
+the matrix reports them as exercised rather than measured. DBC glyphs and huge bitmaps share the bitmap arena kind,
 the landview zoom shares the map-view kind with the parchment, smoothing shares
 `transition_commands` with map fades, and a Lua lens has no counter of its own. Those rows
 are reported as scene-attributed: the value only proves the family in the scene built to
