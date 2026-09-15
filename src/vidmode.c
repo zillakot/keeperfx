@@ -521,6 +521,8 @@ TbBool init_fades_table(void)
     }
     kfx_render_assets_changed();
     kfx_render_asset_range(&pixmap, sizeof(pixmap));
+    kfx_render_remap_rows(KFX_REMAP_FADE, pixmap.fade_tables, 64);
+    kfx_render_remap_rows(KFX_REMAP_GHOST, pixmap.ghost, 256);
     return true;
 }
 
@@ -534,6 +536,8 @@ TbBool init_alpha_table(void)
         compute_alpha_tables(&alpha_sprite_table,engine_palette,engine_palette);
         LbFileSaveAt(fname, &alpha_sprite_table, sizeof(struct TbAlphaTables));
     }
+    kfx_render_assets_changed();
+    kfx_render_asset_range(&alpha_sprite_table, sizeof(alpha_sprite_table));
     return true;
 }
 
@@ -560,6 +564,9 @@ TbBool init_redpal_table(void)
         compute_shifted_palette_table(red_pal, engine_palette, engine_palette, 20, -10, -10);
         LbFileSaveAt(fname, &red_pal, 256);
     }
+    kfx_render_assets_changed();
+    kfx_render_asset_range(red_pal, sizeof(red_pal));
+    kfx_render_remap_rows(KFX_REMAP_RED, red_pal, 1);
     return true;
 }
 
@@ -573,6 +580,9 @@ TbBool init_whitepal_table(void)
         compute_shifted_palette_table(white_pal, engine_palette, engine_palette, 48, 48, 48);
         LbFileSaveAt(fname, &white_pal, 256);
     }
+    kfx_render_assets_changed();
+    kfx_render_asset_range(white_pal, sizeof(white_pal));
+    kfx_render_remap_rows(KFX_REMAP_WHITE, white_pal, 1);
     return true;
 }
 

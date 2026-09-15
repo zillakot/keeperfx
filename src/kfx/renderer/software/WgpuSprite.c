@@ -282,7 +282,7 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
     struct KfxWgpuNativeResource remap_resource = {remap_bytes, 256, 1, 1, 1, NULL, 0, 0};
     struct KfxWgpuNativeResource lookup = {table, 65536, 256, 256, 256, NULL, 0, 0};
     struct KfxWgpuSpriteAssets assets = {&resource, &range_resource, &remap_resource,
-        blend ? &lookup : NULL, identity, generation};
+        blend ? &lookup : NULL, identity, generation, kfx_render_remap_id(remap_bytes)};
     struct KfxGpolyTarget target = {SwTargetWScreen(), pitch, height, pitch};
     struct SpriteOracle oracle = {posx, posy, source, sprite, remap, colour, mode};
     int accepted = kfx_wgpu_native_draw_sprite(&target, &command, &assets, sprite_oracle,

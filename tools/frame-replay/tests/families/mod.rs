@@ -14,6 +14,7 @@ pub struct Assets {
     tiles: u64,
     movie: u64,
     styles: u64,
+    map_tables: u64,
     markers: u64,
     huge: u64,
     geometry: u64,
@@ -79,9 +80,12 @@ pub fn assets(drawing: &mut DrawRenderer) -> Assets {
     let shades: Vec<u8> = (0..65536).map(|i| (i % 256) as u8).collect();
     let raw: Vec<u8> = (0..16).map(|i| 150 + i as u8).collect();
     let movie: Vec<u8> = (0..32).map(|i| 60 + i as u8).collect();
-    let mut styles = words(&[10, 20]);
-    styles.truncate(8);
-    styles.extend((0..1280).map(|k: u32| (k % 199) as u8));
+    // Styles above 256 are the ones that read the row table, including the abyss tail.
+    let styles: Vec<u8> = [259u16, 10, 261, 262]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let map_tables: Vec<u8> = (0..65536 + 256).map(|i| (i % 253) as u8).collect();
     let mut geometry = words(&[2, 2, 0, 0, 0]);
     geometry.extend(words(&[12, 3, 0, 0, 0]));
     geometry.extend(words(&[4, 12, 0, 0, 0]));
@@ -98,6 +102,7 @@ pub fn assets(drawing: &mut DrawRenderer) -> Assets {
         tiles: drawing.create_resource(&raw, 4, 4, 4).unwrap(),
         movie: drawing.create_resource(&movie, 8, 4, 8).unwrap(),
         styles: blob(drawing, &styles),
+        map_tables: drawing.create_resource(&map_tables, 256, 257, 256).unwrap(),
         markers: drawing
             .create_resource(&words(&[0, 0, 1, 1]), 16, 1, 16)
             .unwrap(),
@@ -231,6 +236,7 @@ pub fn family(a: &Assets, width: u32, height: u32, tint: u32) -> Vec<Command> {
         Command {
             kind: MAP_VIEW,
             source: a.styles,
+            table: a.map_tables,
             x: 1,
             y: 12,
             width: 8,

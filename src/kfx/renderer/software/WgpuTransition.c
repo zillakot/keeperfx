@@ -1,5 +1,4 @@
 #include "kfx/renderer/software/WgpuTransition.h"
-#include <string.h>
 
 static int overlap(const uint8_t* a, size_t an, const uint8_t* b, size_t bn)
 {
@@ -28,10 +27,9 @@ int kfx_wgpu_map_fade(uint8_t* dst, int pitch, int width, int height,
     if (own_second && first_snapshot) second_snapshot=kfx_wgpu_native_snapshot(&b,width,height,width,NULL);
     int accepted=0;
     if (first_snapshot && second_snapshot) {
-        uint8_t tables[33*256+65536];
-        memcpy(tables,fade,33*256);
-        memcpy(tables+33*256,ghost,65536);
-        struct KfxWgpuNativeResource table={tables,sizeof(tables),1,1,1, NULL, 0, 0};
+        /* Fade rows then ghost rows, named where they live; the pair is the identity
+           the drawing context keys on, and the concatenation is never built here. */
+        struct KfxWgpuNativeResource table={fade,33*256,1,1,1, ghost, 65536, 0};
         struct KfxWgpuDrawCommand c={0};
         c.abi_version=KFX_WGPU_DRAW_ABI_VERSION; c.kind=KFX_WGPU_DRAW_TRANSITION;
         c.width=c.clip_width=c.source_width=width;

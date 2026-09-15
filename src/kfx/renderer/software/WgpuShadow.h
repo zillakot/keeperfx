@@ -46,8 +46,8 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
         !kfx_wgpu_native_read_barrier(pixmap.fade_tables, 16384) ||
         !kfx_wgpu_native_read_barrier(pixmap.ghost, 65536)) return 0;
     size_t length = 152 + rle_length;
-    uint8_t *asset = malloc(length), *tables = malloc(81920);
-    if (!asset || !tables) { free(asset); free(tables); return 0; }
+    uint8_t *asset = malloc(length);
+    if (!asset) return 0;
     const uint32_t descriptor[] = {sprite->clear_width, sprite->clear_height, sprite->width,
         sprite->height, sprite->x, sprite->y, sprite->flip, rle_length};
     for (unsigned i = 0; i < 8; i++) for (unsigned j = 0; j < 4; j++) asset[i * 4 + j] = descriptor[i] >> (8 * j);
@@ -61,12 +61,11 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
         for (unsigned j = 0; j < 5; j++) for (unsigned k = 0; k < 4; k++)
             asset[32 + i * 20 + j * 4 + k] = fields[j] >> (8 * k);
     }
-    if (!valid) { free(asset); free(tables); return 0; }
+    if (!valid) { free(asset); return 0; }
     memcpy(asset + 152, sprite->data, rle_length);
-    memcpy(tables, pixmap.fade_tables, 16384);
-    memcpy(tables + 16384, pixmap.ghost, 65536);
     const struct KfxWgpuNativeResource source = {asset, length, 1, 1, 1, NULL, 0, 0};
-    const struct KfxWgpuNativeResource table = {tables, 81920, 256, 320, 256, NULL, 0, 0};
+    const struct KfxWgpuNativeResource table =
+        kfx_wgpu_fade_ghost_table(pixmap.fade_tables, pixmap.ghost);
     const struct KfxGpolyTarget target = {poly_screen + vec_screen_width,
         vec_window_width, vec_window_height, vec_screen_width};
     struct KfxWgpuDrawCommand command = {0};
@@ -75,6 +74,6 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
     command.height = command.clip_height = target.height;
     command.transparent = KFX_WGPU_DRAW_OPAQUE;
     int accepted = kfx_wgpu_native_shadow(&target, &command, &source, &table, scratch, oracle, context);
-    free(asset); free(tables);
+    free(asset);
     return accepted == 1;
 }
