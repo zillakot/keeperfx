@@ -50,27 +50,37 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
         if (labs(vertices[i].X - vertices[j].X) > 32767 ||
             labs(vertices[i].Y - vertices[j].Y) > 32767) return 0;
     }
-    size_t texture_length = 0;
+    size_t texture_length = 0, texture_page = 0;
     if (textured) {
         const uintptr_t address = (uintptr_t)vec_map, base = (uintptr_t)block_mem;
         if (address < base || address - base >= sizeof(block_mem)) return 0;
-        texture_length = sizeof(block_mem) - (address - base);
+        texture_page = address - base;
+        texture_length = sizeof(block_mem) - texture_page;
         if (texture_length > 65536) texture_length = 65536;
     }
     if (!kfx_wgpu_native_read_barrier(vec_map, texture_length) ||
         !kfx_wgpu_native_read_barrier(pixmap.fade_tables, 16384) ||
         !kfx_wgpu_native_read_barrier(pixmap.ghost, 65536)) return 0;
-    uint8_t *source = malloc(60 + texture_length);
-    if (source == NULL) return 0;
+    uint8_t source[60];
     for (unsigned i = 0; i < 3; i++) {
         const uint32_t fields[] = {vertices[i].X, vertices[i].Y,
             textured ? vertices[i].U : 0, textured ? vertices[i].V : 0, shaded ? vertices[i].S : 0};
         for (unsigned j = 0; j < 5; j++) for (unsigned k = 0; k < 4; k++)
             source[i * 20 + j * 4 + k] = fields[j] >> (k * 8);
     }
-    if (textured) memcpy(source + 60, vec_map, texture_length);
-    const struct KfxWgpuNativeResource source_resource = {source, 60 + texture_length, 1, 1, 1,
-        NULL, 0, 0};
+    /* The page keeps its own handle: its offset in block_mem names it, and the bytes
+       behind that offset only change with the asset generation. */
+    struct KfxWgpuNativePart parts[1];
+    unsigned part_count = 0;
+    if (textured) {
+        const struct KfxWgpuNativeResource page = {vec_map, texture_length, 1, 1, 1, NULL, 0, 0};
+        const struct KfxWgpuNativeKey name = {KFX_WGPU_DRAW_KEY_TRIG_TEXTURE, 0,
+            (uint64_t)texture_page, kfx_render_asset_generation};
+        parts[0].resource = page;
+        parts[0].name = name;
+        part_count = 1;
+    }
+    const struct KfxWgpuNativeResource source_resource = {source, 60, 1, 1, 1, NULL, 0, 0};
     const struct KfxWgpuNativeResource table_resource =
         kfx_wgpu_fade_ghost_table(pixmap.fade_tables, pixmap.ghost);
     const struct KfxGpolyTarget target = {poly_screen + vec_screen_width,
@@ -85,8 +95,7 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
     command.source_y = texture_length;
     command.source_width = 64;
     command.transparent = KFX_WGPU_DRAW_OPAQUE;
-    int result = kfx_wgpu_native_draw(&target, &command, &source_resource, &table_resource,
-        wgpu_trig_oracle, vertices);
-    free(source);
+    const int result = kfx_wgpu_native_draw_parts(&target, &command, &source_resource, parts,
+        part_count, &table_resource, wgpu_trig_oracle, vertices);
     return result == 1;
 }

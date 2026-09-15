@@ -59,7 +59,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wgpu::util::DeviceExt;
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 /// A debug bound on what one command buffer carries; a busy frame records ~114.
 const MAX_ENCODER_PASSES: u64 = 4096;
 pub const CLEAR: u32 = 0;
@@ -1800,6 +1800,10 @@ fn pack_records<'a>(
         // so the arena is free to hold the artwork under a handle of its own.
         let mut ranges_offset = 0;
         let mut remap_offset = 0;
+        // The offset of the immutable asset a record names beside its source, biased by
+        // one because zero is a legitimate offset in both the batch and the arena.
+        let mut part_offset = 0;
+        let mut split = false;
         if matches!(
             c.kind,
             IMAGE
@@ -1853,13 +1857,42 @@ fn pack_records<'a>(
                     );
                 }
             } else if c.kind == BITMAP {
-                tight = Some(bitmap::validate(c, source, width, height)?);
+                // A glyph spends the accumulator on its destination rectangle; only the
+                // huge form has it free for the artwork handle.
+                let artwork_id = match c.source_x {
+                    0 => sprites::handles(c).0,
+                    _ => 0,
+                };
+                let artwork = match artwork_id {
+                    0 => None,
+                    id => Some(resources.get(&id).context("unknown huge artwork version")?),
+                };
+                tight = Some(bitmap::validate(c, source, artwork, width, height)?);
+                if let Some(artwork) = artwork {
+                    split = true;
+                    part_offset = packer
+                        .offset(artwork_id, &artwork.bytes, ResourceKind::Bitmap)?
+                        .checked_add(1)
+                        .context("huge artwork offset overflow")?;
+                }
             } else if c.kind == MAP_VIEW {
                 map_view::validate(c, source, width, height)?;
             } else if c.kind == MOVIE {
                 movie::validate(c, source, width, height)?;
             } else if c.kind == TRIG {
-                tight = Some(trig::validate(c, source, width, height)?);
+                let (texture_id, _) = sprites::handles(c);
+                let texture = match texture_id {
+                    0 => None,
+                    id => Some(resources.get(&id).context("unknown trig texture version")?),
+                };
+                tight = Some(trig::validate(c, source, texture, width, height)?);
+                if let Some(page) = texture {
+                    split = true;
+                    part_offset = packer
+                        .offset(texture_id, &page.bytes, ResourceKind::Trig)?
+                        .checked_add(1)
+                        .context("trig texture offset overflow")?;
+                }
             } else if c.kind == SPRITE {
                 let parts = sprites::parts(c, resources)?;
                 let box_of = sprites::validate(c, &parts)?;
@@ -1938,9 +1971,10 @@ fn pack_records<'a>(
         words.extend([c.source_x, c.source_y, c.source_width, c.source_height]);
         match c.kind {
             SPRITE => words.extend([0; 4]),
+            _ if split => words.extend([0; 4]),
             _ => words.extend([c.start_low, c.start_high, c.step_low, c.step_high]),
         }
-        words.extend([c.transparent, remap_offset, 0, 0]);
+        words.extend([c.transparent, remap_offset, part_offset, 0]);
     }
     Ok(words)
 }

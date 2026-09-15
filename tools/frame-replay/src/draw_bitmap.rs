@@ -10,6 +10,7 @@ use anyhow::{Result, ensure};
 pub(super) fn validate(
     c: &Command,
     source: &Resource,
+    artwork: Option<&Resource>,
     width: u32,
     height: u32,
 ) -> Result<[i64; 4]> {
@@ -25,6 +26,9 @@ pub(super) fn validate(
     let bytes = &source.bytes;
     let word = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
     if c.source_x == 0 {
+        if let Some(artwork) = artwork {
+            return split(c, source, artwork, width, height);
+        }
         let rows = c.source_height as usize;
         ensure!(
             rows > 0 && rows <= 8192 && bytes.len() >= rows * 16,
@@ -109,6 +113,97 @@ pub(super) fn validate(
     ])
 }
 
+/// The named form: the source holds only this call's geometry -- per source row a
+/// destination y and copy count, then per source column a destination x and width --
+/// and the artwork holds the sprite's own runs. Both tables are monotonic, which is
+/// what makes the kernel's two binary searches find the record covering a pixel.
+fn split(
+    c: &Command,
+    source: &Resource,
+    artwork: &Resource,
+    width: u32,
+    height: u32,
+) -> Result<[i64; 4]> {
+    let rows = c.source_height as usize;
+    let word = |bytes: &[u8], i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+    ensure!(
+        rows > 0
+            && rows <= 8192
+            && source.bytes.len().is_multiple_of(8)
+            && source.bytes.len() / 8 > rows,
+        "invalid huge geometry rows"
+    );
+    let columns = source.bytes.len() / 8 - rows;
+    ensure!(columns <= 8192, "invalid huge geometry columns");
+    ensure!(
+        artwork.bytes.len() >= rows * 8 && (artwork.bytes.len() - rows * 8).is_multiple_of(4),
+        "invalid huge artwork rows"
+    );
+    let mut end_y = 0;
+    for i in 0..rows {
+        let y = u64::from(word(&source.bytes, i * 8));
+        let n = u64::from(word(&source.bytes, i * 8 + 4));
+        ensure!(
+            y >= end_y && y + n <= u64::from(height),
+            "invalid huge row coverage"
+        );
+        end_y = y + n;
+    }
+    let mut end_x = 0;
+    let mut span = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
+    for i in 0..columns {
+        let x = u64::from(word(&source.bytes, (rows + i) * 8));
+        let n = u64::from(word(&source.bytes, (rows + i) * 8 + 4));
+        ensure!(
+            x >= end_x && x + n <= u64::from(width),
+            "invalid huge column coverage"
+        );
+        end_x = x + n;
+    }
+    let mut offset = rows * 8;
+    for i in 0..rows {
+        let start = word(&artwork.bytes, i * 8) as usize;
+        let count = word(&artwork.bytes, i * 8 + 4) as usize;
+        ensure!(
+            start == offset && count <= columns && count * 4 <= artwork.bytes.len() - offset,
+            "invalid huge artwork records"
+        );
+        let mut previous = None;
+        for j in 0..count {
+            let record = word(&artwork.bytes, start + j * 4);
+            let sx = (record & 0xffff) as usize;
+            ensure!(
+                sx < columns && record >> 24 == 0 && previous.is_none_or(|p| sx > p),
+                "invalid huge artwork record"
+            );
+            previous = Some(sx);
+        }
+        offset += count * 4;
+        let y = i64::from(word(&source.bytes, i * 8));
+        let n_y = i64::from(word(&source.bytes, i * 8 + 4));
+        if count == 0 || n_y == 0 {
+            continue;
+        }
+        let first = (word(&artwork.bytes, start) & 0xffff) as usize;
+        let last = (word(&artwork.bytes, start + (count - 1) * 4) & 0xffff) as usize;
+        span[0] = span[0].min(i64::from(word(&source.bytes, (rows + first) * 8)));
+        span[2] = span[2].max(
+            i64::from(word(&source.bytes, (rows + last) * 8))
+                + i64::from(word(&source.bytes, (rows + last) * 8 + 4)),
+        );
+        span[1] = span[1].min(y);
+        span[3] = span[3].max(y + n_y);
+    }
+    ensure!(
+        offset == artwork.bytes.len(),
+        "trailing huge artwork records"
+    );
+    if span[0] > span[2] {
+        span = [0; 4];
+    }
+    Ok(span)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,20 +229,20 @@ mod tests {
             source_height: 1,
             ..Default::default()
         };
-        assert!(validate(&command, &resource, 4, 4).is_ok());
+        assert!(validate(&command, &resource, None, 4, 4).is_ok());
         resource.bytes[20] = 5;
-        assert!(validate(&command, &resource, 4, 4).is_err());
+        assert!(validate(&command, &resource, None, 4, 4).is_err());
         resource.bytes[20] = 4;
         resource.bytes[8] = 255;
-        assert!(validate(&command, &resource, 4, 4).is_err());
+        assert!(validate(&command, &resource, None, 4, 4).is_err());
         command.source_x = 1;
         command.source_width = 9;
         command.source_height = 2;
         command.step_low = 9;
         command.step_high = 2;
         resource.bytes = vec![0; 16];
-        assert!(validate(&command, &resource, 4, 4).is_ok());
+        assert!(validate(&command, &resource, None, 4, 4).is_ok());
         resource.bytes.pop();
-        assert!(validate(&command, &resource, 4, 4).is_err());
+        assert!(validate(&command, &resource, None, 4, 4).is_err());
     }
 }

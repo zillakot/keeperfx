@@ -191,6 +191,15 @@ extern "C" int32_t kfx_wgpu_draw_submit(void* handle, uint64_t id, const KfxWgpu
             target.bytes[offset + c.y * target.pitch + c.x] = sprite.bytes[0];
             continue;
         }
+        if (c.kind == KFX_WGPU_DRAW_BITMAP) {
+            // The artwork's first byte and the per-call geometry's, side by side, so a
+            // command served the wrong part shows up as a pixel.
+            const uint64_t artwork = (uint64_t(c.start_high) << 32) | c.start_low;
+            target.bytes[offset + c.y * target.pitch + c.x] = context.resources.at(artwork).bytes[0];
+            target.bytes[offset + c.y * target.pitch + c.x + 1] =
+                context.resources.at(c.source).bytes[0];
+            continue;
+        }
         if (c.kind == KFX_WGPU_DRAW_TRIG) {
             (void)context.resources.at(c.source);
             (void)context.resources.at(c.table);
@@ -1033,6 +1042,47 @@ int main()
             reshaped.height = 5;
             assert(bridge.SubmitNative(run_target, picture, &reshaped, nullptr, nullptr,
                 nullptr, nullptr, &name) == 0);
+            assert(bridge.Failed() && std::strstr(bridge.GetError(), "shape") != nullptr);
+        }
+        {
+            // A named part beside a per-call source: the artwork takes one resident handle
+            // across commands and across positions, a bump renames it, and another extent
+            // under a live name is refused rather than served.
+            std::vector<uint8_t> run(24 * 10, 0x6a);
+            KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+            WgpuTerrainBridge bridge(0, false, false);
+            std::vector<uint8_t> artwork(64, 0x41), geometry(32, 0x30);
+            KfxWgpuDrawCommand huge = {};
+            huge.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+            huge.kind = KFX_WGPU_DRAW_BITMAP;
+            huge.width = huge.clip_width = 20;
+            huge.height = huge.clip_height = 10;
+            huge.transparent = KFX_WGPU_DRAW_OPAQUE;
+            KfxWgpuNativeResource source = {geometry.data(), geometry.size(), 1, 1, 1,
+                nullptr, 0, 0};
+            KfxWgpuNativePart part = {{artwork.data(), artwork.size(), 1, 1, 1, nullptr, 0, 0},
+                {KFX_WGPU_DRAW_KEY_HUGE_SPRITE, 0x11, 0x22, 1}};
+            const uint64_t created = keyed_creates, live = live_resources;
+            const int positions[] = {0, 5, 10, 15};
+            for (unsigned i = 0; i < 4; ++i) {
+                huge.x = positions[i];
+                geometry[0] = 0x51 + i;
+                assert(bridge.SubmitNative(run_target, huge, &source, nullptr, nullptr, nullptr,
+                    nullptr, nullptr, &part, 1) == 1);
+            }
+            // One identity, four scroll positions: one keyed handle, four per-call sources,
+            // and every position drew its own geometry beside the shared artwork.
+            assert(keyed_creates == created + 1 && live_resources == live + 1);
+            for (unsigned i = 0; i < 4; ++i)
+                assert(run[positions[i]] == 0x41 && run[positions[i] + 1] == 0x51 + i);
+            part.name.generation = 2;
+            assert(bridge.SubmitNative(run_target, huge, &source, nullptr, nullptr, nullptr,
+                nullptr, nullptr, &part, 1) == 1);
+            assert(keyed_creates == created + 2 && live_resources == live + 1);
+            KfxWgpuNativePart reshaped = part;
+            reshaped.resource.length = artwork.size() / 2;
+            assert(bridge.SubmitNative(run_target, huge, &source, nullptr, nullptr, nullptr,
+                nullptr, nullptr, &reshaped, 1) == 0);
             assert(bridge.Failed() && std::strstr(bridge.GetError(), "shape") != nullptr);
         }
         {

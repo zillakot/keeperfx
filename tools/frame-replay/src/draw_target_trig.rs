@@ -87,7 +87,7 @@ impl DrawRenderer {
                     key: None,
                 };
                 validation.bytes.resize(60 + 65536, 0);
-                let box_of = trig::validate(c, &validation, width, height)?;
+                let box_of = trig::validate(c, &validation, None, width, height)?;
                 let table = self
                     .resources
                     .get(&c.table)

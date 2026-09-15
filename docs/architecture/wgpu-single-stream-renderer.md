@@ -170,8 +170,8 @@ drawing context, with:
   A key seen with a new generation takes a new handle, because a recorded command must still name the
   bytes it was issued against. `FullRedraw` and `ReadBarrier` do not bump it; `FullRedraw` releases the
   keyed resources.
-  Huge sprites stay per-call: their run list is flattened from the scaling arrays and the target
-  extent, so the bytes carry the position the key must not, and they need the asset split first.
+  A huge sprite's artwork is named by its `Lines` and `Data` addresses once both lie in registered
+  ranges, which is what the land-view window does by living in `block_mem`.
 - **Sprites are three assets, not one.** A sprite asset used to be one per-call buffer holding the
   expanded artwork, the scaling ranges and a copy of a 256-byte remap. Only the ranges are per call —
   they carry the sprite's position on screen — so the artwork is keyed by the address of the artwork
@@ -182,6 +182,21 @@ drawing context, with:
   packer resolves them into record words 15 and 25 and zeroes the accumulator for a sprite. An emitter
   with no name for its artwork may still submit the three parts as one resource and no handles, and the
   packer derives the two offsets from the artwork's own.
+- **Three more families split the same way.** A general triangle's texture page is keyed by its byte
+  offset in `block_mem` and the 60 geometry bytes stay per call, so a textured triangle uploads 60
+  bytes instead of up to 64 KiB and `arena_trig_texture_source_bytes` falls to zero after warm-up. A
+  built-in lens keeps its map — the converted displacement lookup, the mist texture or the overlay
+  image — under `(owner, lens index, width, height)` and a lens generation the effects bump when they
+  build or release a table, and the mist fade rows under their own registered address, leaving the
+  64-byte header and the source rectangle per call. A huge sprite becomes the sprite's own runs, one
+  four-byte record per opaque source pixel holding the source column and the palette index, plus a
+  per-call table of destination rows and columns built from the scaling arrays; the kernel walks both
+  instead of the flattened destination-space run list, which is what took the position out of the
+  bytes. The emitter builds the flattened list instead whenever it cannot name the artwork or the
+  scaling arrays do not lay each column against the end of the previous one, so nothing loses GPU
+  coverage. All three carry their handles in the same accumulator words as a sprite. The packer resolves the
+  triangle page and the huge artwork into record word 26 and the lens tables into its own pass
+  uniform, each offset biased by one because zero is a real arena offset.
 - **LRU residency** over `last_used_frame`, never evicting anything the frame under construction
   references. Capacity is `min(max_storage_buffer_binding_size, max_buffer_size)` — 128 MiB at wgpu
   defaults, since every `request_device` passes `&Default::default()` — so 128 MiB of real asset bytes

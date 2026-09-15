@@ -39,6 +39,7 @@ fn trig_shade(initial: i32, step: i32, count: u32, mode: u32) -> u32 {
 // A non-zero assets.w selects the resident mask slot (1-based) instead of the batch arena.
 fn trig_texel(command: Command, uv: u32) -> u32 {
     if command.assets.w != 0u { return shadow_slots[(command.assets.w - 1u) * 65536u + uv]; }
+    if command.options.z != 0u { return byte(command.options.z - 1u + uv); }
     return byte(command.assets.x + 60u + uv);
 }
 fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
