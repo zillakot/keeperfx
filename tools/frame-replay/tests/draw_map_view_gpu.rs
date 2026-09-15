@@ -99,11 +99,18 @@ fn actual_native_map_views() -> Result<()> {
             after.readback_bytes == before.readback_bytes,
             "map command read back pixels"
         );
+        let stride = keeperfx_frame_replay::draw::assets::STRIDE as u64;
+        let uploaded = after.asset_upload_bytes - before.asset_upload_bytes;
+        let table_upload = if table_new != 0 {
+            table_length as u64
+        } else {
+            0
+        };
         ensure!(
-            after.asset_upload_bytes - before.asset_upload_bytes
-                == (length + if table_new != 0 { table_length } else { 0 }) as u64
-                    * keeperfx_frame_replay::draw::assets::STRIDE as u64,
-            "map uploaded unexpected pixels"
+            uploaded == (length as u64 + table_upload) * stride,
+            "map case {case} uploaded {uploaded} bytes against {} for its source and {} for its              table: a row whose table uploads again has lost arena residency, by eviction or by              a changed key, and one that uploads less has lost its source",
+            length as u64 * stride,
+            table_upload * stride
         );
         let actual = drawing.readback(target)?;
         for y in 0..height as usize {

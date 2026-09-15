@@ -157,8 +157,11 @@ drawing context, with:
   `white_pal` and `red_pal` are registered ranges of their own, which is what moves them off the
   content cache. A remap is one 256-byte row of a registered table, enumerated as `(kind, row)` by
   `kfx_render_remap_id` for the semantic record words; the resource is still keyed by the row's
-  address. What still compares content is a table with neither name: the map fade's ghost table is
-  generated into the shared polygon pool, whose address names nothing.
+  address. Registering a remap table bumps the generation, and that bump is global: it retires every
+  keyed resource, so the four tables are registered once at startup and a per-level or per-frame
+  registration would re-upload every named asset on a loop. What still compares content is a table
+  with neither name: the map fade's ghost table is generated into the shared polygon pool, whose
+  address names nothing.
   The only bump is `kfx_render_assets_changed()`, from the texture map load,
   the fade and ghost rebuild, the land view, the torture screen, the front-end background and parchment
   loads, the unicode font load, and each `LbDataFree` that actually releases a buffer, which also drops

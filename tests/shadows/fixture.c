@@ -51,8 +51,12 @@ int kfx_wgpu_native_shadow(const struct KfxGpolyTarget *target, const struct Kfx
     uint8_t *mirror, KfxWgpuNativeOracle oracle, void *context) {
     /* The shared pair, named where it lives: no shadow builds an 80 KiB concatenation, and
        the extent must stay the one every other reader of the pair declares. */
+    /* Field by field: the two objects are initialized at different call sites, so their
+       padding is indeterminate and a memcmp over it could go red for nothing. */
     struct KfxWgpuNativeResource shared=kfx_wgpu_fade_ghost_table(pixmap.fade_tables,pixmap.ghost);
-    if(memcmp(table,&shared,sizeof(shared)))abort();
+    if(table->bytes!=shared.bytes||table->length!=shared.length||table->width!=shared.width||
+        table->height!=shared.height||table->pitch!=shared.pitch||table->tail!=shared.tail||
+        table->tail_length!=shared.tail_length||table->cursor!=shared.cursor)abort();
     word(output,source->length);word(output,command->colour);
     fwrite(source->bytes,1,source->length,output);
     oracle(target->pixels,target->pitch,context);
