@@ -766,3 +766,46 @@ outside these cache gauges. Retirement remains charged to the arena until its
 encoder is submitted. The target-view uniform requests 16 additional bytes per
 call; buffer creation counts are unchanged. These counters establish upload reuse;
 CPU serialization and validation still traverse the contiguous payload.
+
+### Minimap residency: interim offscreen results, 2026-09-15
+
+[PR #43](https://github.com/zillakot/keeperfx/pull/43), runtime `37a78801b`, binary
+`32bf444c`, versus master `f2f2d422d`, binary `48561956`: 16 offscreen cells on
+Apple M5/Metal, 200 measured turns each, nonserialized GPU timing, guards enabled.
+All 17,259 raw counter frames conserve both byte partitions. Capped busy/quiet
+minimap uploads fall from 2.238/2.230 to **0.866/0.858 MB/frame**, missing the
+≤0.25 MB target. Total arena uploads fall **28.7–35.1%**. Dictionary uploads are
+zero; quiet cells never upload and busy cells upload one changed grid per run.
+Cell and dictionary residency are delivered; style reuse remains incomplete.
+
+Uncapped busy 1080 minimap uploads are **0.215/0.217 MB/frame**, passing the byte
+target by amortizing the same **300 full-style misses per ten-second run** over
+more frames. FPS pairs are 248.861→254.976 and 250.653→252.945: **+2.46%/+0.91%**,
+about **+1.7%** overall. Replay means are 1.980→1.859 and 2.024→1.973 ms.
+Capped replay has no general gain established: busy 1080 is 2.119→2.026 and
+2.085→2.120 ms; quiet 1080 is 2.356→2.384 and 2.291→2.357 ms. Buffers are roughly
+unchanged except busy 640 (75.740→99.199), whose shadow workload also changes;
+its single faster replay pair is not a clean comparison.
+
+All successful runs use a locked console; windowed timing, surface gates and the
+drawing-control oracle remain pending. Actual `console_locked` refusals establish
+the live guard. Load interruptions separate cells, and the second uncapped branch
+run ends at 0.503 load/core, above the 0.5 guard; its baseline turn rate is also
+slightly outside tolerance. These two pairs do not establish a robust ceiling gain.
+One submit/frame, zero waits/checkpoints/invalid/overflow/eviction counters and
+32 MiB arena capacity / 48 MiB growth overlap hold in all measured cells.
+
+The four-phase assumption does not cover the emitted style working set: content
+misses occur about 30/s at 20 turns/s. Source ordering permits a highlighted room's
+neutral colour to change again within one turn. Profiling skips the input path
+that resets initially zero highlight globals; a fixed-highlight source model has
+six recurring states and reproduces the miss cadence. Host content/highlight
+captures are still needed to confirm that explanation. Splitting each background
+table alone would retain common animation churn; a future stable-base/compact-patch
+proposal should use one base version and a 3 MiB live-cache class bound.
+
+Large byte reductions without a capped replay gain indicate that upload volume
+alone is no longer the main determinant of replay cost. **Attribute the replay
+floor next**, including source validation/copies, hashing, command/bin construction,
+bindings and encoding, before pursuing more byte savings. This is an inference
+from the comparisons, not a measured per-function CPU breakdown.

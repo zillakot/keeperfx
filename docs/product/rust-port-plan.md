@@ -141,14 +141,18 @@ integer arithmetic, random-number consumption and Lua behavior. Rust borrowing
 and threading changes must not silently change simulation order.
 
 
-**P3 slice 2 — minimap residency.** The Rust packer splits validated minimap data
-into a transient prefix and exact-content dictionary, cell and style versions in
-the shared arena. Retention is bounded at 9 MiB of classes, one dictionary/cell
-version and four LRU styles; background capture and contiguous fallback remain.
-Segment uploads, cache lookups and live CPU/class gauges are recorded separately.
-Native/unsplit parity fixtures cover recurring animation, mutation and lifetime
-cases. Host upload, replay, cadence and memory results are **pending**; the target
-is ≤0.25 MB/frame of minimap uploads, with no inferred timing gain from byte savings.
+**P3 slice 2 — minimap residency.** Exact-content dictionary and cell residency
+is delivered; the 9 MiB cache's four style versions do not capture the live
+working set. Sixteen [offscreen cells](../performance-baselines.md#minimap-residency-interim-offscreen-results-2026-09-15)
+show 28.7–35.1% lower capped arena uploads, but minimap uploads remain
+0.866/0.858 MB/frame and miss ≤0.25 MB. Capped replay has no general gain
+established. Uncapped busy 1080 reaches 0.215/0.217 MB/frame and approximately
++1.7% FPS across two qualified pairs (+2.46%/+0.91%). Style misses run at about
+30/s; source highlight ordering permits more than four recurring states.
+Windowed timing, surface and drawing oracles remain pending. Attribute the replay
+floor next: upload volume alone no longer explains most replay cost. A proposed
+Slice 2b would retain one stable base plus compact exact dynamic data under a
+3 MiB cache cap; it is not implemented and promises no unmeasured timing gain.
 
 ## Graphics and performance track
 
