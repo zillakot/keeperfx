@@ -1,4 +1,4 @@
-fn sprite_word(offset: u32) -> u32 {
+fn asset_word(offset: u32) -> u32 {
     return le32(offset);
 }
 
@@ -7,13 +7,13 @@ fn sprite_axis(offset: u32, count: u32, position: u32) -> u32 {
     var hi = count;
     while lo < hi {
         let mid = lo + (hi - lo) / 2u;
-        let start = sprite_word(offset + mid * 8u);
-        let length = sprite_word(offset + mid * 8u + 4u);
+        let start = asset_word(offset + mid * 8u);
+        let length = asset_word(offset + mid * 8u + 4u);
         if position >= start + length { lo = mid + 1u; }
         else { hi = mid; }
     }
     if lo == count { return count; }
-    if position < sprite_word(offset + lo * 8u) { return count; }
+    if position < asset_word(offset + lo * 8u) { return count; }
     return lo;
 }
 
@@ -68,8 +68,8 @@ fn sprite_ordered(@builtin(workgroup_id) wid: vec3<u32>) {
     let stride = select(i32(parameters.x), -i32(parameters.x), (c.source.x & 2u) != 0u);
     for (var sy = 0u; sy < h; sy++) {
         let ay = select(sy, h - 1u - sy, stride < 0);
-        let ystart = sprite_word(axis + (w + ay) * 8u);
-        let ycount = sprite_word(axis + (w + ay) * 8u + 4u);
+        let ystart = asset_word(axis + (w + ay) * 8u);
+        let ycount = asset_word(axis + (w + ay) * 8u + 4u);
         if ycount == 0u { continue; }
         let y = select(ystart, ystart + ycount - 1u, stride < 0);
         var run_right = 0i;
@@ -79,8 +79,8 @@ fn sprite_ordered(@builtin(workgroup_id) wid: vec3<u32>) {
             let coverage = artwork >> 8u;
             if coverage == 0u { continue; }
             let ax = w - 1u - sx;
-            let xstart = sprite_word(axis + ax * 8u);
-            let xcount = sprite_word(axis + ax * 8u + 4u);
+            let xstart = asset_word(axis + ax * 8u);
+            let xcount = asset_word(axis + ax * 8u + 4u);
             let right = i32(y * parameters.x + xstart + xcount) - 1;
             if !in_run { run_right = right; in_run = true; }
             let colour = select(byte(remap + (artwork & 255u)), c.operation.w, (c.source.x & 4u) != 0u);

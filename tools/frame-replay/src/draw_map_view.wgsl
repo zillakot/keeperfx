@@ -1,5 +1,5 @@
 fn map_i32(offset: u32) -> i32 {
-    return bitcast<i32>(le32(offset));
+    return bitcast<i32>(asset_word(offset));
 }
 fn map_view_sample(c: Command, pixel: vec2<u32>, destination: u32, view: vec3<u32>) -> u32 {
     let view_width = view.z;
