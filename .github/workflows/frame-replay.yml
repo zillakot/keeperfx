@@ -9,6 +9,26 @@ on:
 permissions:
   contents: read
 
+# The only definition of the fixture paths and the cargo target directory: the Linux
+# job's generators write them, its upload step publishes them by these variables, and
+# the Windows job reads them back at the same relative layout.
+env:
+  CARGO_TARGET_DIR: ${{ github.workspace }}/out/rust-target
+  KFX_GPOLY_FIXTURE: ${{ github.workspace }}/out/gpoly-fixture.bin
+  KFX_GPOLY_TRIANGLE_FIXTURE: ${{ github.workspace }}/out/gpoly-tests/triangles.bin
+  KFX_MINIMAP_FIXTURE: ${{ github.workspace }}/out/minimap-tests/minimap.bin
+  KFX_TRANSITION_FIXTURE: ${{ github.workspace }}/out/transition-tests/transitions.bin
+  KFX_MAP_VIEW_FIXTURE: ${{ github.workspace }}/out/map-view-tests/map-views.bin
+  KFX_MOVIE_FRAME_FIXTURE: ${{ github.workspace }}/out/movie-frame-tests/movie-frames.bin
+  KFX_RAW_IMAGE_FIXTURE: ${{ github.workspace }}/out/raw-image-tests/raw-images.bin
+  KFX_SPRITE_COPY_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprite-copies.bin
+  KFX_SPRITE_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprites.bin
+  KFX_SHADOW_FIXTURE: ${{ github.workspace }}/out/shadow-tests/shadows.bin
+  KFX_TRIG_FIXTURE: ${{ github.workspace }}/out/trig-tests/trig.bin
+  KFX_LENS_FIXTURE: ${{ github.workspace }}/out/lens-tests/lenses.bin
+  KFX_PRIMITIVE_FIXTURE: ${{ github.workspace }}/out/primitive-tests/primitives.bin
+  KFX_BITMAP_FIXTURE: ${{ github.workspace }}/out/bitmap-tests/bitmaps.bin
+
 jobs:
   replay:
     strategy:
@@ -21,22 +41,6 @@ jobs:
           - format: packed
             asset-flags: --no-default-features --features packed-arena
     runs-on: ubuntu-24.04
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/out/rust-target
-      KFX_GPOLY_FIXTURE: ${{ github.workspace }}/out/gpoly-fixture.bin
-      KFX_GPOLY_TRIANGLE_FIXTURE: ${{ github.workspace }}/out/gpoly-tests/triangles.bin
-      KFX_MINIMAP_FIXTURE: ${{ github.workspace }}/out/minimap-tests/minimap.bin
-      KFX_TRANSITION_FIXTURE: ${{ github.workspace }}/out/transition-tests/transitions.bin
-      KFX_MAP_VIEW_FIXTURE: ${{ github.workspace }}/out/map-view-tests/map-views.bin
-      KFX_MOVIE_FRAME_FIXTURE: ${{ github.workspace }}/out/movie-frame-tests/movie-frames.bin
-      KFX_RAW_IMAGE_FIXTURE: ${{ github.workspace }}/out/raw-image-tests/raw-images.bin
-      KFX_SPRITE_COPY_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprite-copies.bin
-      KFX_SPRITE_FIXTURE: ${{ github.workspace }}/out/sprite-tests/sprites.bin
-      KFX_SHADOW_FIXTURE: ${{ github.workspace }}/out/shadow-tests/shadows.bin
-      KFX_TRIG_FIXTURE: ${{ github.workspace }}/out/trig-tests/trig.bin
-      KFX_LENS_FIXTURE: ${{ github.workspace }}/out/lens-tests/lenses.bin
-      KFX_PRIMITIVE_FIXTURE: ${{ github.workspace }}/out/primitive-tests/primitives.bin
-      KFX_BITMAP_FIXTURE: ${{ github.workspace }}/out/bitmap-tests/bitmaps.bin
     steps:
       - uses: actions/checkout@v4
       - name: Install software Vulkan driver
@@ -114,6 +118,8 @@ jobs:
           ctest --test-dir out/sprite-tests --output-on-failure
       - name: Compare ordered-sprite layers with the serial path
         run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_sprite_layers_gpu -- --ignored --nocapture --test-threads=1
+      - name: Check interned sprite artwork, eviction and repeated identities
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_sprite_interning_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare huge bitmap sprites and glyphs with native drawing
         run: |
           cmake -S tests/bitmaps -B out/bitmap-tests -DKFX_BITMAP_ASAN=ON \
@@ -223,7 +229,7 @@ jobs:
         run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_one_submit_gpu -- --ignored --nocapture --test-threads=1
       - name: Replay synthetic frames and sequences
         run: |
-          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --lib -- --ignored --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --lib -- --ignored --nocapture --test-threads=1
           cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_limits_gpu -- --ignored --test-threads=1
           cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_status_gpu -- --ignored --nocapture --test-threads=1
           cargo build ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml
@@ -233,3 +239,90 @@ jobs:
         with:
           name: synthetic-frame-reports-${{ matrix.format }}
           path: out/synthetic-replay
+      # Every KFX_*_FIXTURE the workflow defines, so a generator that stopped emitting
+      # its fixture fails here rather than as an unrelated read failure on Windows.
+      - name: Check every native oracle fixture was written
+        if: matrix.format == 'packed'
+        run: |
+          missing=0
+          while IFS='=' read -r name path; do
+            if [ -s "$path" ]; then
+              echo "$name $(stat -c%s "$path") bytes"
+            else
+              echo "::error::$name is missing or empty at $path"
+              missing=1
+            fi
+          done < <(env | grep -E '^KFX_[A-Z_]*FIXTURE=' | sort)
+          exit $missing
+      - name: Publish the native oracle fixtures for the Windows job
+        if: matrix.format == 'packed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-oracle-fixtures
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ env.KFX_GPOLY_FIXTURE }}
+            ${{ env.KFX_GPOLY_TRIANGLE_FIXTURE }}
+            ${{ env.KFX_MINIMAP_FIXTURE }}
+            ${{ env.KFX_TRANSITION_FIXTURE }}
+            ${{ env.KFX_MAP_VIEW_FIXTURE }}
+            ${{ env.KFX_MOVIE_FRAME_FIXTURE }}
+            ${{ env.KFX_RAW_IMAGE_FIXTURE }}
+            ${{ env.KFX_SPRITE_COPY_FIXTURE }}
+            ${{ env.KFX_SPRITE_FIXTURE }}
+            ${{ env.KFX_SHADOW_FIXTURE }}
+            ${{ env.KFX_TRIG_FIXTURE }}
+            ${{ env.KFX_LENS_FIXTURE }}
+            ${{ env.KFX_PRIMITIVE_FIXTURE }}
+            ${{ env.KFX_BITMAP_FIXTURE }}
+
+  # The C oracle generators are cmake/POSIX targets that are not built on Windows CI,
+  # so this leg replays the Rust suites against the fixtures the Linux leg produced.
+  # It runs the packed arena only; the expanded accessors are format-independent and
+  # already covered on Linux.
+  windows:
+    needs: replay
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      ASSET_FLAGS: --no-default-features --features packed-arena
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-oracle-fixtures
+          path: out
+      - name: Update Rust
+        run: |
+          rustup update stable
+          echo "RUSTC_VERSION=$(rustc -V | tr ' ()' '-')" >> "$GITHUB_ENV"
+      # Keyed on the toolchain as well as the lockfile, so a stable bump does not
+      # restore and re-upload a target directory cargo will rebuild anyway. Not keyed
+      # per run: one cache per toolchain and lockfile keeps this inside the repository's
+      # shared cache budget, at the cost of rebuilding first-party code each run.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            out/rust-target
+          key: ${{ runner.os }}-frame-replay-${{ env.RUSTC_VERSION }}-${{ hashFiles('tools/frame-replay/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-frame-replay-${{ env.RUSTC_VERSION }}-
+            ${{ runner.os }}-frame-replay-
+      - name: Check Rust
+        run: |
+          cargo clippy --no-default-features --features packed-arena --locked --manifest-path tools/frame-replay/Cargo.toml --all-targets -- -D warnings
+          cargo test --no-default-features --features packed-arena --locked --manifest-path tools/frame-replay/Cargo.toml
+      - name: Replay the GPU suites on the software adapter
+        run: bash .github/scripts/windows-gpu-suites.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-suite-results
+          path: |
+            out/windows-suites.md
+            out/windows-suite-logs
