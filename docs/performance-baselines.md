@@ -337,6 +337,72 @@ gain. All samples retain one submit, zero waits/checkpoints/errors and 32 MiB ar
 capacity; uncapped reaches 256.321 FPS at 20.002772 turns/s. These are offscreen
 observations, not acquired-surface performance or whole-process memory proof.
 
+### Minimap dispatch box, measured 2026-09-15
+
+[PR #50](https://github.com/zillakot/keeperfx/pull/50), source `5ee89a7e9`, binary SHA256
+`97088818a726beab08d860b17e52a020778d0fd36fbbb996afd5934f4e075aa0`, against baseline
+source `b94fa46c7`, binary SHA256
+`070e996cb0722b6a68490e61fdf36250db81679c1969c96fd9d139e2bd9d0637` (PR #47 head; PR #48
+changes no minimap shader module and no timed pass). Apple M5/Metal, offscreen
+presentation (`--offscreen`, no swapchain), guards enabled, the timing lock held by the
+schedule, VSync off, interpolation, 20 turns/s, 1920x1080, 40 warmup / 200 measured turns,
+orders alternated within each pair. Capped and uncapped cells use `--gpu-timing`
+(overlapped per-pass windows); the serial cells use `--serial-gpu-timing`, which drains
+between passes and measures each family exclusively. Capped cells have 600 presented
+frames, uncapped 2,465–2,799, serial 598 and 600. Every cell holds 20.000 turns/s, and
+`frame_status_stalls`, `arena_overflows` and `gpu_untimed_passes` are zero throughout.
+
+Overlapped cells, baseline → branch, `gpu_minimap_ns` and replay in ms per presented frame:
+
+| Cell / pair | `gpu_minimap_ns` | `gpu_pass_union_ns` | Replay | FPS | Process CPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| capped-busy-1080 1 | 1.194 → 0.216 | 9.773 → 9.465 | 1.149 → 1.374 | 60.0 → 60.0 | 4.47 → 5.08 |
+| capped-busy-1080 2 | 1.101 → 0.212 | 9.455 → 9.294 | 1.355 → 1.394 | 60.0 → 60.0 | 5.48 → 5.11 |
+| capped-quiet-1080 1 | 0.598 → 0.147 | 9.012 → 9.230 | 1.312 → 1.417 | 60.0 → 60.0 | 4.79 → 4.98 |
+| capped-quiet-1080 2 | 0.611 → 0.148 | 9.193 → 9.125 | 1.317 → 1.496 | 60.0 → 60.0 | 4.84 → 5.16 |
+| uncapped-busy-1080 1 | 0.453 → 0.080 | 3.909 → 3.429 | 1.054 → 1.044 | 246.5 → 279.9 | 4.16 → 3.95 |
+| uncapped-busy-1080 2 | 0.441 → 0.082 | 3.807 → 3.523 | 1.047 → 1.053 | 253.0 → 272.5 | 4.18 → 4.01 |
+
+The minimap pass falls 82% uncapped and 76–82% capped. Uncapped mean frame interval
+improves in both pairs, 4.057 → 3.572 and 3.952 → 3.670 ms, with p95 4.957 → 4.356 and
+4.726 → 4.536 ms, so the ceiling gain is not a mean-only artifact. `arena_minimap_bytes`
+is byte-identical in every cell (559,427 busy, 557,507 quiet, min = max), so the slice did
+not reach the upload plumbing; `upload_minimap_target_view_payload_bytes` is 160 B per
+dispatched command rather than the spec's assumed ten commands, and dispatches fall by
+about one per frame because a zero-span overlay now submits no pass.
+
+Serialized busy 1080p, exclusive per-pass means in ms per frame:
+
+| Pass | Baseline | Branch |
+| --- | ---: | ---: |
+| raster | 1.147 | 1.029 |
+| minimap | 0.992 | 0.914 |
+| target triangles | 0.885 | 0.842 |
+| shadow mask | 0.763 | 0.714 |
+| ordered sprites | 0.223 | 0.241 |
+| terrain prepare | 0.059 | 0.007 |
+| union | 4.056 | 3.726 |
+
+The serialized union passes its <= 4.000 ms gate at 3.726 ms (-8.1%). Two secondary gates
+are missed. Serialized `gpu_minimap_ns` is 0.914 ms against a <= 0.700 ms gate: drained,
+the family is dominated by per-pass fixed cost, and the overlapped windows above carry the
+actual reduction. Capped replay host means rise +19.6% and +2.9% busy and +8.0% and +13.6%
+quiet against a <= +5% gate; the pack phase that computes the boxes grows only
+0.007–0.036 ms, the rise sits in the untouched upload phase, the two capped baselines
+differ from each other by 18%, and uncapped replay is unchanged (1.054/1.047 →
+1.044/1.053 ms) with process CPU per frame lower. Serialized terrain prepare also falls,
+a pass the slice does not touch, so treat that row as drained-mode variation.
+
+Parity on the same head: `KFX_WGPU_VERIFY` surface sessions verified 719 of 719 presented
+frames at 640x480 and 712 of 712 at 1920x1080, 16 startup acquisition skips each, no
+fallback; the `KFX_WGPU_DRAW_VERIFY` control session recorded 93,940 verified batches and
+149,689 verified triangles at 0 failures, 0 invalid frames, 0 flagged shades and 0
+rejected commands, with 1 `shadow_prior_divergence` event. That session skipped the video
+mode cycle, which the control-tooling fault in
+[native game control](native-game-control.md) makes unavailable. Run outputs are under
+`out/wgpu-migration/minimap-box-runs/`. These are offscreen observations and establish no
+windowed ceiling.
+
 ## Presenter host attribution
 
 Rust-presenter runs include one `presenter.per_frame` sample per presentation;
