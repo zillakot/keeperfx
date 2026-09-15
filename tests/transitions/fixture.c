@@ -71,7 +71,12 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget* target,const struct KfxWgp
     const uint32_t* words=(const uint32_t*)c;for(unsigned i=0;i<28;i++)word(words[i]);
     write_snapshot(c->source);
     write_snapshot(c->source_x==0?c->start_low:0);
-    word(table->length);fwrite(table->bytes,1,table->length,output);
+    /* A map fade names the fade rows and the ghost table where they live; smoothing has
+       only the one table. Either way nothing is concatenated before the call. */
+    if(c->source_x==0 ? (table->length!=33*256 || table->tail_length!=65536 || !table->tail)
+        : (table->length!=65536 || table->tail || table->tail_length))abort();
+    word(table->length+table->tail_length);fwrite(table->bytes,1,table->length,output);
+    if(table->tail_length)fwrite(table->tail,1,table->tail_length,output);
     fwrite(initial,1,size,output);fwrite(expected,1,size,output);
     count++;return 1;
 }

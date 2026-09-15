@@ -9,13 +9,14 @@ fn map_view_sample(c: Command, pixel: vec2<u32>, destination: u32, view: vec3<u3
         let cell = local.x / c.source.w;
         let style = le16(base+cell*2u);
         if style <= 256u { return style; }
-        let tables = base+c.source.z*2u;
-        if style == 257u { return byte(tables+destination); }
-        if style == 258u { return (byte(tables+destination)+2u)&255u; }
-        if style == 259u { return byte(tables+256u+destination); }
-        if style == 260u { return 102u+(byte(tables+512u+destination)>>6u); }
-        if style == 261u { return byte(tables+768u+destination); }
-        return byte(tables+1024u+destination);
+        // The row table is the whole ghost table followed by the abyss row.
+        let tables = c.assets.y;
+        if style == 257u { return byte(tables+0x1a00u+destination); }
+        if style == 258u { return (byte(tables+0x1a00u+destination)+2u)&255u; }
+        if style == 259u { return byte(tables+0x8c00u+destination); }
+        if style == 260u { return 102u+(byte(tables+destination)>>6u); }
+        if style == 261u { return byte(tables+0x1000u+destination); }
+        return byte(tables+65536u+destination);
     }
     if c.source.x == 1u {
         let size = vec2<u32>(c.bounds.zw-c.bounds.xy);

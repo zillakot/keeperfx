@@ -635,13 +635,16 @@ const uint8_t* WgpuTerrainBridge::ReplayAsset(uint64_t handle) const
     return asset == m_replay_assets.end() ? nullptr : asset->second.data();
 }
 
-/* Interns a lookup table by the caller's buffer identity. Tables built on the caller's
- * stack carry no identity the drawing context can key, so they still compare content. */
+/* Interns a lookup table by the name the caller gave it: an enumerated row id where the
+ * emitter has one, otherwise the buffer's own identity. Tables built on the caller's
+ * stack carry neither, so they still compare content. */
 uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, uint32_t kind,
-    std::vector<Resource>& cache, TableMemos& memos, size_t limit)
+    std::vector<Resource>& cache, TableMemos& memos, size_t limit, uint64_t id)
 {
     const size_t length = table.length + table.tail_length;
-    const void* key = StableKey(table.bytes, table.length);
+    // An id names the bytes wherever they live, so it needs no registered range; the memo
+    // still keys on the address, which the id asserts holds those bytes for a generation.
+    const void* key = id != 0 ? table.bytes : StableKey(table.bytes, table.length);
     const void* tail_key = table.tail == nullptr ? nullptr
                                                  : StableKey(table.tail, table.tail_length);
     const Extent extent = {length, table.width, table.height, table.pitch};
@@ -657,8 +660,11 @@ uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, ui
         bytes.insert(bytes.end(), table.bytes, table.bytes + table.length);
         if (table.tail_length != 0)
             bytes.insert(bytes.end(), table.tail, table.tail + table.tail_length);
-        const uint64_t handle = KeyedResource(kind, key, tail_key, kfx_render_asset_generation,
-            bytes.data(), extent);
+        const uint64_t handle = id != 0
+            ? KeyedResourceRaw(KFX_WGPU_DRAW_KEY_REMAP_ROW, 0, id, kfx_render_asset_generation,
+                bytes.data(), extent)
+            : KeyedResource(kind, key, tail_key, kfx_render_asset_generation, bytes.data(),
+                extent);
         // No replay half: RasterizePending only replays terrain, so no snapshot is kept.
         if (handle != 0) {
             memos.slots[memos.next] = {key, tail_key, kfx_render_asset_generation, extent,
@@ -1279,7 +1285,7 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
             if (guard.handle == 0) return Fail(nullptr);
             m_counts.resource_snapshot_bytes += ranges->length;
             remap_handle = TableResource(*remap, KFX_WGPU_DRAW_KEY_SPRITE_REMAP, m_remap_tables,
-                m_remap_memos, 16);
+                m_remap_memos, 16, sprite->remap_id);
             if (remap_handle == 0) return Fail(nullptr);
         }
         if (table != nullptr) {

@@ -18,7 +18,7 @@ static int ready(uint8_t *dst, int pitch, int width, int height)
 }
 static int submit(uint8_t *dst, int pitch, int width, int height,
     struct KfxWgpuDrawCommand *c, const uint8_t *bytes, int length,
-    KfxWgpuNativeOracle oracle, void *context)
+    const struct KfxWgpuNativeResource *table, KfxWgpuNativeOracle oracle, void *context)
 {
     if (!oracle) return 0;
     struct KfxGpolyTarget target = {dst, width, height, pitch};
@@ -29,7 +29,7 @@ static int submit(uint8_t *dst, int pitch, int width, int height,
     c->clip_height = height;
     c->transparent = KFX_WGPU_DRAW_OPAQUE;
     struct MapOracle o = {oracle, context};
-    return kfx_wgpu_native_draw(&target, c, &source, NULL, map_oracle, &o);
+    return kfx_wgpu_native_draw(&target, c, &source, table, map_oracle, &o);
 }
 int kfx_wgpu_map_row(uint8_t *dst, int pitch, int height, int x, int y, int block_size,
     const int *styles, int count, const uint8_t *ghost, const uint8_t *abyss,
@@ -42,21 +42,18 @@ int kfx_wgpu_map_row(uint8_t *dst, int pitch, int height, int x, int y, int bloc
     if (!kfx_wgpu_native_read_barrier(styles, count * sizeof(*styles)) ||
         !kfx_wgpu_native_read_barrier(ghost, 65536) ||
         !kfx_wgpu_native_read_barrier(abyss, 256)) return 0;
-    uint8_t bytes[2048 * 2 + 1280];
+    uint8_t bytes[2048 * 2];
     for (int i = 0; i < count; i++) {
         if (styles[i] < 0 || styles[i] > 262) return 0;
         bytes[2*i] = styles[i]; bytes[2*i+1] = styles[i] >> 8;
     }
-    uint8_t *tables = bytes + count * 2;
-    memcpy(tables, ghost + 0x1a00, 256);
-    memcpy(tables + 256, ghost + 0x8c00, 256);
-    memcpy(tables + 512, ghost, 256);
-    memcpy(tables + 768, ghost + 0x1000, 256);
-    memcpy(tables + 1024, abyss, 256);
+    /* The four ghost rows and the abyss row the styles select, named where they live:
+       a row command carries only its styles, and the tables stay resident. */
+    const struct KfxWgpuNativeResource tables = {ghost, 65536, 256, 257, 256, abyss, 256, 0};
     struct KfxWgpuDrawCommand c = {0};
     c.x=x; c.y=y; c.width=count*block_size; c.height=block_size;
     c.source_width=count; c.source_height=block_size;
-    return submit(dst,pitch,pitch,height,&c,bytes,count*2+1280,oracle,context);
+    return submit(dst,pitch,pitch,height,&c,bytes,count*2,&tables,oracle,context);
 }
 int kfx_wgpu_map_texture(uint8_t *dst, int pitch, int width, int height, int x, int y,
     int dw, int dh, int flags, const uint8_t *texture, const uint8_t *fade,
@@ -73,7 +70,7 @@ int kfx_wgpu_map_texture(uint8_t *dst, int pitch, int width, int height, int x, 
     for (int i=0;i<256;i++) bytes[32*256+i]=fade?fade[i]:i;
     struct KfxWgpuDrawCommand c = {0};
     c.x=x; c.y=y; c.width=dw; c.height=dh; c.source_x=1; c.source_y=flags;
-    return submit(dst,pitch,width,height,&c,bytes,sizeof(bytes),oracle,context);
+    return submit(dst,pitch,width,height,&c,bytes,sizeof(bytes),NULL,oracle,context);
 }
 int kfx_wgpu_map_zoom(uint8_t *dst, int pitch, int width, int height, int x, int y,
     int map_x, int map_y, int delta, const uint8_t *source, int sw, int sh,
@@ -90,7 +87,7 @@ int kfx_wgpu_map_zoom(uint8_t *dst, int pitch, int width, int height, int x, int
     c.width=width; c.height=height; c.source_x=2; c.source_y=delta;
     c.source_width=sw; c.source_height=sh;
     c.start_low=x; c.start_high=y; c.step_low=map_x; c.step_high=map_y;
-    return submit(dst,pitch,pitch,height,&c,source,sw*sh,oracle,context);
+    return submit(dst,pitch,pitch,height,&c,source,sw*sh,NULL,oracle,context);
 }
 
 int kfx_wgpu_map_marker(uint8_t *dst, int pitch, int height, int x, int y,
@@ -116,5 +113,5 @@ int kfx_wgpu_map_marker(uint8_t *dst, int pitch, int height, int x, int y,
     struct KfxWgpuDrawCommand c = {0};
     c.width=pitch; c.height=height; c.source_x=3; c.source_y=count; c.colour=colour;
     c.start_low=x; c.start_high=y; c.step_low=spread; c.step_high=cross;
-    return submit(dst,pitch,pitch,height,&c,bytes,count*8,oracle,context);
+    return submit(dst,pitch,pitch,height,&c,bytes,count*8,NULL,oracle,context);
 }

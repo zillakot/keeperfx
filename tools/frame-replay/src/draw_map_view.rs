@@ -22,10 +22,7 @@ pub(super) fn validate(c: &Command, source: &Resource, width: u32, height: u32) 
                 "invalid map row bounds"
             );
             let count = c.source_width as usize;
-            ensure!(
-                source.bytes.len() == count * 2 + 1280,
-                "invalid map style tables"
-            );
+            ensure!(source.bytes.len() == count * 2, "invalid map style count");
             ensure!(
                 source.bytes[..count * 2]
                     .as_chunks::<2>()
@@ -145,10 +142,10 @@ mod tests {
     fn semantic_resource_rejection_without_gpu() {
         let mut source = Resource {
             cursor: false,
-            width: 1282,
+            width: 2,
             height: 1,
-            pitch: 1282,
-            bytes: vec![0; 1282],
+            pitch: 2,
+            bytes: vec![0; 2],
             key: None,
         };
         let mut command = Command {

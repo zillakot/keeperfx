@@ -1079,6 +1079,44 @@ int main()
                 kfx_render_asset_range_forget(&slots[i]);
         }
         {
+            /* Two named buffers instead of one concatenation: the pair is the key, so the
+               shadow, triangle, transition and map-row tables are resolved, not rebuilt. */
+            std::vector<uint8_t> run(24 * 10, 0x6a);
+            KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+            WgpuTerrainBridge bridge(0, false, false);
+            KfxWgpuDrawCommand rect = {};
+            rect.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+            rect.kind = KFX_WGPU_DRAW_RECT;
+            rect.blend = KFX_WGPU_DRAW_SOURCE_DESTINATION;
+            rect.width = rect.clip_width = 4;
+            rect.height = rect.clip_height = 2;
+            std::vector<uint8_t> head(256 * 64, 0x31), ghost(256 * 256, 0x57);
+            kfx_render_asset_range(head.data(), head.size());
+            kfx_render_asset_range(ghost.data(), ghost.size());
+            KfxWgpuNativeResource pair = {head.data(), head.size(), 256, 320, 256,
+                ghost.data(), ghost.size(), 0};
+            const uint64_t created = keyed_creates;
+            const uint64_t snapshot = bridge.GetCounters().resource_snapshot_bytes;
+            for (unsigned i = 0; i < 6; ++i)
+                assert(bridge.SubmitNative(run_target, rect, nullptr, &pair, nullptr,
+                    nullptr) == 1);
+            assert(keyed_creates == created + 1);
+            assert(bridge.GetCounters().resource_snapshot_bytes ==
+                snapshot + head.size() + ghost.size());
+            // The generation is what makes a rewrite behind the pair visible.
+            kfx_render_assets_changed();
+            assert(bridge.SubmitNative(run_target, rect, nullptr, &pair, nullptr, nullptr) == 1);
+            assert(keyed_creates == created + 2);
+            // A key names one extent: the same pair with another shape is refused.
+            KfxWgpuNativeResource reshaped = {head.data(), head.size(), 256, 160, 256,
+                ghost.data(), ghost.size(), 0};
+            assert(bridge.SubmitNative(run_target, rect, nullptr, &reshaped, nullptr,
+                nullptr) == 0);
+            assert(bridge.Failed() && std::strstr(bridge.GetError(), "shape") != nullptr);
+            kfx_render_asset_range_forget(head.data());
+            kfx_render_asset_range_forget(ghost.data());
+        }
+        {
             // A key names one extent: the same pointer with another shape is refused, not
             // served with the first shape's resource.
             std::vector<uint8_t> run(24 * 10, 0x6a);
@@ -1170,7 +1208,7 @@ int main()
             WgpuTerrainBridge bridge(0, false, false);
             const uint64_t created = keyed_creates;
             const uint64_t snapshot = bridge.GetCounters().resource_snapshot_bytes;
-            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, artwork.data(), 1};
+            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, artwork.data(), 1, 0};
             for (unsigned i = 0; i < 5; ++i)
                 assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets, nullptr, nullptr) == 1);
             assert(keyed_creates == created + 1);
@@ -1193,7 +1231,7 @@ int main()
             const uint64_t created = keyed_creates, live = live_resources;
             std::vector<uint8_t> reborn = artwork;
             for (auto& value : reborn) value ^= 0x27;
-            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, artwork.data(), 7};
+            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, artwork.data(), 7, 0};
             assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets, nullptr, nullptr) == 1);
             assert(sprite_pixels[3 * 24 + 2] == artwork[0]);
             art.bytes = reborn.data();
@@ -1208,7 +1246,7 @@ int main()
            per call, so verification against the CPU oracle must hold for both. */
         {
             WgpuTerrainBridge bridge(0, false, true);
-            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, artwork.data(), 11};
+            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, artwork.data(), 11, 0};
             const std::pair<uint32_t, uint32_t> places[] = {{2, 3}, {9, 6}};
             for (const auto& place : places) {
                 command.x = place.first;
@@ -1225,11 +1263,40 @@ int main()
             assert(bridge.GetCounters().verification_cpu_commands == 2);
             assert(bridge.GetCounters().failures == 0);
         }
+        /* An enumerated remap row is keyed by its id, so a palette in no registered range
+           still takes one handle, and two rows of one table stay two handles. */
+        {
+            WgpuTerrainBridge bridge(0, false, false);
+            std::vector<uint8_t> rows(256 * 2);
+            for (size_t i = 0; i < rows.size(); ++i) rows[i] = i;
+            kfx_render_remap_rows(KFX_REMAP_WHITE, rows.data(), 2);
+            assert(kfx_render_remap_id(rows.data()) == (KFX_REMAP_WHITE << 16));
+            assert(kfx_render_remap_id(rows.data() + 256) == ((KFX_REMAP_WHITE << 16) | 1));
+            assert(kfx_render_remap_id(rows.data() + 1) == KFX_REMAP_NONE);
+            assert(kfx_render_remap_id(rows.data() + 512) == KFX_REMAP_NONE);
+            assert(!kfx_render_asset_stable(rows.data(), 256));
+            const uint64_t created = keyed_creates;
+            KfxWgpuNativeResource first = {rows.data(), 256, 1, 1, 1, nullptr, 0, 0};
+            KfxWgpuNativeResource second = {rows.data() + 256, 256, 1, 1, 1, nullptr, 0, 0};
+            KfxWgpuSpriteAssets assets = {&art, &rng, &first, nullptr, artwork.data(), 21,
+                kfx_render_remap_id(rows.data())};
+            for (unsigned i = 0; i < 3; ++i)
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets,
+                    nullptr, nullptr) == 1);
+            assets.remap = &second;
+            assets.remap_id = kfx_render_remap_id(rows.data() + 256);
+            assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets,
+                nullptr, nullptr) == 1);
+            // The artwork and the two rows; three draws of one row are one create.
+            assert(keyed_creates == created + 3);
+            assert(bridge.GetCounters().failures == 0);
+            kfx_render_remap_rows(KFX_REMAP_WHITE, nullptr, 0);
+        }
         // No name, no residency: the artwork takes a per-call resource like the ranges.
         {
             WgpuTerrainBridge bridge(0, false, false);
             const uint64_t created = keyed_creates, live = live_resources;
-            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, nullptr, 0};
+            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, nullptr, 0, 0};
             for (unsigned i = 0; i < 3; ++i)
                 assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets, nullptr, nullptr) == 1);
             // Only the remap is interned, by content: it carries no registered pointer.

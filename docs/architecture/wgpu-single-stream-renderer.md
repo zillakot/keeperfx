@@ -149,8 +149,14 @@ drawing context, with:
   loader's buffer address, a glyph by its font, character and the three colour words the asset carries,
   with the destination rectangle, scale and clip left in the record where they cannot reach the key.
   Bytes the caller cannot name — anything outside a range registered with `kfx_render_asset_range` —
-  take a per-call resource; tables built on a caller's stack still compare content until their emitters
-  carry the table identity. The only bump is `kfx_render_assets_changed()`, from the texture map load,
+  take a per-call resource. A lookup table names its storage instead of a concatenation of it: a creature
+  shadow, a general triangle and a map fade pass the fade rows and the ghost table as two named buffers,
+  and an overhead-map row passes the ghost table and the abyss row, so the pair of addresses is the key
+  and the emitter builds nothing. A remap is one 256-byte row of a registered table, enumerated as
+  `(kind, row)` by `kfx_render_remap_id`, and that id is the key for `pixmap.fade_tables`, `pixmap.ghost`,
+  `white_pal` and `red_pal` wherever their storage sits; `alpha_sprite_table`, `white_pal` and `red_pal`
+  are registered ranges of their own. What still compares content is a table with neither name: the map
+  fade's ghost table is generated into the shared polygon pool, whose address names nothing. The only bump is `kfx_render_assets_changed()`, from the texture map load,
   the fade and ghost rebuild, the land view, the torture screen, the front-end background and parchment
   loads, the unicode font load, and each `LbDataFree` that actually releases a buffer, which also drops
   that buffer's range so a later allocation at the address cannot inherit its name. A range is dropped

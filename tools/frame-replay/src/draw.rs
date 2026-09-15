@@ -1894,7 +1894,8 @@ fn pack_records<'a>(
                 );
             }
         }
-        if c.blend != 0 || c.kind == GPOLY_SPAN || c.kind == TRIG {
+        let map_row = c.kind == MAP_VIEW && c.source_x == 0;
+        if c.blend != 0 || c.kind == GPOLY_SPAN || c.kind == TRIG || map_row {
             let table = resources.get(&c.table).context("unknown table version")?;
             ensure!(
                 table.width == 256 && table.pitch == 256,
@@ -1904,6 +1905,12 @@ fn pack_records<'a>(
                 ensure!(
                     table.height == 320,
                     "triangle requires fade and ghost tables"
+                );
+            }
+            if map_row {
+                ensure!(
+                    table.bytes.len() == 65536 + 256,
+                    "map row requires the ghost and abyss tables"
                 );
             }
             if c.blend != 0 {

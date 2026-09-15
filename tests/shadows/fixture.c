@@ -49,7 +49,9 @@ void shadow_native_recover(void) {}
 int kfx_wgpu_native_shadow(const struct KfxGpolyTarget *target, const struct KfxWgpuDrawCommand *command,
     const struct KfxWgpuNativeResource *source, const struct KfxWgpuNativeResource *table,
     uint8_t *mirror, KfxWgpuNativeOracle oracle, void *context) {
-    (void)table;
+    /* The tables are named where they live: no shadow builds an 80 KiB concatenation. */
+    if(table->bytes!=pixmap.fade_tables||table->length!=16384||table->tail!=pixmap.ghost||
+        table->tail_length!=65536||table->width!=256||table->height!=320||table->pitch!=256)abort();
     word(output,source->length);word(output,command->colour);
     fwrite(source->bytes,1,source->length,output);
     oracle(target->pixels,target->pitch,context);

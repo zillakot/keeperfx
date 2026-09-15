@@ -66,6 +66,31 @@ int kfx_render_asset_stable(const void *bytes, size_t length)
     return 0;
 }
 
+static struct { const unsigned char *base; uint32_t rows; } remap_tables[KFX_REMAP_KIND_COUNT];
+
+void kfx_render_remap_rows(uint32_t kind, const void *base, uint32_t rows)
+{
+    if (kind == KFX_REMAP_NONE || kind >= KFX_REMAP_KIND_COUNT) return;
+    if (!base || !rows || rows > 0x10000u) { base = NULL; rows = 0; }
+    remap_tables[kind].base = (const unsigned char *)base;
+    remap_tables[kind].rows = rows;
+}
+
+uint32_t kfx_render_remap_id(const void *remap)
+{
+    if (!remap) return KFX_REMAP_NONE;
+    const unsigned char *row = (const unsigned char *)remap;
+    for (uint32_t kind = 1; kind < KFX_REMAP_KIND_COUNT; ++kind) {
+        const unsigned char *base = remap_tables[kind].base;
+        if (!base || row < base) continue;
+        size_t offset = (size_t)(row - base);
+        if (offset >= (size_t)remap_tables[kind].rows * KFX_REMAP_ROW_BYTES) continue;
+        if (offset % KFX_REMAP_ROW_BYTES) continue;
+        return (kind << 16) | (uint32_t)(offset / KFX_REMAP_ROW_BYTES);
+    }
+    return KFX_REMAP_NONE;
+}
+
 void kfx_gpoly_set_sink(KfxGpolySink sink, void *context)
 {
     kfx_gpoly_sink = sink;

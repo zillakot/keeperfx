@@ -49,15 +49,22 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,const struct KfxWgp
     const struct KfxWgpuNativeResource *source,const struct KfxWgpuNativeResource *table,KfxWgpuNativeOracle oracle,void *context)
 {
     if(!accepted)return 0;
-    if(table || !source || command->kind!=KFX_WGPU_DRAW_MAP_VIEW || memcmp(target->pixels,initial,sizeof(initial)))abort();
+    if(!source || command->kind!=KFX_WGPU_DRAW_MAP_VIEW || memcmp(target->pixels,initial,sizeof(initial)))abort();
+    /* Only a row reads lookup tables, and it names ghost and abyss instead of slicing
+       1,280 bytes of them into every command. */
+    if(command->source_x==0 ? (!table || table->bytes!=pixmap.ghost || table->length!=65536 ||
+        table->tail!=pixmap.map_abyss || table->tail_length!=256) : table!=NULL)abort();
     memcpy(expected,initial,sizeof(expected));
     oracle(expected,PITCH,context);oracle_calls++;
     if(memcmp(target->pixels,initial,sizeof(initial)))abort();
     word(target->width);word(target->height);word(target->pitch);
     word(source->width);word(source->height);word(source->pitch);word(source->length);
+    word(table?table->width:0);word(table?table->height:0);word(table?table->pitch:0);
+    word(table?(uint32_t)(table->length+table->tail_length):0);
     const uint32_t *words=(const uint32_t*)command;
     for(unsigned i=0;i<28;i++)word(words[i]);
     fwrite(source->bytes,1,source->length,output);
+    if(table){fwrite(table->bytes,1,table->length,output);fwrite(table->tail,1,table->tail_length,output);}
     fwrite(expected,1,sizeof(expected),output);
     count++;return 1;
 }

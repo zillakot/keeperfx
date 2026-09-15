@@ -57,6 +57,9 @@ struct KfxWgpuSpriteAssets {
     const struct KfxWgpuNativeResource* table;
     const void* identity;
     uint64_t generation;
+    /* kfx_render_remap_id of the remap row, or KFX_REMAP_NONE when the emitter cannot
+     * name it. A named row is keyed by that id rather than by where it happens to sit. */
+    uint32_t remap_id;
 };
 /* The command carries the range and remap handles in its accumulator words. */
 int kfx_wgpu_native_draw_sprite(const struct KfxGpolyTarget* target,
@@ -198,7 +201,7 @@ private:
     uint64_t TextureResource(const uint8_t* texture);
     uint64_t FadeResource(const uint8_t* fade);
     uint64_t TableResource(const KfxWgpuNativeResource& table, uint32_t kind,
-        std::vector<Resource>& cache, TableMemos& memos, size_t limit);
+        std::vector<Resource>& cache, TableMemos& memos, size_t limit, uint64_t id = 0);
     // Releases handles no pending command can name any more; false if a release failed.
     bool CollectSuperseded();
     const uint8_t* ReplayAsset(uint64_t handle) const;

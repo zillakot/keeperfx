@@ -29,6 +29,10 @@ fn actual_native_map_views() -> Result<()> {
         let sh = word(&mut data);
         let sp = word(&mut data);
         let length = word(&mut data) as usize;
+        let tw = word(&mut data);
+        let th = word(&mut data);
+        let tp = word(&mut data);
+        let table_length = word(&mut data) as usize;
         let w: [u32; 28] = std::array::from_fn(|_| word(&mut data));
         let mut command = Command {
             abi_version: w[0],
@@ -62,6 +66,10 @@ fn actual_native_map_views() -> Result<()> {
             source.fill(0);
         }
         data = &data[length..];
+        if table_length > 0 {
+            command.table = drawing.create_resource(&data[..table_length], tw, th, tp)?;
+        }
+        data = &data[table_length..];
         let expected = &data[..(pitch * rows) as usize];
         data = &data[(pitch * rows) as usize..];
         let target = drawing.create_target(width, height)?;
@@ -87,7 +95,8 @@ fn actual_native_map_views() -> Result<()> {
         );
         ensure!(
             after.asset_upload_bytes - before.asset_upload_bytes
-                == length as u64 * keeperfx_frame_replay::draw::assets::STRIDE as u64,
+                == (length + table_length) as u64
+                    * keeperfx_frame_replay::draw::assets::STRIDE as u64,
             "map uploaded unexpected pixels"
         );
         let actual = drawing.readback(target)?;
@@ -172,6 +181,9 @@ fn actual_native_map_views() -> Result<()> {
         drawing.release_resource(seed)?;
         if command.source != 0 {
             drawing.release_resource(command.source)?;
+        }
+        if command.table != 0 {
+            drawing.release_resource(command.table)?;
         }
         drawing.release_target(target)?;
     }

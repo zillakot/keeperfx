@@ -50,7 +50,7 @@ extern uint64_t kfx_render_sprite_generation;
 void kfx_render_sprites_changed(void);
 /* Registers storage whose bytes only change with a generation bump. At most
  * KFX_RENDER_ASSET_RANGES ranges; re-registering the same base replaces it. */
-enum { KFX_RENDER_ASSET_RANGES = 8 };
+enum { KFX_RENDER_ASSET_RANGES = 12 };
 void kfx_render_asset_range(const void *base, size_t length);
 /* Registrations refused because every slot was taken. Losing a name is safe — the asset
  * falls back to a per-call resource — but it is silent, so it is counted. */
@@ -59,6 +59,25 @@ extern uint64_t kfx_render_asset_range_drops;
  * address is not mistaken for the asset that used to live there. */
 void kfx_render_asset_range_forget(const void *base);
 int kfx_render_asset_stable(const void *bytes, size_t length);
+
+/* Lookup tables whose rows an emitter can name. A remap pointer is one 256-byte row of
+ * one of these, so (kind, row) is the identity of the bytes a command reads, and it
+ * stays the same across the reallocation of anything that merely points at them. */
+enum KfxRemapKind {
+    KFX_REMAP_NONE = 0,
+    KFX_REMAP_FADE = 1,
+    KFX_REMAP_GHOST = 2,
+    KFX_REMAP_WHITE = 3,
+    KFX_REMAP_RED = 4,
+    KFX_REMAP_KIND_COUNT = 5
+};
+enum { KFX_REMAP_ROW_BYTES = 256 };
+/* Names rows * 256 bytes at base as the rows of kind; re-registering a kind replaces it
+ * and a null base drops it. The identity is only as good as kfx_render_asset_generation,
+ * which must move whenever the bytes behind a registered row are rewritten. */
+void kfx_render_remap_rows(uint32_t kind, const void *base, uint32_t rows);
+/* (kind << 16) | row for a registered row start, KFX_REMAP_NONE for anything else. */
+uint32_t kfx_render_remap_id(const void *remap);
 
 void kfx_gpoly_set_sink(KfxGpolySink sink, void *context);
 extern KfxGpolySink kfx_gpoly_sink;
