@@ -886,13 +886,20 @@ words followed by 32 words holding eight four-bit dictionary indices each.
 Unknown background colours retain dictionary index zero. This uses the existing
 uniform ring and adds no GPU pass or barrier; raw minimap sources stay unchanged.
 
-Capped matched pairs measured 2026-09-15 08:30–08:50, offscreen, wgpu drawing,
-40 warmup / 200 measured turns, alternated within each pair. Word-once binary
-b94fa46c7 (sha256 070e996c…) against PR #45 head 416a46d59 (sha256 fb4cd2c7…).
-Every cell is baseline → word-once; replay, upload, pack and process CPU are
-means per presentation in ms, FPS is observed.
+Matched offscreen pairs, 2026-09-15 08:30–08:50. Word-once binary `b94fa46c7`,
+SHA256 `070e996cb0722b6a68490e61fdf36250db81679c1969c96fd9d139e2bd9d0637`;
+baseline [PR #45](https://github.com/zillakot/keeperfx/pull/45) head `416a46d59`,
+SHA256 `fb4cd2c743a95ae2bf6ae338dc8918f5f72f9989fe8ca2d566db03570bda8901`.
+Apple M5/Metal, offscreen presentation (`--offscreen`, no swapchain), guards
+enabled, the timing lock held by the schedule, VSync off, interpolation,
+20 turns/s, 1920x1080 or 640x480, 40 warmup / 200 measured turns,
+`--gpu-timing` (overlapped per-pass timestamps), orders alternated within each
+pair. Capped cells hold the 60 FPS limit over 599–600 presented frames; the
+uncapped cells have 2,412–2,675. Every cell below is baseline → word-once;
+replay, upload, pack and process CPU are means in ms per presented frame and
+FPS is observed.
 
-| Cell / pair | Replay | Upload | Pack | FPS | Process CPU/frame |
+| Cell / pair | Replay | Upload | Pack | FPS | Process CPU |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | capped-busy-1080 1 | 1.976 → 1.360 | 1.476 → 0.838 | 0.278 → 0.293 | 60.0 → 60.0 | 6.13 → 5.67 |
 | capped-busy-1080 2 | 1.960 → 1.323 | 1.464 → 0.807 | 0.277 → 0.290 | 60.0 → 60.0 | 6.09 → 5.54 |
@@ -906,14 +913,24 @@ means per presentation in ms, FPS is observed.
 | uncapped-busy-1080 2 | 1.612 → 0.904 | 1.247 → 0.547 | 0.216 → 0.210 | 255.8 → 267.5 | 4.41 → 3.46 |
 
 Replay falls 0.58–0.73 ms in every cell and the capped cells stay on the 60 FPS
-cap. Pack time is within +5% in the 1080p and uncapped cells but +10–12% (about
-0.03 ms) in the busy 640x480 pairs. The uncapped 1080p ceiling rises about
-12 FPS in both pairs. The serialized exclusive GPU union is still about +7%
-(4.02 → 4.30 ms), with the minimap pass the largest growth, so GPU work per
-frame is higher even though host time is lower.
+cap. Pack time falls in three rows: capped-quiet-640 pair 1 by 1.4% and both
+uncapped pairs by 1.8% and 2.8%. It rises within +5% in two rows,
+capped-quiet-1080 pair 1 by 2.8% and capped-busy-1080 pair 2 by 4.7%, and above
++5% in the remaining five: capped-quiet-1080 pair 2 by 5.0%, capped-busy-1080
+pair 1 by 5.4%, capped-quiet-640 pair 2 by 9.9% and the busy 640x480 pairs by
+10.5% and 12.7%. The largest absolute pack change is +0.035 ms, in
+capped-busy-640 pair 2; no row moves more than 0.035 ms either way. The uncapped
+1080p ceiling rises about 12 FPS in both pairs.
+
+The serialized exclusive GPU union is still about +7%, 4.02 → 4.30 ms, with the
+minimap pass the largest growth, so GPU work per frame is higher even though host
+time is lower. That figure is the separate `serial-busy-1080-baseline` /
+`serial-busy-1080-branch` cells: busy 1920x1080, capped, `--serial-gpu-timing`,
+which drains between passes and so measures each family exclusively over 587 and
+581 frames. It is not comparable with the overlapped `gpu_pass_union_ns` of the
+paired cells above.
 
 Windowed parity on the word-once binary: KFX_WGPU_VERIFY surface sessions
 verified every presented frame at 640x480 and 1920x1080 on both wgpu and
-software drawing, 717–719 frames each with 16–18 startup acquisition skips,
-the normal pattern for every windowed run since 2026-09-15 00:20. Run outputs
-are under `out/wgpu-migration/byte-arena-runs/word-once/`.
+software drawing, 717–719 frames each with 16–18 startup acquisition skips.
+Run outputs are under `out/wgpu-migration/byte-arena-runs/word-once/`.
