@@ -43,6 +43,7 @@ extern "C" {
 TbBool setup_heap_manager(void)
 {
     SYNCDBG(8,"Starting");
+    kfx_render_sprites_changed();
     long i;
 #ifdef SPRITE_FORMAT_V2
     const char* fname = prepare_file_fmtpath(FGrp_StdData,"thingspr-%d.jty",32);

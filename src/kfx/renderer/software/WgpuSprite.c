@@ -122,6 +122,15 @@ static int sprite_cache_store(const void *identity, unsigned w, unsigned h, uint
     return 1;
 }
 
+void kfx_wgpu_sprite_cache_stats(size_t *entries, size_t *bytes)
+{
+    if (entries) {
+        *entries = 0;
+        for (size_t i = 0; i < SPRITE_CACHE_SLOTS; i++) *entries += sprite_cache[i].bytes != NULL;
+    }
+    if (bytes) *bytes = sprite_cache_bytes;
+}
+
 static const TbPixel *sprite_identity_remap(void)
 {
     static TbPixel table[256];

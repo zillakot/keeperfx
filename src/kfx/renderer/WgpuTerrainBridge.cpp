@@ -67,8 +67,9 @@ extern "C" int kfx_wgpu_native_draw_sprite(const KfxGpolyTarget* target,
     KfxWgpuNativeOracle oracle, void* oracle_context)
 {
     if (active_bridge == nullptr || active_bridge->IsOracleActive() || target == nullptr ||
-        command == nullptr || assets == nullptr || assets->artwork == nullptr ||
-        assets->ranges == nullptr || assets->remap == nullptr) return 0;
+        command == nullptr || command->kind != KFX_WGPU_DRAW_SPRITE || assets == nullptr ||
+        assets->artwork == nullptr || assets->ranges == nullptr ||
+        assets->remap == nullptr) return 0;
     return active_bridge->SubmitNative(*target, *command, assets->artwork, assets->table,
         oracle, oracle_context, assets);
 }

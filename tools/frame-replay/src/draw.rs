@@ -1533,18 +1533,19 @@ impl AssetPacker<'_> {
                 if let Some(offset) = offsets.get(&id) {
                     return Ok(*offset);
                 }
+                // Four-aligned like an arena region, so every le16 and le32 the kernels
+                // take at an aligned offset stays inside one word in the packed format.
+                // The padding is part of the batch, so it is measured before the limit.
+                let offset = assets::aligned(assets.len());
                 ensure!(
-                    assets
-                        .len()
+                    offset
                         .checked_add(length)
                         .context("asset length overflow")?
                         <= *limit / 4,
                     arena::OVERFLOW
                 );
-                // Four-aligned like an arena region, so every le16 and le32 the kernels
-                // take at an aligned offset stays inside one word in the packed format.
-                assets.resize(assets::aligned(assets.len()), 0);
-                let offset = assets.len() as u32;
+                assets.resize(offset, 0);
+                let offset = offset as u32;
                 let _scope = Scope::new(Phase::Upload);
                 let _copy = host::UploadTimer::new(host::UploadPart::Copy, length);
                 assets.extend_from_slice(&bytes[..length]);
