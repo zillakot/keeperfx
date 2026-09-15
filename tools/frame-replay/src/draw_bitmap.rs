@@ -125,6 +125,7 @@ mod tests {
             height: 1,
             pitch: 28,
             bytes,
+            key: None,
         };
         let mut command = Command {
             kind: super::super::BITMAP,

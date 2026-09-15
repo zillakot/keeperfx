@@ -140,15 +140,21 @@ drawing context, with:
   `create_resource` writes into the arena with `queue.write_buffer` and keeps CPU bytes only for
   `KFX_WGPU_VERIFY` or a CPU oracle. Power-of-two size classes with free lists, assets aligned to 4 words
   so byte packing later does not re-lay out the arena.
-- **Generations.** A handle is `(id, generation)`; the C side interns by
-  `(pointer, length, width, height, pitch, generation)` instead of the full `memcmp` in
-  `WgpuTerrainBridge::ResourceFor`, which today rescans up to 64 × 8 KiB texture entries and 4 × 16 KiB
-  fade entries per triangle. Generations bump at the existing invalidation points: `FullRedraw`, a
-  `ReadBarrier` hit on the asset range, palette and level changes.
+- **Generations.** A handle is `(id, generation)`. The C side names an asset instead of comparing it:
+  `kfx_wgpu_draw_resource_create_keyed(kind, key_hi, key_lo, generation)` resolves a key to the handle
+  already resident for it, so terrain tiles, terrain fade tables and the lookup tables of
+  `kfx_wgpu_native_draw` hold one arena id across frames instead of the bridge rescanning a 64-entry
+  texture cache and a 16-entry table cache. Bytes the caller cannot name — anything outside a range
+  registered with `kfx_render_asset_range` — take a per-call resource; tables built on a caller's stack
+  still compare content until their emitters carry the table identity. The only bump is
+  `kfx_render_assets_changed()`, from the texture map load, the fade and ghost rebuild, the land view and
+  the torture screen; a key seen with a new generation takes a new handle, because a recorded command
+  must still name the bytes it was issued against. `FullRedraw` and `ReadBarrier` do not bump it;
+  `FullRedraw` releases the keyed resources.
 - **LRU residency** over `last_used_frame`, never evicting anything the frame under construction
   references. Capacity is `min(max_storage_buffer_binding_size, max_buffer_size)` — 128 MiB at wgpu
-  defaults, since every `request_device` passes `&Default::default()` — so 32 MiB of real asset bytes
-  under phase-1 `u32` expansion.
+  defaults, since every `request_device` passes `&Default::default()` — so 128 MiB of real asset bytes
+  now that `packed-arena` is a default feature and `assets::STRIDE` is 1.
 - **A ring for per-frame mutables** (movie frames, the minimap world descriptor, lens overlay maps), the
   only recurring upload, and **snapshot regions**, so `submit_target_images`' per-batch sampling
   allocation and `submit_target_triangles`' two 256 KB copies per shadow become copies into stable regions.

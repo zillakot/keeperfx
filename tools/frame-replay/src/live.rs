@@ -1171,6 +1171,65 @@ pub unsafe extern "C" fn kfx_wgpu_draw_resource_create(
 }
 
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn kfx_wgpu_draw_resource_create_keyed(
+    handle: *mut c_void,
+    kind: u32,
+    key_hi: u64,
+    key_lo: u64,
+    generation: u64,
+    bytes: *const u8,
+    length: usize,
+    width: u32,
+    height: u32,
+    pitch: u32,
+    previous: *mut u64,
+    error: *mut c_char,
+    capacity: usize,
+) -> u64 {
+    unsafe {
+        if !previous.is_null() {
+            *previous = 0;
+        }
+        boundary(error, capacity, || {
+            ensure!(
+                !handle.is_null() && !bytes.is_null(),
+                "null presenter or asset"
+            );
+            crate::draw::validate_resource(length, width, height, pitch)?;
+            let (id, resolved) = (&mut *handle.cast::<crate::draw::DrawRenderer>())
+                .create_resource_keyed(
+                    (kind, key_hi, key_lo),
+                    generation,
+                    std::slice::from_raw_parts(bytes, length),
+                    width,
+                    height,
+                    pitch,
+                )?;
+            if !previous.is_null() {
+                *previous = resolved;
+            }
+            Ok(id)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfx_wgpu_draw_resources_purge_keyed(
+    handle: *mut c_void,
+    error: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    unsafe {
+        boundary(error, capacity, || {
+            ensure!(!handle.is_null(), "null presenter");
+            (&mut *handle.cast::<crate::draw::DrawRenderer>()).purge_keyed_resources()?;
+            Ok(1)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn kfx_wgpu_draw_resource_mark_cursor(handle: *mut c_void, resource: u64) {
     if !handle.is_null() {
         unsafe {

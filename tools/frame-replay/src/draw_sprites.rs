@@ -422,6 +422,7 @@ mod tests {
             height: 1,
             pitch: 1,
             bytes: vec![0; 274],
+            key: None,
         };
         validate(&command, &resource).unwrap();
         resource.bytes[1] = 2;
@@ -462,6 +463,7 @@ mod tests {
             height: 1,
             pitch: 1,
             bytes: vec![0; 284],
+            key: None,
         };
         resource.bytes[1] = 2;
         resource.bytes[3] = 2;
@@ -517,6 +519,7 @@ mod tests {
             height: 1,
             pitch: 1,
             bytes: vec![0; 284],
+            key: None,
         };
         resource.bytes[1] = 1;
         resource.bytes[3] = 2;

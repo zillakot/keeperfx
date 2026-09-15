@@ -112,10 +112,11 @@ private:
         uint64_t handle;
         std::vector<uint8_t> bytes;
         uint32_t width, height, pitch;
-        const void* key = nullptr;
-        uint64_t generation = 0;
-        const void* tail_key = nullptr;
     };
+    /* The handle a key resolved to last, so a run of spans over one page neither
+       snapshots its bytes nor crosses the ABI again. Only a keyed asset may be
+       memoized: its bytes cannot change without the generation changing. */
+    struct KeyMemo { const void* key; const void* tail_key; uint64_t generation, handle; };
     static int Sink(void* context, const KfxGpolyTarget* target,
         const KfxGpolySpan* span, const uint8_t* texture, const uint8_t* fade);
     static int TriangleSink(void*, const KfxGpolyTarget*, const KfxWgpuTriangle*,
@@ -125,10 +126,20 @@ private:
     int Draw(const KfxGpolyTarget& target, const KfxGpolySpan& span,
         const uint8_t* texture, const uint8_t* fade);
     static const void* StableKey(const void* bytes, size_t length);
-    uint64_t ResourceFor(std::vector<Resource>& cache, const void* key, uint64_t generation,
-        const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
-        size_t limit);
+    /* Resolves an asset to a handle the drawing context keeps resident for the key.
+       A null key has no name the context can trust, so it takes a per-call handle. */
+    uint64_t KeyedResource(uint32_t kind, const void* key, const void* tail_key,
+        uint64_t generation, const uint8_t* bytes, size_t length, uint32_t width,
+        uint32_t height, uint32_t pitch);
+    uint64_t TerrainResource(uint32_t kind, KeyMemo& memo, const void* key,
+        const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch);
+    uint64_t MemoHandle(const KeyMemo& memo, const void* key, const void* tail_key = nullptr) const;
+    uint64_t TextureResource(const uint8_t* texture);
+    uint64_t FadeResource(const uint8_t* fade);
     uint64_t TableResource(const KfxWgpuNativeResource& table, size_t limit);
+    // Releases handles no pending command can name any more.
+    void CollectSuperseded();
+    const uint8_t* ReplayAsset(uint64_t handle) const;
     void PurgeResources();
     int Fail(const char* reason);
     // Marks the frame for the full CPU redraw RendererSoftware performs on an invalid frame.
@@ -188,7 +199,13 @@ private:
     KfxGpolyRasterizer m_rasterizer = nullptr;
     bool m_fail_init, m_verify, m_failed = false;
     std::array<char, 1024> m_error = {};
-    std::vector<Resource> m_terrain_textures, m_terrain_fades, m_native_tables;
+    // Lookup tables with no identity to key on; the only cache left that compares content.
+    std::vector<Resource> m_native_tables;
+    std::vector<uint64_t> m_superseded;
+    /* Terrain bytes the CPU replay rasterizes, one entry per handle the pending run
+       names; identity lives in the key, these are only what a discarded run needs. */
+    std::vector<std::pair<uint64_t, std::vector<uint8_t>>> m_replay_assets;
+    KeyMemo m_texture_memo = {}, m_fade_memo = {}, m_table_memo = {};
     std::vector<uint8_t> m_readback;
     Counters m_counts;
 };

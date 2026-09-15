@@ -337,6 +337,7 @@ mod tests {
             height: 1,
             pitch: 1,
             bytes,
+            key: None,
         };
         assert!(descriptor(&r).is_err());
         r.bytes.truncate(RLE + 6);

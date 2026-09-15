@@ -256,3 +256,93 @@ fn arena_overflow_reports_the_storage_limit_and_recovers() {
         .unwrap();
     assert!(drawing.readback(target).unwrap() == aligned);
 }
+
+#[test]
+#[ignore = "requires GPU adapter"]
+fn keyed_resources_hold_one_arena_id_until_the_generation_changes() {
+    let mut drawing = arena_drawing(32 << 20).unwrap();
+    let target = drawing.create_target(64, 64).unwrap();
+    let key = (7, 0, 0x2a);
+    let (first, previous) = drawing
+        .create_resource_keyed(key, 1, &tile(3, 64), 64, 64, 64)
+        .unwrap();
+    assert_eq!(previous, 0);
+    assert_eq!(
+        drawing
+            .create_resource_keyed(key, 1, &tile(3, 64), 64, 64, 64)
+            .unwrap(),
+        (first, first)
+    );
+    assert!(
+        drawing
+            .create_resource_keyed(key, 1, &tile(3, 32), 32, 32, 32)
+            .is_err(),
+        "a key may not change shape without a generation bump"
+    );
+
+    let keys: Vec<_> = (0..4u64)
+        .map(|i| {
+            drawing
+                .create_resource_keyed((7, 1, i), 1, &tile(11 * i as u32 + 3, 64), 64, 64, 64)
+                .unwrap()
+                .0
+        })
+        .collect();
+    let batch: Vec<_> = keys.iter().map(|&s| blit(s, 64)).collect();
+    let before = drawing.arena_counters();
+    drawing.submit(target, &batch).unwrap();
+    let expected = drawing.readback(target).unwrap();
+    let missed = drawing.arena_counters();
+    // One miss per distinct new asset, and none at all once they are resident.
+    assert_eq!(missed.misses_new_id, before.misses_new_id + 4);
+    drawing.submit(target, &batch).unwrap();
+    let resident = drawing.arena_counters();
+    assert_eq!(resident.misses_new_id, missed.misses_new_id);
+    assert_eq!(resident.bytes_uploaded, missed.bytes_uploaded);
+    assert_eq!(drawing.readback(target).unwrap(), expected);
+
+    // A generation the key has not been seen with takes a new handle, and the superseded
+    // one keeps the bytes a recorded command named until its caller releases it.
+    let (next, superseded) = drawing
+        .create_resource_keyed(key, 2, &tile(80, 64), 64, 64, 64)
+        .unwrap();
+    assert_eq!(superseded, first);
+    assert_ne!(next, first);
+    drawing.submit(target, &[blit(first, 64)]).unwrap();
+    let stale = drawing.readback(target).unwrap();
+    drawing.submit(target, &[blit(next, 64)]).unwrap();
+    assert_ne!(drawing.readback(target).unwrap(), stale);
+    drawing.release_resource(first).unwrap();
+    assert_eq!(
+        drawing
+            .create_resource_keyed(key, 2, &tile(80, 64), 64, 64, 64)
+            .unwrap(),
+        (next, next)
+    );
+
+    // Releasing the live handle forgets the key, and a purge forgets every key.
+    drawing.release_resource(next).unwrap();
+    let (fresh, previous) = drawing
+        .create_resource_keyed(key, 2, &tile(80, 64), 64, 64, 64)
+        .unwrap();
+    assert_eq!(previous, 0);
+    assert_ne!(fresh, next);
+    drawing.purge_keyed_resources().unwrap();
+    let (after, previous) = drawing
+        .create_resource_keyed(key, 2, &tile(80, 64), 64, 64, 64)
+        .unwrap();
+    assert_eq!(previous, 0);
+    assert_ne!(after, fresh);
+    assert!(
+        drawing.release_resource(fresh).is_err(),
+        "purge released it"
+    );
+    // A key is only ever compared inside its own namespace.
+    assert_eq!(
+        drawing
+            .create_resource_keyed((8, 0, 0x2a), 2, &tile(80, 64), 64, 64, 64)
+            .unwrap()
+            .1,
+        0
+    );
+}

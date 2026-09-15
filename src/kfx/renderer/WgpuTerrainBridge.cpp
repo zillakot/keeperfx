@@ -361,14 +361,16 @@ void WgpuTerrainBridge::InvalidateFrame()
  * proven for frames that completed. */
 void WgpuTerrainBridge::PurgeResources()
 {
-    if (m_context != nullptr)
-        for (const auto* cache : {&m_terrain_textures, &m_terrain_fades, &m_native_tables})
-            for (const auto& resource : *cache)
-                kfx_wgpu_draw_resource_release(m_context, resource.handle, m_error.data(),
-                    m_error.size());
-    m_terrain_textures.clear();
-    m_terrain_fades.clear();
+    if (m_context != nullptr) {
+        for (const auto& resource : m_native_tables)
+            kfx_wgpu_draw_resource_release(m_context, resource.handle, m_error.data(),
+                m_error.size());
+        kfx_wgpu_draw_resources_purge_keyed(m_context, m_error.data(), m_error.size());
+    }
     m_native_tables.clear();
+    CollectSuperseded();
+    m_replay_assets.clear();
+    m_texture_memo = m_fade_memo = m_table_memo = {};
 }
 
 void WgpuTerrainBridge::FullRedraw()
@@ -508,54 +510,114 @@ const void* WgpuTerrainBridge::StableKey(const void* bytes, size_t length)
     return kfx_render_asset_stable(bytes, length) ? bytes : nullptr;
 }
 
-uint64_t WgpuTerrainBridge::ResourceFor(std::vector<Resource>& cache, const void* key,
+uint64_t WgpuTerrainBridge::KeyedResource(uint32_t kind, const void* key, const void* tail_key,
     uint64_t generation, const uint8_t* bytes, size_t length, uint32_t width, uint32_t height,
-    uint32_t pitch, size_t limit)
+    uint32_t pitch)
 {
-    for (const auto& resource : cache) {
-        if (resource.key != nullptr && resource.generation != generation) continue;
-        if (resource.width != width || resource.height != height || resource.pitch != pitch ||
-            resource.bytes.size() != length) continue;
-        if (key != nullptr ? resource.key == key && resource.generation == generation
-                           : resource.key == nullptr &&
-                             std::memcmp(resource.bytes.data(), bytes, length) == 0)
-            return resource.handle;
+    if (key == nullptr) {
+        const uint64_t handle = kfx_wgpu_draw_resource_create(m_context, bytes, length, width,
+            height, pitch, m_error.data(), m_error.size());
+        if (handle == 0) return 0;
+        m_counts.resource_snapshot_bytes += length;
+        m_superseded.push_back(handle);
+        return handle;
     }
-    if (cache.size() >= limit) {
-        Flush();
-        if (m_failed) return 0;
-        if (kfx_wgpu_draw_resource_release(m_context, cache.front().handle,
-                m_error.data(), m_error.size()) != 1) return 0;
-        cache.erase(cache.begin());
-    }
-    Resource resource = {0, std::vector<uint8_t>(bytes, bytes + length), width, height, pitch,
-        key, generation};
-    resource.handle = kfx_wgpu_draw_resource_create(m_context, resource.bytes.data(), length,
-        width, height, pitch, m_error.data(), m_error.size());
-    if (resource.handle == 0) return 0;
-    m_counts.resource_snapshot_bytes += length;
-    cache.push_back(std::move(resource));
-    return cache.back().handle;
+    uint64_t previous = 0;
+    const uint64_t handle = kfx_wgpu_draw_resource_create_keyed(m_context, kind,
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(tail_key)),
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key)), generation, bytes, length,
+        width, height, pitch, &previous, m_error.data(), m_error.size());
+    if (handle == 0) return 0;
+    if (previous != handle) m_counts.resource_snapshot_bytes += length;
+    if (previous != 0 && previous != handle) m_superseded.push_back(previous);
+    return handle;
 }
 
-/* Interns a lookup table by the caller's buffer identity, concatenating an
- * optional second segment once instead of on every command. */
+uint64_t WgpuTerrainBridge::TerrainResource(uint32_t kind, KeyMemo& memo, const void* key,
+    const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch)
+{
+    const uint64_t handle = KeyedResource(kind, key, nullptr, kfx_render_asset_generation, bytes,
+        length, width, height, pitch);
+    if (handle == 0) return 0;
+    bool replayable = false;
+    for (const auto& asset : m_replay_assets) replayable = replayable || asset.first == handle;
+    if (!replayable) m_replay_assets.emplace_back(handle, std::vector<uint8_t>(bytes, bytes + length));
+    // A memo hit skips the snapshot above, so it may only outlive the run that took it.
+    memo = {key, nullptr, kfx_render_asset_generation, key != nullptr ? handle : 0};
+    return handle;
+}
+
+/* The 32x32 tile the gpoly kernels read lives at pitch 256; only a keyed miss pays for
+ * the copy that squares it up. */
+uint64_t WgpuTerrainBridge::TextureResource(const uint8_t* texture)
+{
+    const void* key = StableKey(texture, TEXTURE_READ_BYTES);
+    const uint64_t memoized = MemoHandle(m_texture_memo, key);
+    if (memoized != 0) return memoized;
+    std::array<uint8_t, KFX_GPOLY_TEXTURE_BYTES> bytes = {};
+    for (size_t row = 0; row < 32; ++row)
+        std::memcpy(bytes.data() + row * 256, texture + row * 256, 32);
+    return TerrainResource(KFX_WGPU_DRAW_KEY_TERRAIN_TILE, m_texture_memo, key, bytes.data(),
+        bytes.size(), 32, 32, 256);
+}
+
+uint64_t WgpuTerrainBridge::FadeResource(const uint8_t* fade)
+{
+    const void* key = StableKey(fade, KFX_GPOLY_FADE_BYTES);
+    const uint64_t memoized = MemoHandle(m_fade_memo, key);
+    if (memoized != 0) return memoized;
+    return TerrainResource(KFX_WGPU_DRAW_KEY_TERRAIN_FADE, m_fade_memo, key, fade,
+        KFX_GPOLY_FADE_BYTES, 256, 64, 256);
+}
+
+uint64_t WgpuTerrainBridge::MemoHandle(const KeyMemo& memo, const void* key,
+    const void* tail_key) const
+{
+    return key != nullptr && memo.handle != 0 && memo.key == key && memo.tail_key == tail_key &&
+        memo.generation == kfx_render_asset_generation ? memo.handle : 0;
+}
+
+void WgpuTerrainBridge::CollectSuperseded()
+{
+    char error[1024] = {};
+    if (m_context != nullptr)
+        for (const uint64_t handle : m_superseded)
+            kfx_wgpu_draw_resource_release(m_context, handle, error, sizeof(error));
+    m_superseded.clear();
+}
+
+const uint8_t* WgpuTerrainBridge::ReplayAsset(uint64_t handle) const
+{
+    for (const auto& asset : m_replay_assets)
+        if (asset.first == handle) return asset.second.data();
+    return nullptr;
+}
+
+/* Interns a lookup table by the caller's buffer identity. Tables built on the caller's
+ * stack carry no identity the drawing context can key, so they still compare content. */
 uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, size_t limit)
 {
     const size_t length = table.length + table.tail_length;
     const void* key = StableKey(table.bytes, table.length);
     const void* tail_key = table.tail == nullptr ? nullptr
                                                  : StableKey(table.tail, table.tail_length);
-    const bool interned = key != nullptr && (table.tail == nullptr || tail_key != nullptr);
+    if (key != nullptr && (table.tail == nullptr || tail_key != nullptr)) {
+        const uint64_t memoized = MemoHandle(m_table_memo, key, tail_key);
+        if (memoized != 0) return memoized;
+        std::vector<uint8_t> bytes;
+        bytes.reserve(length);
+        bytes.insert(bytes.end(), table.bytes, table.bytes + table.length);
+        if (table.tail_length != 0)
+            bytes.insert(bytes.end(), table.tail, table.tail + table.tail_length);
+        const uint64_t handle = KeyedResource(KFX_WGPU_DRAW_KEY_NATIVE_TABLE, key, tail_key,
+            kfx_render_asset_generation, bytes.data(), length, table.width, table.height,
+            table.pitch);
+        if (handle != 0) m_table_memo = {key, tail_key, kfx_render_asset_generation, handle};
+        return handle;
+    }
     for (const auto& resource : m_native_tables) {
         if (resource.width != table.width || resource.height != table.height ||
             resource.pitch != table.pitch || resource.bytes.size() != length) continue;
-        if (interned) {
-            if (resource.key == key && resource.tail_key == tail_key &&
-                resource.generation == kfx_render_asset_generation) return resource.handle;
-            continue;
-        }
-        if (resource.key != nullptr) continue;
         if (std::memcmp(resource.bytes.data(), table.bytes, table.length) != 0) continue;
         if (table.tail_length != 0 && std::memcmp(resource.bytes.data() + table.length,
                 table.tail, table.tail_length) != 0) continue;
@@ -568,8 +630,7 @@ uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, si
                 m_error.data(), m_error.size()) != 1) return 0;
         m_native_tables.erase(m_native_tables.begin());
     }
-    Resource resource = {0, {}, table.width, table.height, table.pitch,
-        interned ? key : nullptr, kfx_render_asset_generation, interned ? tail_key : nullptr};
+    Resource resource = {0, {}, table.width, table.height, table.pitch};
     resource.bytes.reserve(length);
     resource.bytes.insert(resource.bytes.end(), table.bytes, table.bytes + table.length);
     if (table.tail_length != 0)
@@ -622,14 +683,9 @@ int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& sp
     m_native_target = target;
     if (!ReadBarrier(texture, KFX_GPOLY_TEXTURE_BYTES) || !ReadBarrier(fade, KFX_GPOLY_FADE_BYTES))
         return KFX_GPOLY_DECLINED;
-    std::array<uint8_t, KFX_GPOLY_TEXTURE_BYTES> texture_bytes = {};
-    for (size_t row = 0; row < 32; ++row)
-        std::memcpy(texture_bytes.data() + row * 256, texture + row * 256, 32);
-    const uint64_t texture_handle = ResourceFor(m_terrain_textures, StableKey(texture, TEXTURE_READ_BYTES),
-        kfx_render_asset_generation, texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
+    const uint64_t texture_handle = TextureResource(texture);
     if (texture_handle == 0) return Fail(nullptr);
-    const uint64_t fade_handle = ResourceFor(m_terrain_fades, StableKey(fade, KFX_GPOLY_FADE_BYTES),
-        kfx_render_asset_generation, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 8);
+    const uint64_t fade_handle = FadeResource(fade);
     if (fade_handle == 0) return Fail(nullptr);
     KfxWgpuDrawCommand command = {};
     command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
@@ -702,15 +758,10 @@ int WgpuTerrainBridge::DrawTriangle(const KfxGpolyTarget& target,
     m_rasterizer = rasterizer;
     if (!ReadBarrier(texture, KFX_GPOLY_TEXTURE_BYTES) || !ReadBarrier(fade, KFX_GPOLY_FADE_BYTES))
         return KFX_GPOLY_DECLINED;
-    std::array<uint8_t, KFX_GPOLY_TEXTURE_BYTES> texture_bytes = {};
-    for (size_t row = 0; row < 32; ++row)
-        std::memcpy(texture_bytes.data() + row * 256, texture + row * 256, 32);
     KfxWgpuTriangle owned = triangle;
-    owned.source = ResourceFor(m_terrain_textures, StableKey(texture, TEXTURE_READ_BYTES),
-        kfx_render_asset_generation, texture_bytes.data(), texture_bytes.size(), 32, 32, 256, 64);
+    owned.source = TextureResource(texture);
     if (!owned.source) return Fail(nullptr);
-    owned.table = ResourceFor(m_terrain_fades, StableKey(fade, KFX_GPOLY_FADE_BYTES),
-        kfx_render_asset_generation, fade, KFX_GPOLY_FADE_BYTES, 256, 64, 256, 8);
+    owned.table = FadeResource(fade);
     if (!owned.table) return Fail(nullptr);
     AppendTriangle(owned);
     return KFX_GPOLY_CONSUMED;
@@ -738,19 +789,17 @@ bool WgpuTerrainBridge::RasterizePending(uint8_t* pixels, uint32_t pitch) const
             const uint8_t* fade = nullptr;
             if (run.kind == kRunTriangles) {
                 const auto& triangle = m_triangles[triangles++];
-                for (const auto& resource : m_terrain_textures)
-                    if (resource.handle == triangle.source) texture = resource.bytes.data();
-                for (const auto& resource : m_terrain_fades)
-                    if (resource.handle == triangle.table) fade = resource.bytes.data();
+                texture = ReplayAsset(triangle.source);
+                fade = ReplayAsset(triangle.table);
+                if (texture == nullptr || fade == nullptr) return false;
                 KfxGpolyTarget target = {pixels, m_native_target.width, m_native_target.height, pitch};
                 if (!m_rasterizer(&target, &triangle, texture, fade)) return false;
                 continue;
             }
             const auto& command = m_pending[commands++];
-            for (const auto& resource : m_terrain_textures)
-                if (resource.handle == command.source) texture = resource.bytes.data();
-            for (const auto& resource : m_terrain_fades)
-                if (resource.handle == command.table) fade = resource.bytes.data();
+            texture = ReplayAsset(command.source);
+            fade = ReplayAsset(command.table);
+            if (texture == nullptr || fade == nullptr) return false;
             uint64_t position = (static_cast<uint64_t>(command.start_high) << 32) | command.start_low;
             const uint64_t step = (static_cast<uint64_t>(command.step_high) << 32) | command.step_low;
             uint8_t* destination = pixels + static_cast<size_t>(command.y) * pitch + command.x;
@@ -800,6 +849,9 @@ void WgpuTerrainBridge::ClearPending()
     m_pending.clear();
     m_triangles.clear();
     m_order.clear();
+    CollectSuperseded();
+    m_replay_assets.clear();
+    m_texture_memo = m_fade_memo = {};
 }
 
 void WgpuTerrainBridge::DiscardPending()
