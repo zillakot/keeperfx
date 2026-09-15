@@ -215,7 +215,7 @@ mod tests {
             assert_eq!(
                 c,
                 ArenaKindCounters {
-                    bytes: (60 + index as u64) * 4,
+                    bytes: (60 + index as u64) * super::super::assets::STRIDE as u64,
                     source_bytes: 60 + index as u64,
                     hits: 1,
                     misses: 1,

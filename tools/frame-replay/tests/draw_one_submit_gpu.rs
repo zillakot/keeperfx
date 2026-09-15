@@ -466,11 +466,11 @@ fn shadow_table_versions_survive_serial_release_and_recovery() {
         let after = draw.counters();
         assert_eq!(
             after.target_trig_table_bytes - before.target_trig_table_bytes,
-            3 * 327680
+            3 * 81920 * keeperfx_frame_replay::draw::assets::STRIDE as u64
         );
         assert_eq!(
             after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
-            3 * 480
+            3 * 120 * keeperfx_frame_replay::draw::assets::STRIDE as u64
         );
         assert_eq!(
             after.target_trig_table_hits - before.target_trig_table_hits,
