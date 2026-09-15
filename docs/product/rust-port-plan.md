@@ -275,28 +275,31 @@ establish no windowed ceiling; the
 [replay floor](../performance-baselines.md#replay-floor-measured-2026-09-15) remains the
 control for replay attribution.
 
+**The minimap dispatch extent is delivered**
+([PR #50](https://github.com/zillakot/keeperfx/pull/50),
+[measurements](../performance-baselines.md#minimap-dispatch-box-measured-2026-09-15)):
+dispatching each command's written rectangle instead of the whole `MapDiagonalLength`
+square cuts the overlapped minimap pass 82% offscreen uncapped busy 1080p, 0.453/0.441 →
+0.080/0.082 ms, for 246.5/253.0 → 279.9/272.4 FPS with `arena_minimap_bytes` byte-identical.
+
 Next, in order:
 
-1. **Minimap dispatch extent** (in flight, `perf/minimap-dispatch-box`). Dispatch only each
-   command's written rectangle instead of the whole `MapDiagonalLength` square, plus two
-   exact early exits in the mode-2 loop. Expected minimap pass cost down 25–45%, with ordered
-   output byte-identical.
-2. **Drawing-family scene matrix.** A control-session harness with no engine change, so it
-   carries no parity risk. The coverage slices below cannot produce an acceptance number
-   until a scene reaches their family, and the performance items need the same scenes, so
-   this gates both. Acceptance: every drawing family has a non-zero arena/command counter in
-   at least one scene at 0 comparison failures.
-3. **Sprite asset interning**, in parallel with 2: `arena_sprite_hits` is 0 against 39,267
+1. **Drawing-family scene matrix** (in flight on a local branch, not yet pushed). A
+   control-session harness with no engine change, so it carries no parity risk. The coverage
+   slices below cannot produce an acceptance number until a scene reaches their family, and
+   the performance items need the same scenes, so this gates both. Acceptance: every drawing
+   family has a non-zero arena/command counter in at least one scene at 0 comparison failures.
+2. **Sprite asset interning**, in parallel with 1: `arena_sprite_hits` is 0 against 39,267
    misses. Sprites and the minimap are the two largest remaining per-frame uploads, about
    475 and 479 KB/frame; the minimap stays non-resident while PR #43 is unmerged.
-4. **Coverage and ownership before C/C++ drawing can be retired**: general-triangle runtime
+3. **Coverage and ownership before C/C++ drawing can be retired**: general-triangle runtime
    coverage and its alias fallback, possession-lens offscreen target residency, transition
    checkpoint removal, shadow scratch decoupling from `big_scratch`, the remaining declines,
    an ordered contract for arbitrary Lua pixel drawing, same-frame recovery for every command
    kind, and an audit of all targets and aliases — including
    [frontend.cpp](../../src/frontend.cpp) lines 1044–1047, which write the screen with no hook
    and no barrier. Reaching a frame-rate target does not complete the drawing goal.
-5. **The default switch**, then per-family deletion of the C/C++ rasterizers with the CPU
+4. **The default switch**, then per-family deletion of the C/C++ rasterizers with the CPU
    oracle preserved as a test-only library.
 
 Deferred: minimap residency ([PR #43](https://github.com/zillakot/keeperfx/pull/43)) is not
@@ -407,7 +410,7 @@ ownership, synchronization, counters and failure behavior.
 | General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level primitives; scaled normal/remap/one-colour/alpha and immediate normal/one-colour sprites | General-line coverage/color selection, unsupported sprite modes and full interleaving validation |
 | Text, including Asian fonts: [bflib_sprfnt.c](../../src/bflib_sprfnt.c) | Sprite glyphs and direct DBC bitmap GPU hooks; CPU layout retained; huge/DBC native fixture group has 849 exact Metal cases | Actual language/font runtime coverage, oversized custom inputs and mutable-source aliases |
 | Raw/tiled images, frontend backgrounds, landview/torture/zoom: [raw adapter](../../src/kfx/renderer/software/WgpuRawImage.c), [raw helper](../../src/front_simple.c), [slab helper](../../src/gui_draw.c) | Raw8 scaling/letterbox, tiled slabs, static backgrounds, huge sprite and campaign zoom GPU paths | Mutable source/destination aliases, noncanonical huge steps and source footprints above 1,048,576 pixels; full asset/runtime coverage |
-| Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | Semantic GPU cells, setup fills, markers and map/zoom transforms; 568 minimap and 1,358 map-view native/Metal fixtures | Minimap dictionary, cells and style tables are re-uploaded every frame rather than resident, and the PR #43 counters measured style tables churning about 30 times a second; the minimap compute dispatch still covers the whole `MapDiagonalLength` square instead of each command's written rectangle ([draw_minimap.rs](../../tools/frame-replay/src/draw_minimap.rs)); broader states and complete offscreen ownership |
+| Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | Semantic GPU cells, setup fills, markers and map/zoom transforms; 568 minimap and 1,358 map-view native/Metal fixtures | Minimap dictionary, cells and style tables are re-uploaded every frame rather than resident, and the PR #43 counters measured style tables churning about 30 times a second; the dispatch extent is done, each command now dispatching only its written rectangle; broader states and complete offscreen ownership |
 | Built-in possession lenses: [lens implementations](../../src/kfx/lense/) | Indexed displacement/flyeye remaps, mist and overlay GPU kernels preserve sequential source/target aliases; CPU map preparation and palette lifecycle remain | Resident GPU target views; lightness 32–63 mist, out-of-viewport maps, asset/destination aliases and oversized inputs still decline; full LensManager lifecycle/gameplay validation |
 | Custom Lua lenses: [LuaLensEffect.cpp](../../src/kfx/lense/LuaLensEffect.cpp), [lua_api_lens.c](../../src/lua_api_lens.c) | CPU reference | Ordered GPU writes/copies and exact read-after-write compatibility for arbitrary pixel-dependent Lua control flow; CPU-script readback is explicit, never hidden CPU-rendered lens upload |
 | Smoothing and map fades/transitions: [engine_redraw.c](../../src/engine_redraw.c) | GPU snapshots and exact indexed effects; 271 native/Metal cases plus failed-preparation/normal-exit state tests | Retained CPU recovery checkpoints, valid alias cases and broader lifecycle coverage |
