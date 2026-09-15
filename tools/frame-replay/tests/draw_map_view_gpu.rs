@@ -21,6 +21,8 @@ fn actual_native_map_views() -> Result<()> {
         .map(|i| ((i * 19 + i / pitch * 13) & 255) as u8)
         .collect();
     let mut drawing = DrawRenderer::headless()?;
+    // One resource for every row, so the suite exercises the row table's residency.
+    let mut row_table = 0;
     for case in 0..count {
         let width = word(&mut data);
         let height = word(&mut data);
@@ -33,6 +35,7 @@ fn actual_native_map_views() -> Result<()> {
         let th = word(&mut data);
         let tp = word(&mut data);
         let table_length = word(&mut data) as usize;
+        let table_new = word(&mut data);
         let w: [u32; 28] = std::array::from_fn(|_| word(&mut data));
         let mut command = Command {
             abi_version: w[0],
@@ -66,10 +69,13 @@ fn actual_native_map_views() -> Result<()> {
             source.fill(0);
         }
         data = &data[length..];
-        if table_length > 0 {
-            command.table = drawing.create_resource(&data[..table_length], tw, th, tp)?;
+        if table_new != 0 {
+            row_table = drawing.create_resource(&data[..table_length], tw, th, tp)?;
+            data = &data[table_length..];
         }
-        data = &data[table_length..];
+        if table_length > 0 {
+            command.table = row_table;
+        }
         let expected = &data[..(pitch * rows) as usize];
         data = &data[(pitch * rows) as usize..];
         let target = drawing.create_target(width, height)?;
@@ -95,7 +101,7 @@ fn actual_native_map_views() -> Result<()> {
         );
         ensure!(
             after.asset_upload_bytes - before.asset_upload_bytes
-                == (length + table_length) as u64
+                == (length + if table_new != 0 { table_length } else { 0 }) as u64
                     * keeperfx_frame_replay::draw::assets::STRIDE as u64,
             "map uploaded unexpected pixels"
         );
@@ -161,6 +167,14 @@ fn actual_native_map_views() -> Result<()> {
                 drawing.submit(target, &[command, invalid]).is_err(),
                 "map blend accepted"
             );
+            if command.source_x == 0 {
+                invalid = command;
+                invalid.table = 0;
+                ensure!(
+                    drawing.submit(target, &[command, invalid]).is_err(),
+                    "map row without a table accepted"
+                );
+            }
             invalid = command;
             match command.source_x {
                 0 => invalid.source_width += 1,
@@ -182,10 +196,10 @@ fn actual_native_map_views() -> Result<()> {
         if command.source != 0 {
             drawing.release_resource(command.source)?;
         }
-        if command.table != 0 {
-            drawing.release_resource(command.table)?;
-        }
         drawing.release_target(target)?;
+    }
+    if row_table != 0 {
+        drawing.release_resource(row_table)?;
     }
     ensure!(data.is_empty(), "trailing fixture bytes");
     println!("{count} actual native map-view cases matched exact GPU indices");

@@ -74,6 +74,9 @@ void kfx_render_remap_rows(uint32_t kind, const void *base, uint32_t rows)
     if (!base || !rows || rows > 0x10000u) { base = NULL; rows = 0; }
     remap_tables[kind].base = (const unsigned char *)base;
     remap_tables[kind].rows = rows;
+    // Registering is itself a change of what a row id names, so it bumps rather than
+    // relying on every caller to bump around it.
+    kfx_render_assets_changed();
 }
 
 uint32_t kfx_render_remap_id(const void *remap)

@@ -24,6 +24,16 @@ struct KfxWgpuNativeResource {
     size_t tail_length;
     int cursor;
 };
+/* The fade rows followed by the ghost table, named where the engine keeps them. Every
+ * emitter that reads the pair resolves one keyed resource, so the extent is spelled once:
+ * a second spelling is a second extent for the same key, which the drawing context
+ * refuses rather than serves, failing the run of whichever emitter asks second. */
+static inline struct KfxWgpuNativeResource kfx_wgpu_fade_ghost_table(const uint8_t* fade,
+    const uint8_t* ghost)
+{
+    struct KfxWgpuNativeResource table = {fade, 16384, 256, 320, 256, ghost, 65536, 0};
+    return table;
+}
 /* Names a source asset for kfx_wgpu_draw_resource_create_keyed, so the drawing context
  * keeps one handle for it instead of one per command. Everything the bytes depend on
  * must be in the key: the lookup never compares content, and the bytes behind a key may
@@ -58,7 +68,8 @@ struct KfxWgpuSpriteAssets {
     const void* identity;
     uint64_t generation;
     /* kfx_render_remap_id of the remap row, or KFX_REMAP_NONE when the emitter cannot
-     * name it. A named row is keyed by that id rather than by where it happens to sit. */
+     * name it. Carried for the semantic record words, which need the table a command
+     * chose; the resource is still keyed by the row's address. */
     uint32_t remap_id;
 };
 /* The command carries the range and remap handles in its accumulator words. */
@@ -201,7 +212,7 @@ private:
     uint64_t TextureResource(const uint8_t* texture);
     uint64_t FadeResource(const uint8_t* fade);
     uint64_t TableResource(const KfxWgpuNativeResource& table, uint32_t kind,
-        std::vector<Resource>& cache, TableMemos& memos, size_t limit, uint64_t id = 0);
+        std::vector<Resource>& cache, TableMemos& memos, size_t limit);
     // Releases handles no pending command can name any more; false if a release failed.
     bool CollectSuperseded();
     const uint8_t* ReplayAsset(uint64_t handle) const;

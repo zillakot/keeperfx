@@ -59,12 +59,20 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,const struct KfxWgp
     if(memcmp(target->pixels,initial,sizeof(initial)))abort();
     word(target->width);word(target->height);word(target->pitch);
     word(source->width);word(source->height);word(source->pitch);word(source->length);
+    /* The rows all name one table; emit its bytes once and let the reader keep the
+       resource, which is also what exercises its residency. */
+    static const uint8_t *emitted_table;
+    int fresh=table && table->bytes!=emitted_table;
     word(table?table->width:0);word(table?table->height:0);word(table?table->pitch:0);
-    word(table?(uint32_t)(table->length+table->tail_length):0);
+    word(table?(uint32_t)(table->length+table->tail_length):0);word(fresh);
     const uint32_t *words=(const uint32_t*)command;
     for(unsigned i=0;i<28;i++)word(words[i]);
     fwrite(source->bytes,1,source->length,output);
-    if(table){fwrite(table->bytes,1,table->length,output);fwrite(table->tail,1,table->tail_length,output);}
+    if(fresh){
+        fwrite(table->bytes,1,table->length,output);
+        fwrite(table->tail,1,table->tail_length,output);
+        emitted_table=table->bytes;
+    }
     fwrite(expected,1,sizeof(expected),output);
     count++;return 1;
 }

@@ -64,10 +64,8 @@ static int kfx_wgpu_shadow_sprite(const struct KfxShadowSprite *sprite,
     if (!valid) { free(asset); return 0; }
     memcpy(asset + 152, sprite->data, rle_length);
     const struct KfxWgpuNativeResource source = {asset, length, 1, 1, 1, NULL, 0, 0};
-    /* Fade rows then ghost rows, named where they live: the concatenation the kernel
-       reads is the same bytes every shadow, so it is resolved, not rebuilt. */
-    const struct KfxWgpuNativeResource table = {pixmap.fade_tables, 16384, 256, 320, 256,
-        pixmap.ghost, 65536, 0};
+    const struct KfxWgpuNativeResource table =
+        kfx_wgpu_fade_ghost_table(pixmap.fade_tables, pixmap.ghost);
     const struct KfxGpolyTarget target = {poly_screen + vec_screen_width,
         vec_window_width, vec_window_height, vec_screen_width};
     struct KfxWgpuDrawCommand command = {0};

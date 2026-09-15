@@ -73,8 +73,8 @@ enum KfxRemapKind {
 };
 enum { KFX_REMAP_ROW_BYTES = 256 };
 /* Names rows * 256 bytes at base as the rows of kind; re-registering a kind replaces it
- * and a null base drops it. The identity is only as good as kfx_render_asset_generation,
- * which must move whenever the bytes behind a registered row are rewritten. */
+ * and a null base drops it. Bumps kfx_render_asset_generation itself, because it changes
+ * what a row id names; the caller still bumps after rewriting registered bytes. */
 void kfx_render_remap_rows(uint32_t kind, const void *base, uint32_t rows);
 /* (kind << 16) | row for a registered row start, KFX_REMAP_NONE for anything else. */
 uint32_t kfx_render_remap_id(const void *remap);

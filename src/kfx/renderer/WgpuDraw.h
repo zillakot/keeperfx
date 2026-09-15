@@ -182,7 +182,6 @@ uint64_t kfx_wgpu_draw_resource_create(void *drawing, const uint8_t *bytes, size
 #define KFX_WGPU_DRAW_KEY_RAW_IMAGE 5u
 #define KFX_WGPU_DRAW_KEY_TILED_IMAGE 6u
 #define KFX_WGPU_DRAW_KEY_GLYPH 7u
-#define KFX_WGPU_DRAW_KEY_REMAP_ROW 8u
 /* Creates or resolves the resource resident for (kind, key_hi, key_lo), so repeated
  * uses of one asset keep a single handle instead of a fresh handle per command.
  * A generation the key has not been seen with takes a new handle, because the bytes
