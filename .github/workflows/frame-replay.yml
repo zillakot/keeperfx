@@ -109,6 +109,8 @@ jobs:
           ctest --test-dir out/sprite-tests --output-on-failure
       - name: Compare ordered-sprite layers with the serial path
         run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_sprite_layers_gpu -- --ignored --nocapture --test-threads=1
+      - name: Check interned sprite artwork, eviction and repeated identities
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_sprite_interning_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare huge bitmap sprites and glyphs with native drawing
         run: |
           cmake -S tests/bitmaps -B out/bitmap-tests -DKFX_BITMAP_ASAN=ON \

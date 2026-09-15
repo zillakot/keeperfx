@@ -12,15 +12,33 @@ const H: usize = 7;
 
 fn drawing(binding: u64) -> Option<DrawRenderer> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_limits: wgpu::Limits {
-            max_storage_buffer_binding_size: binding,
+    let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            eprintln!("skipping: no wgpu adapter on this host: {error}");
+            return None;
+        }
+    };
+    let info = adapter.get_info();
+    let (device, queue) = match pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits {
+                max_storage_buffer_binding_size: binding,
+                ..Default::default()
+            },
             ..Default::default()
         },
-        ..Default::default()
-    }))
-    .ok()?;
+    )) {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!(
+                "skipping on {:?} adapter {:?}: a {binding}-byte storage binding is out of reach: {error}",
+                info.backend, info.name
+            );
+            return None;
+        }
+    };
+    eprintln!("running on {:?} adapter {:?}", info.backend, info.name);
     let renderer = keeperfx_frame_replay::gpu::Renderer::new(device, queue).ok()?;
     DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).ok()
 }

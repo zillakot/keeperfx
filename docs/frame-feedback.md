@@ -217,6 +217,7 @@ they lacked when they skip.
 | `draw_trig_gpu` | pass | pass | pass |
 | `draw_shadow_gpu` | pass | pass | pass |
 | `draw_sprite_layers_gpu` | pass | pass | pass |
+| `draw_sprite_interning_gpu` | pass | pass | pass |
 | `draw_bitmap_gpu` | pass | pass | pass |
 | `draw_minimap_gpu` | pass | pass | pass |
 | `draw_map_view_gpu` | pass | pass | pass |
@@ -247,7 +248,7 @@ run.
 
 The C oracle generators are cmake/POSIX targets built only on the Linux job, which
 publishes their fixtures as `native-oracle-fixtures` for the Windows job to replay
-against. `draw_sprite_interning_gpu` has no `--ignored` step on any backend.
+against. `draw_sprite_interning_gpu` builds its own artwork and needs no fixture.
 
 ## Validation scope
 

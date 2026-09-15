@@ -38,6 +38,7 @@ for name in \
   draw_trig_gpu \
   draw_shadow_gpu \
   draw_sprite_layers_gpu \
+  draw_sprite_interning_gpu \
   draw_bitmap_gpu \
   draw_minimap_gpu \
   draw_map_view_gpu \
