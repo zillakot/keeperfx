@@ -452,6 +452,9 @@ impl Arena {
     }
 
     pub(super) fn discard(&mut self) {
+        if self.image.dirty.is_empty() {
+            return;
+        }
         let ids: Vec<_> = self
             .residency
             .iter()
