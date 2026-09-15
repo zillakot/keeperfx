@@ -472,6 +472,7 @@ impl Arena {
             let mut encoder = device.create_command_encoder(&Default::default());
             encoder.copy_buffer_to_buffer(&previous, 0, &grown, 0, u64::from(self.capacity) * 4);
             counters.submits += 1;
+            let _submit = Scope::new(Phase::SubmitWait);
             queue.submit([encoder.finish()]);
         }
         self.buffer = Some(grown);

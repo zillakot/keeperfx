@@ -26,7 +26,7 @@ KINDS = ("simulation", "draw", "presentation", "present_wait", "frame_interval")
 PRESENTER_COUNTERS = ("acquire_ns", "acquire_block_ns", "reconfigure_count", "present_record_ns",
                       "submit_ns", "replay_ns", "allocations", "allocated_bytes")
 REPLAY_PHASES = ("replay_pack_ns", "replay_upload_ns", "replay_bind_ns", "replay_encode_ns",
-                 "replay_tile_index_ns", "replay_other_ns")
+                 "replay_tile_index_ns", "replay_other_ns", "replay_submit_wait_ns")
 REPLAY_COUNTS = ("replay_bind_groups", "replay_buffers", "replay_passes", "replay_staged_bytes")
 REPLAY_COUNTERS = REPLAY_PHASES + REPLAY_COUNTS
 DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
@@ -429,9 +429,10 @@ def summarize(output, args):
         ]
     presenter_report = summarize_presenter(metadata.get("presenter"), samples,
                                            required=metadata.get("replay_scope") is True and args.backend == "rust")
-    replay_report = summarize_replay(metadata.get("drawing"), samples)
+    replay_report = (summarize_replay(metadata["presenter"].get("replay"), samples)
+                     if presenter_report else None)
     if replay_report:
-        limitations.append("Replay host phases are exclusive wall-clock intervals inside frame_flush, including scheduling; they are not GPU time. Other covers status, release and orchestration work. Drawing deltas exclude the first presentation; the replay comparison uses the same frames. Staged bytes count API payload bytes, including uniform and parameter buffers, not GPU allocation capacity.")
+        limitations.append("Replay host phases are exclusive wall-clock intervals inside frame_flush, including scheduling; they are not GPU time. Submit/wait covers queue submission and blocking GPU drains; other covers status and cleanup. Each attribution row is a counter delta around that presentation's ResidentTarget call, including the first presentation. Cumulative drawing deltas include prior replay and checkpoint work and are not used for this comparison. Staged bytes count API payload bytes, including uniform and parameter buffers, not GPU allocation capacity.")
         if not replay_report["within_5_percent"]:
             limitations.append("Replay host attribution differs from the outer replay scope by more than 5% on one or more frames; inspect the signed residual before choosing an optimization.")
     wall_ms = {kind: distribution(values) for kind, values in samples.items()}
@@ -478,21 +479,24 @@ def summarize_presenter(presenter, samples, required=False):
 
 
 
-def summarize_replay(drawing, samples):
-    if not drawing or not drawing.get("available") or "replay" not in samples:
+def summarize_replay(replay_data, samples):
+    if replay_data is None:
         return None
-    names = drawing["counters"]
-    if not all(name in names for name in REPLAY_COUNTERS):
-        return None
-    rows = drawing["per_frame"]
-    replay = samples["replay"][1:]
-    if not rows or len(rows) != len(replay):
-        raise RuntimeError("replay attribution must cover every presentation but the first")
+    if not isinstance(replay_data, dict) or tuple(replay_data.get("counters", ())) != REPLAY_COUNTERS:
+        raise RuntimeError("replay attribution counter names do not match this profiler")
+    names = replay_data["counters"]
+    rows = replay_data.get("per_frame")
+    replay = samples.get("replay")
+    if not isinstance(rows, list) or not rows or replay is None or len(rows) != len(replay):
+        raise RuntimeError("replay attribution must cover every presentation")
+    if any(not isinstance(row, list) or len(row) != len(names)
+           or any(type(value) is not int or value < 0 for value in row) for row in rows):
+        raise RuntimeError("invalid replay attribution row")
     phases = {name: [row[names.index(name)] for row in rows] for name in REPLAY_PHASES}
     totals = [sum(values) for values in zip(*phases.values())]
     residual = [outer - total for outer, total in zip(replay, totals)]
     outside = sum(abs(value) > outer * 0.05 for value, outer in zip(residual, replay))
-    return {"frames": len(rows), "phases_ms": {name: distribution(values) for name, values in phases.items()},
+    return {"source": "presenter.replay", "frames": len(rows), "phases_ms": {name: distribution(values) for name, values in phases.items()},
             "counts": {name: drawing_distribution([row[names.index(name)] for row in rows])
                        for name in REPLAY_COUNTS},
             "total_ms": distribution(totals), "replay_ms": distribution(replay),
@@ -530,6 +534,7 @@ def summarize_drawing(drawing, presentations):
                                additions | {"asset_upload_bytes", "command_upload_bytes"})]
     arena_additions = set(ARENA_KIND_COUNTERS) | {"arena_trig_texture_source_bytes"}
     schemas += [tuple(name for name in schema if name not in arena_additions) for schema in schemas]
+    schemas += [tuple(name for name in schema if name != "replay_submit_wait_ns") for schema in schemas]
     schemas += [tuple(name for name in schema if name not in REPLAY_COUNTERS) for schema in schemas]
     if names not in schemas:
         raise RuntimeError("drawing counter names do not match this profiler")
@@ -666,7 +671,7 @@ def write_report(output, report):
     replay = report.get("replay_host")
     if replay:
         lines += ["", "## Replay host attribution", "",
-                  f"Exclusive host intervals over {replay['frames']} frames; the first presentation is excluded.", "",
+                  f"Exclusive host intervals over {replay['frames']} frames, sampled around each presentation's replay, including the first.", "",
                   "| Phase (ms/frame) | Mean | p95 | Max |", "| --- | ---: | ---: | ---: |"]
         for name, stats in {**replay["phases_ms"], "Phase sum": replay["total_ms"],
                             "Replay scope": replay["replay_ms"], "Residual against replay": replay["residual_ms"]}.items():

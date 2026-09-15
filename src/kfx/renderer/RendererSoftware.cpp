@@ -330,6 +330,7 @@ void RendererSoftware::report_drawing()
         gpu.replay_encode_ns,
         gpu.replay_tile_index_ns,
         gpu.replay_other_ns,
+        gpu.replay_submit_wait_ns,
         gpu.replay_bind_groups,
         gpu.replay_buffers,
         gpu.replay_passes,
@@ -604,15 +605,33 @@ bool RendererSoftware::present_rust_frame()
     SDL_Palette* palette = SDL_GetSurfacePalette(lbDrawSurface);
     int result = -1;
     uint64_t replay_ns = 0;
+    PerformanceReplayCounters replay = {};
     if (palette != nullptr && palette->ncolors == 256) {
         const KfxGpolyTarget native = {static_cast<uint8_t*>(lbDrawSurface->pixels),
             static_cast<uint32_t>(lbDrawSurface->w), static_cast<uint32_t>(lbDrawSurface->h),
             static_cast<uint32_t>(lbDrawSurface->pitch)};
         uint64_t replay_start = 0, replay_bytes_start = 0;
         kfx_wgpu_allocation_counts(&replay_start, &replay_bytes_start);
+        const bool capture_replay = performance_active() && m_drawing && m_drawing->UsesPresenter();
+        const auto replay_before = capture_replay ? m_drawing->GetGpuCounters() : KfxWgpuDrawCounters{};
         performance_begin(PerfReplay);
         const uint64_t target = m_drawing && m_drawing->UsesPresenter() ? m_drawing->ResidentTarget(native, &replay_ns) : 0;
         performance_end(PerfReplay);
+        if (capture_replay) {
+            const auto replay_after = m_drawing->GetGpuCounters();
+            replay = {
+                replay_after.replay_pack_ns - replay_before.replay_pack_ns,
+                replay_after.replay_upload_ns - replay_before.replay_upload_ns,
+                replay_after.replay_bind_ns - replay_before.replay_bind_ns,
+                replay_after.replay_encode_ns - replay_before.replay_encode_ns,
+                replay_after.replay_tile_index_ns - replay_before.replay_tile_index_ns,
+                replay_after.replay_other_ns - replay_before.replay_other_ns,
+                replay_after.replay_submit_wait_ns - replay_before.replay_submit_wait_ns,
+                replay_after.replay_bind_groups - replay_before.replay_bind_groups,
+                replay_after.replay_buffers - replay_before.replay_buffers,
+                replay_after.replay_passes - replay_before.replay_passes,
+                replay_after.replay_staged_bytes - replay_before.replay_staged_bytes};
+        }
         kfx_wgpu_allocation_counts(&replay_allocations, &replay_bytes);
         replay_allocations -= replay_start;
         replay_bytes -= replay_bytes_start;
@@ -666,7 +685,7 @@ bool RendererSoftware::present_rust_frame()
     kfx_wgpu_present_counters(m_rust, &host);
     const PerformancePresenterCounters sample = {host.acquire_ns, host.acquire_block_ns,
         host.reconfigure_count, host.present_record_ns, host.submit_ns, replay_ns,
-        end_allocations - allocations - replay_allocations, end_bytes - allocated_bytes - replay_bytes};
+        end_allocations - allocations - replay_allocations, end_bytes - allocated_bytes - replay_bytes, replay};
     performance_presenter_frame(&sample);
     if (m_vsync != (vsync_enabled ? 1 : 0)) {
         m_vsync = vsync_enabled ? 1 : 0;

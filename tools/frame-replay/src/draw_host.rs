@@ -13,6 +13,7 @@ pub struct ReplayCounters {
     pub replay_encode_ns: u64,
     pub replay_tile_index_ns: u64,
     pub replay_other_ns: u64,
+    pub replay_submit_wait_ns: u64,
     pub replay_bind_groups: u64,
     pub replay_buffers: u64,
     pub replay_passes: u64,
@@ -27,6 +28,7 @@ impl ReplayCounters {
             + self.replay_encode_ns
             + self.replay_tile_index_ns
             + self.replay_other_ns
+            + self.replay_submit_wait_ns
     }
 
     pub(super) fn accumulate(&mut self, other: Self) {
@@ -36,6 +38,7 @@ impl ReplayCounters {
         self.replay_encode_ns += other.replay_encode_ns;
         self.replay_tile_index_ns += other.replay_tile_index_ns;
         self.replay_other_ns += other.replay_other_ns;
+        self.replay_submit_wait_ns += other.replay_submit_wait_ns;
         self.replay_bind_groups += other.replay_bind_groups;
         self.replay_buffers += other.replay_buffers;
         self.replay_passes += other.replay_passes;
@@ -51,6 +54,7 @@ pub(crate) enum Phase {
     Encode,
     TileIndex,
     Other,
+    SubmitWait,
 }
 
 struct Clock {
@@ -69,6 +73,7 @@ impl Clock {
             Phase::Encode => &mut self.counters.replay_encode_ns,
             Phase::TileIndex => &mut self.counters.replay_tile_index_ns,
             Phase::Other => &mut self.counters.replay_other_ns,
+            Phase::SubmitWait => &mut self.counters.replay_submit_wait_ns,
         };
         *counter += elapsed;
         self.last = now;
@@ -271,6 +276,22 @@ mod tests {
         assert_eq!(clock.counters.replay_encode_ns, 100);
         assert_eq!(clock.counters.replay_tile_index_ns, 100);
         assert_eq!(clock.counters.replay_other_ns, 100);
+    }
+
+    #[test]
+    fn submission_and_wait_interrupt_packing() {
+        let start = Instant::now();
+        let mut clock = Clock {
+            last: start,
+            phase: Phase::Pack,
+            counters: ReplayCounters::default(),
+        };
+        let parent = clock.switch(Phase::SubmitWait, start + Duration::from_nanos(100));
+        clock.switch(parent, start + Duration::from_nanos(1100));
+        clock.switch(Phase::Other, start + Duration::from_nanos(1200));
+        assert_eq!(clock.counters.replay_pack_ns, 200);
+        assert_eq!(clock.counters.replay_submit_wait_ns, 1000);
+        assert_eq!(clock.counters.total_ns(), 1200);
     }
 
     #[test]

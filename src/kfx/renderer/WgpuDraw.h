@@ -134,6 +134,7 @@ struct KfxWgpuDrawCounters {
     uint64_t replay_encode_ns;
     uint64_t replay_tile_index_ns;
     uint64_t replay_other_ns;
+    uint64_t replay_submit_wait_ns;
     uint64_t replay_bind_groups;
     uint64_t replay_buffers;
     uint64_t replay_passes;

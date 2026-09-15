@@ -640,6 +640,7 @@ impl DrawRenderer {
     /// Publishes the status word into the frame's encoder and submits it. The one
     /// submit of a production frame; a no-op when nothing was recorded.
     pub fn frame_submit(&mut self) -> Result<()> {
+        let _scope = Scope::new(Phase::SubmitWait);
         let Some(mut encoder) = self.encoder.take() else {
             return Ok(());
         };
@@ -672,6 +673,7 @@ impl DrawRenderer {
     }
 
     fn close_encoder(&mut self) {
+        let _scope = Scope::new(Phase::SubmitWait);
         let Some(mut encoder) = self.encoder.take() else {
             return;
         };
@@ -716,6 +718,7 @@ impl DrawRenderer {
 
     /// Blocks until the queue drains, accumulating the measured stall.
     pub(super) fn wait_for_queue(&mut self) -> Result<()> {
+        let _scope = Scope::new(Phase::SubmitWait);
         let started = std::time::Instant::now();
         let status = self.device.poll(wgpu::PollType::Wait {
             submission_index: None,

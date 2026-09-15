@@ -1429,6 +1429,7 @@ pub struct DrawCounters {
     replay_encode_ns: u64,
     replay_tile_index_ns: u64,
     replay_other_ns: u64,
+    replay_submit_wait_ns: u64,
     replay_bind_groups: u64,
     replay_buffers: u64,
     replay_passes: u64,
@@ -1515,6 +1516,7 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 replay_encode_ns: counters.replay.replay_encode_ns,
                 replay_tile_index_ns: counters.replay.replay_tile_index_ns,
                 replay_other_ns: counters.replay.replay_other_ns,
+                replay_submit_wait_ns: counters.replay.replay_submit_wait_ns,
                 replay_bind_groups: counters.replay.replay_bind_groups,
                 replay_buffers: counters.replay.replay_buffers,
                 replay_passes: counters.replay.replay_passes,
@@ -1553,18 +1555,22 @@ mod draw_abi_tests {
         );
         assert_eq!(std::mem::offset_of!(DrawCounters, replay_other_ns), 197 * 8);
         assert_eq!(
-            std::mem::offset_of!(DrawCounters, replay_bind_groups),
+            std::mem::offset_of!(DrawCounters, replay_submit_wait_ns),
             198 * 8
         );
-        assert_eq!(std::mem::offset_of!(DrawCounters, replay_buffers), 199 * 8);
-        assert_eq!(std::mem::offset_of!(DrawCounters, replay_passes), 200 * 8);
+        assert_eq!(
+            std::mem::offset_of!(DrawCounters, replay_bind_groups),
+            199 * 8
+        );
+        assert_eq!(std::mem::offset_of!(DrawCounters, replay_buffers), 200 * 8);
+        assert_eq!(std::mem::offset_of!(DrawCounters, replay_passes), 201 * 8);
         assert_eq!(
             std::mem::offset_of!(DrawCounters, replay_staged_bytes),
-            201 * 8
+            202 * 8
         );
         assert_eq!(
             std::mem::size_of::<DrawCounters>(),
-            (77 + 19 * 6 + 1 + 10) * 8
+            (77 + 19 * 6 + 1 + 11) * 8
         );
     }
 

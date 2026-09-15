@@ -244,17 +244,21 @@ gauges; they do not measure whole-process or driver/GPU peak memory.
 
 ### Replay host attribution
 
-`replay_{pack,upload,bind,encode,tile_index,other}_ns` partition host wall time inside
-`frame_flush`: CPU packing/validation, staging and buffer writes/creation, binding
-and pipeline creation, pass recording, tile binning, and remaining orchestration.
-Nested phases accumulate exclusively across batches; no frame-time file I/O is added.
-`replay_bind_groups`, `replay_buffers`, `replay_passes` and `replay_staged_bytes` count
-actual work inside that boundary, including parameter buffers. Staged bytes are API
-payload bytes, not buffer capacity or GPU memory. The report's **Replay host attribution**
-table gives mean/p95/max and the signed residual against `replay`, excluding the first
-presentation to match the drawing deltas; frames outside ±5% are flagged. These timers
-include scheduling and are distinct from GPU timestamps. Offscreen cells work on a
-locked console and must be identified as offscreen when reporting results.
+`replay_{pack,upload,bind,encode,tile_index,other,submit_wait}_ns` partition host wall
+time inside `frame_flush`: CPU packing/validation, staging and buffer writes/creation,
+binding and pipeline creation, pass recording, tile binning, cleanup, and queue
+submission/blocking GPU drains. Nested phases accumulate exclusively across batches;
+serialized GPU waits are excluded from packing. `replay_bind_groups`, `replay_buffers`,
+`replay_passes` and `replay_staged_bytes` count actual work inside that boundary, including
+parameter buffers. Staged bytes are API payload bytes, not buffer capacity or GPU memory.
+The report's **Replay host attribution** table uses `presenter.replay` snapshots around
+that presentation's `ResidentTarget` call, including the first presentation, and gives
+mean/p95/max plus signed residuals against its own `replay` scope; frames outside ±5%
+are flagged. The earlier cumulative drawing samples include prior replay and checkpoint
+flushes and cannot establish this residual. Legacy captures without the snapshots have
+no replay attribution table. These are host wall times, including scheduling and waits,
+and are distinct from GPU timestamps. No frame-time file I/O is added. Offscreen cells
+work on a locked console and must be identified as offscreen when reporting results.
 
 ## Presenter host attribution
 
