@@ -987,8 +987,8 @@ mod tests {
         draw.submit_target_triangles(
             other,
             &[Command {
-                source_x: 0,
-                colour: 7,
+                clip_x: 4,
+                clip_width: 4,
                 ..commands[0]
             }],
             0,
@@ -1001,7 +1001,13 @@ mod tests {
         assert_eq!(draw.counters().submits - before.submits, 3);
         assert_eq!(draw.frame_status().1, 0);
         assert_eq!(draw.readback(target).unwrap(), expected);
-        assert!(draw.readback(other).unwrap().contains(&7));
+        let clipped: Vec<_> = expected
+            .iter()
+            .enumerate()
+            .map(|(i, &pixel)| if i % 8 >= 4 && pixel == 93 { 93 } else { 0 })
+            .collect();
+        assert!(clipped.contains(&93));
+        assert_eq!(draw.readback(other).unwrap(), clipped);
     }
 
     #[test]
