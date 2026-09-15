@@ -19,6 +19,9 @@ fn native_general_triangles() -> Result<()> {
     let target = draw.create_target(width, height)?;
     let texture = data[..65536].to_vec();
     data = &data[65536..];
+    // The page is one asset for every triangle that samples it, so the per-call source
+    // is the 60 geometry bytes alone.
+    let page = draw.create_resource(&texture, 1, 1, 1)?;
     let table = draw.create_resource(&data[..81920], 256, 320, 256)?;
     data = &data[81920..];
     draw.submit(
@@ -38,9 +41,6 @@ fn native_general_triangles() -> Result<()> {
         let mut source = data[..60].to_vec();
         data = &data[60..];
         let textured = matches!(mode, 2 | 3 | 5..=13 | 18..=26);
-        if textured {
-            source.extend_from_slice(&texture);
-        }
         let source_id = draw.create_resource(&source, 1, 1, 1)?;
         source.fill(0);
         let command = Command {
@@ -53,6 +53,8 @@ fn native_general_triangles() -> Result<()> {
             width,
             height,
             colour,
+            start_low: if textured { page as u32 } else { 0 },
+            start_high: if textured { (page >> 32) as u32 } else { 0 },
             ..Default::default()
         };
         commands.push(command);
@@ -83,6 +85,11 @@ fn native_general_triangles() -> Result<()> {
             }
         }
     }
+    let texture_bytes = draw.counters().arena_trig_texture_source_bytes;
+    ensure!(
+        texture_bytes <= 65536,
+        "the page was uploaded more than once: {texture_bytes} texture source bytes"
+    );
     let original = draw.readback(target)?;
     let command = last.unwrap();
     ensure!(

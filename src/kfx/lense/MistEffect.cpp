@@ -51,7 +51,7 @@ public:
     void SetAnimation(long counter, long speed);
     void Render(unsigned char *dstbuf, long dstpitch, 
                unsigned char *srcbuf, long srcpitch,
-               long width, long height);
+               long width, long height, long lens_idx);
     void Animate();
     
 private:
@@ -120,7 +120,7 @@ void CMistFade::Animate()
 
 void CMistFade::Render(unsigned char *dstbuf, long dstpitch,
                       unsigned char *srcbuf, long srcpitch,
-                      long width, long height)
+                      long width, long height, long lens_idx)
 {
     if ((lens_data == NULL) || (fade_data == NULL))
     {
@@ -129,7 +129,9 @@ void CMistFade::Render(unsigned char *dstbuf, long dstpitch,
     }
     
     KfxLensMist(dstbuf, dstpitch, srcbuf, srcpitch, width, height, lens_data, fade_data,
-        position_offset_x, position_offset_y, secondary_offset_x, secondary_offset_y, fade_rows);
+        position_offset_x, position_offset_y, secondary_offset_x, secondary_offset_y, fade_rows,
+        {static_cast<uint64_t>(KFX_LENS_MIST) << 32 | static_cast<uint32_t>(lens_idx),
+            KfxLensGeneration()});
 }
 
 /******************************************************************************/
@@ -150,6 +152,7 @@ MistEffect::~MistEffect()
 TbBool MistEffect::Setup(long lens_idx)
 {
     SYNCDBG(8, "Setting up mist effect for lens %ld", lens_idx);
+    KfxLensTablesChanged();
     
     struct LensConfig* cfg = &lenses_conf.lenses[lens_idx];
     
@@ -190,6 +193,7 @@ TbBool MistEffect::Setup(long lens_idx)
 
 void MistEffect::Cleanup()
 {
+    KfxLensTablesChanged();
     if (m_current_lens >= 0)
     {
         // Free the mist renderer
@@ -220,7 +224,7 @@ TbBool MistEffect::Draw(LensRenderContext* ctx)
     
     // Render mist effect
     renderer->Render(ctx->dstbuf, ctx->dstpitch, viewport_src, ctx->srcpitch,
-                    ctx->width, ctx->height);
+                    ctx->width, ctx->height, m_current_lens);
     renderer->Animate();
     
     ctx->buffer_copied = true;  // Mist writes to dstbuf

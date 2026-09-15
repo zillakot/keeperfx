@@ -37,7 +37,7 @@ static void native_oracle(int kind, uint8_t* dst, int dp, const uint8_t* src, in
 
 #ifndef KFX_RUST_PRESENTER
 static bool capture = false;
-static std::vector<uint8_t> captured_source, captured_initial;
+static std::vector<uint8_t> captured_source, captured_initial, captured_map, captured_fade;
 extern "C" int kfx_wgpu_native_enabled(void) { return capture; }
 extern "C" int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes; (void)length; return 1; }
 extern "C" void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
@@ -47,9 +47,26 @@ extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget* target, const KfxWgpuD
     const KfxWgpuNativeResource* source, const KfxWgpuNativeResource*, KfxWgpuNativeOracle, void*)
 {
     captured_source.assign(source->bytes, source->bytes + source->length);
+    captured_map.clear();
+    captured_fade.clear();
     captured_initial.clear();
     for (uint32_t y=0; y<target->height; ++y)
         captured_initial.insert(captured_initial.end(), target->pixels+y*target->pitch, target->pixels+y*target->pitch+target->width);
+    return 0;
+}
+extern "C" int kfx_wgpu_native_draw_parts(const KfxGpolyTarget* target,
+    const KfxWgpuDrawCommand* command, const KfxWgpuNativeResource* source,
+    const KfxWgpuNativePart* parts, unsigned count, const KfxWgpuNativeResource* table,
+    KfxWgpuNativeOracle oracle, void* context)
+{
+    kfx_wgpu_native_draw(target, command, source, table, oracle, context);
+    assert(count >= 1 && parts[0].name.kind == KFX_WGPU_DRAW_KEY_LENS_MAP);
+    captured_map.assign(parts[0].resource.bytes, parts[0].resource.bytes + parts[0].resource.length);
+    if (count > 1) {
+        assert(parts[1].name.kind == KFX_WGPU_DRAW_KEY_LENS_FADE);
+        captured_fade.assign(parts[1].resource.bytes,
+            parts[1].resource.bytes + parts[1].resource.length);
+    }
     return 0;
 }
 #endif
@@ -60,6 +77,9 @@ int main(int argc, char** argv)
     for (size_t i = 0; i < texture.size(); ++i) texture[i] = i % 7 == 0 ? 255 : (i * 73 + i / 256 * 39) & 255;
     for (size_t i = 0; i < fade.size(); ++i) fade[i] = (i * 37 + i / 256 * 71) & 255;
     unsigned cases = 0;
+    /* The mist fade rows are named where the engine keeps them, so the lens key is only
+       as good as the range registration that makes the address mean one thing. */
+    kfx_render_asset_range(fade.data(), fade.size());
 #ifndef KFX_RUST_PRESENTER
     std::ofstream output(argc > 1 ? argv[1] : "lenses.bin", std::ios::binary);
     auto word = [&](uint32_t value) { for (int i=0; i<4; ++i) output.put(value >> (i*8)); };
@@ -82,12 +102,16 @@ int main(int argc, char** argv)
         auto actual = expected;
         native_oracle(kind, expected.data() + destination, dp, expected.data() + source, sp,
             w, h, map, texture, fade, alpha, phase);
+        /* Half the cases name their tables: both packings must reach the same pixels. */
+        KfxLensTablesChanged();
+        const KfxLensIdentity name = {mode % 2 == 0
+            ? static_cast<uint64_t>(kind + 1) << 32 | 1 : 0, KfxLensGeneration()};
         auto render = [&](std::vector<uint8_t>& pixels) {
             auto* dst = pixels.data() + destination;
             const auto* src = pixels.data() + source;
-            if (kind == 0) KfxLensRemap(dst, dp, src, sp, w, h, map.data());
-            if (kind == 1) KfxLensMist(dst, dp, src, sp, w, h, texture.data(), fade.data(), phase, phase+17, phase+128, phase+251);
-            if (kind == 2) KfxLensOverlay(dst, dp, src, sp, w, h, texture.data(), 7, 5, alpha);
+            if (kind == 0) KfxLensRemap(dst, dp, src, sp, w, h, map.data(), name);
+            if (kind == 1) KfxLensMist(dst, dp, src, sp, w, h, texture.data(), fade.data(), phase, phase+17, phase+128, phase+251, 33, name);
+            if (kind == 2) KfxLensOverlay(dst, dp, src, sp, w, h, texture.data(), 7, 5, alpha, name);
         };
         assert(!kfx_wgpu_native_enabled());
         render(disabled);
@@ -109,9 +133,14 @@ int main(int argc, char** argv)
         render(actual);
         capture = false;
         assert(actual == expected && !captured_source.empty());
+        assert(captured_map.empty() != (name.id != 0));
+        assert(captured_fade.empty() == (name.id == 0 || kind != 1));
         word(w); word(h); word(captured_source.size());
+        word(captured_map.size()); word(captured_fade.size());
         output.write(reinterpret_cast<const char*>(captured_initial.data()), captured_initial.size());
         output.write(reinterpret_cast<const char*>(captured_source.data()), captured_source.size());
+        output.write(reinterpret_cast<const char*>(captured_map.data()), captured_map.size());
+        output.write(reinterpret_cast<const char*>(captured_fade.data()), captured_fade.size());
         for (int y=0; y<h; ++y) output.write(reinterpret_cast<const char*>(expected.data()+destination+y*dp), w);
 #endif
         ++cases;

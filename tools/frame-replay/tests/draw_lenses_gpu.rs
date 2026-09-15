@@ -1,4 +1,4 @@
-use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, IMAGE, LENS_EFFECT};
+use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, IMAGE, LENS_EFFECT, arena_kinds};
 
 fn word(bytes: &[u8], offset: &mut usize) -> u32 {
     let value = u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().unwrap());
@@ -20,11 +20,22 @@ fn native_lens_indices_match() {
         let width = word(&bytes, &mut offset);
         let height = word(&bytes, &mut offset);
         let source_length = word(&bytes, &mut offset) as usize;
+        let map_length = word(&bytes, &mut offset) as usize;
+        let fade_length = word(&bytes, &mut offset) as usize;
         let length = (width * height) as usize;
         let initial = &bytes[offset..offset + length];
         offset += length;
         let mut source = bytes[offset..offset + source_length].to_vec();
         offset += source_length;
+        let mut tables = [0u64; 2];
+        for (slot, table_length) in [map_length, fade_length].into_iter().enumerate() {
+            if table_length > 0 {
+                let mut table = bytes[offset..offset + table_length].to_vec();
+                tables[slot] = drawing.create_resource(&table, 1, 1, 1).unwrap();
+                table.fill(41);
+                offset += table_length;
+            }
+        }
         let expected = &bytes[offset..offset + length];
         offset += length;
         let target = drawing.create_target(width, height).unwrap();
@@ -54,6 +65,10 @@ fn native_lens_indices_match() {
             source: source_handle,
             clip_width: width,
             clip_height: height,
+            start_low: tables[0] as u32,
+            start_high: (tables[0] >> 32) as u32,
+            step_low: tables[1] as u32,
+            step_high: (tables[1] >> 32) as u32,
             ..Command::default()
         };
         if case == 0 {
@@ -86,6 +101,11 @@ fn native_lens_indices_match() {
         );
         drawing.release_target(target).unwrap();
         drawing.release_resource(initial).unwrap();
+        for table in tables {
+            if table != 0 {
+                drawing.release_resource(table).unwrap();
+            }
+        }
     }
     assert_eq!(offset, bytes.len());
 }
@@ -157,4 +177,74 @@ fn lens_device_limit_rejection_preserves_target_and_device() {
         );
         drawing.release_target(target).unwrap();
     }
+}
+
+/// A named lens map is resident: the second frame reads it instead of re-uploading it,
+/// and the pixels are the ones the unsplit packing produced.
+#[test]
+#[ignore = "requires a GPU"]
+fn a_named_lens_map_stays_resident() {
+    let (width, height) = (2u32, 2u32);
+    let header: [u32; 16] = [
+        2,
+        width,
+        height,
+        width,
+        width,
+        0,
+        0,
+        (width << 16) / width,
+        (height << 16) / height,
+        256,
+        0,
+        64,
+        0,
+        0,
+        width,
+        height,
+    ];
+    let mut source: Vec<u8> = header.into_iter().flat_map(u32::to_le_bytes).collect();
+    source.extend([61, 62, 63, 64]);
+    let overlay = vec![7u8, 8, 9, 10];
+    let mut drawing = DrawRenderer::headless().unwrap();
+    let map = drawing.create_resource(&overlay, 1, 1, 1).unwrap();
+    let target = drawing.create_target(width, height).unwrap();
+    let mut hits = 0;
+    for _ in 0..2 {
+        let handle = drawing.create_resource(&source, 1, 1, 1).unwrap();
+        drawing
+            .submit(
+                target,
+                &[Command {
+                    kind: CLEAR,
+                    colour: 3,
+                    width,
+                    height,
+                    ..Command::default()
+                }],
+            )
+            .unwrap();
+        drawing
+            .submit(
+                target,
+                &[Command {
+                    kind: LENS_EFFECT,
+                    width,
+                    height,
+                    clip_width: width,
+                    clip_height: height,
+                    source: handle,
+                    start_low: map as u32,
+                    start_high: (map >> 32) as u32,
+                    ..Command::default()
+                }],
+            )
+            .unwrap();
+        assert_eq!(drawing.readback(target).unwrap(), overlay);
+        drawing.release_resource(handle).unwrap();
+        hits = drawing.counters().arena_by_kind[arena_kinds::LENS_KIND].hits;
+    }
+    assert!(hits > 0, "the lens map was uploaded on every frame");
+    drawing.release_target(target).unwrap();
+    drawing.release_resource(map).unwrap();
 }

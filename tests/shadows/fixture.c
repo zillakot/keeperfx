@@ -45,6 +45,13 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target, const struct KfxWg
     KfxWgpuNativeOracle oracle, void *context) {
     (void)target;(void)command;(void)source;(void)table;(void)oracle;(void)context;abort();
 }
+int kfx_wgpu_native_draw_parts(const struct KfxGpolyTarget *target,
+    const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
+    const struct KfxWgpuNativePart *parts, unsigned count,
+    const struct KfxWgpuNativeResource *table, KfxWgpuNativeOracle oracle, void *context) {
+    (void)target;(void)command;(void)source;(void)parts;(void)count;(void)table;
+    (void)oracle;(void)context;abort();
+}
 void shadow_native_recover(void) {}
 int kfx_wgpu_native_shadow(const struct KfxGpolyTarget *target, const struct KfxWgpuDrawCommand *command,
     const struct KfxWgpuNativeResource *source, const struct KfxWgpuNativeResource *table,
