@@ -132,6 +132,9 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "replay_buffers",
     "replay_passes",
     "replay_staged_bytes",
+#define KFX_UPLOAD_FIELD(field) #field,
+    KFX_UPLOAD_ALL_FIELDS
+#undef KFX_UPLOAD_FIELD
 
     "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
     "arena_capacity_bytes",
@@ -153,8 +156,12 @@ constexpr const char* replay_counter_names[ReplayCounterCount] = {
     "replay_bind_groups",
     "replay_buffers",
     "replay_passes",
-    "replay_staged_bytes"};
-static_assert(sizeof(PerformanceReplayCounters) == 11 * sizeof(unsigned long long));
+    "replay_staged_bytes",
+#define KFX_UPLOAD_FIELD(field) #field,
+    KFX_UPLOAD_ALL_FIELDS
+#undef KFX_UPLOAD_FIELD
+};
+static_assert(sizeof(PerformanceReplayCounters) == (11 + KFX_UPLOAD_COUNTER_COUNT) * sizeof(unsigned long long));
 
 struct Profile {
     const char* output = std::getenv("KFX_PERF_OUTPUT");
@@ -276,6 +283,9 @@ void finish(Profile& p)
     for (int i = 0; i < DrawingCounterCount; ++i)
         std::fprintf(info, "%s%s", i ? "," : "", json_quote(drawing_counter_names[i]).c_str());
     std::fprintf(info, "],\"gauges\":[");
+#define KFX_UPLOAD_FIELD(field) std::fprintf(info, "\"" #field "\",");
+    KFX_UPLOAD_GAUGES(KFX_UPLOAD_FIELD)
+#undef KFX_UPLOAD_FIELD
     for (int i = DrawingCounterCount - DrawingGaugeCount; i < DrawingCounterCount; ++i)
         std::fprintf(info, "%s%s", i > DrawingCounterCount - DrawingGaugeCount ? "," : "",
             json_quote(drawing_counter_names[i]).c_str());
@@ -299,10 +309,14 @@ void finish(Profile& p)
     std::fprintf(info, "],\"per_frame\":[");
     for (size_t frame = 0; frame < p.presenter_frames.size(); ++frame) {
         const auto& c = p.presenter_frames[frame].replay;
-        std::fprintf(info, "%s[%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu]", frame ? "," : "",
+        std::fprintf(info, "%s[%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu", frame ? "," : "",
             c.replay_pack_ns, c.replay_upload_ns, c.replay_bind_ns, c.replay_encode_ns,
             c.replay_tile_index_ns, c.replay_other_ns, c.replay_submit_wait_ns,
             c.replay_bind_groups, c.replay_buffers, c.replay_passes, c.replay_staged_bytes);
+#define KFX_UPLOAD_FIELD(field) std::fprintf(info, ",%llu", c.field);
+        KFX_UPLOAD_ALL_FIELDS
+#undef KFX_UPLOAD_FIELD
+        std::fprintf(info, "]");
     }
     std::fprintf(info, "]}}}\n");
     failed = std::ferror(info) != 0;
@@ -494,6 +508,11 @@ void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulati
         if (p.drawing_frames.size() >= 100000) { fail(p, "drawing sample limit reached"); return; }
         std::array<unsigned long long, DrawingCounterCount> delta;
         for (int i = 0; i < DrawingCounterCount - DrawingGaugeCount; ++i) {
+            bool gauge = false;
+#define KFX_UPLOAD_FIELD(field) gauge |= i == offsetof(PerformanceDrawingCounters, field) / sizeof(unsigned long long);
+            KFX_UPLOAD_GAUGES(KFX_UPLOAD_FIELD)
+#undef KFX_UPLOAD_FIELD
+            if (gauge) { delta[i] = current[i]; continue; }
             if (current[i] < previous[i]) { fail(p, "drawing counter went backwards"); return; }
             delta[i] = current[i] - previous[i];
         }

@@ -198,6 +198,15 @@ fn a_production_frame_is_one_command_buffer() {
     let after = scene.draw.counters();
     let frame = scene.draw.frame_counters();
 
+    assert_eq!(
+        after.replay.upload_ring_overflows - before.replay.upload_ring_overflows,
+        0
+    );
+    assert!(after.replay.upload_queue_writes > before.replay.upload_queue_writes);
+    assert_eq!(
+        after.replay.replay_buffers - before.replay.replay_buffers,
+        0
+    );
     assert_eq!(after.submits - before.submits, 1, "submits");
     assert_eq!(
         after.target_trig_table_bytes - before.target_trig_table_bytes,
@@ -212,10 +221,10 @@ fn a_production_frame_is_one_command_buffer() {
         2
     );
     assert_eq!(after.target_trig_asset_buffers, 0);
-    assert_eq!(after.preparer_buffers - before.preparer_buffers, 3);
+    assert_eq!(after.preparer_buffers - before.preparer_buffers, 0);
     assert_eq!(
         after.preparer_buffer_bytes - before.preparer_buffer_bytes,
-        132
+        0
     );
     assert_eq!(after.waits - before.waits, 0, "wait_count");
     assert_eq!(after.wait_ns - before.wait_ns, 0, "wait_ns");
@@ -518,4 +527,30 @@ fn shadow_table_versions_survive_serial_release_and_recovery() {
     assert_eq!(draw.readback(root).unwrap(), expected);
     assert_eq!(draw.frame_status().1, 0);
     draw.release_resource(table).unwrap();
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn all_serial_routes_match_immutable_inputs_with_tiny_and_shared_rings() {
+    let mut expected = None;
+    for budgets in [[0; 3], [512; 3], [2 << 20, 8 << 20, 1 << 20]] {
+        let mut scene = Scene::new();
+        scene.draw.configure_upload_rings(budgets, 512).unwrap();
+        for _ in 0..3 {
+            scene.present();
+        }
+        let pixels = scene.draw.readback(scene.root).unwrap();
+        if let Some(expected) = &expected {
+            assert_eq!(&pixels, expected);
+        } else {
+            expected = Some(pixels);
+        }
+        let c = scene.draw.counters().replay;
+        if budgets[0] == 0 {
+            assert!(c.upload_ring_overflows > 0);
+        }
+        if budgets[0] > 512 {
+            assert_eq!(c.upload_ring_overflows, 0);
+        }
+    }
 }

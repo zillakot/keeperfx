@@ -335,6 +335,9 @@ void RendererSoftware::report_drawing()
         gpu.replay_buffers,
         gpu.replay_passes,
         gpu.replay_staged_bytes,
+#define KFX_UPLOAD_FIELD(field) gpu.field,
+        KFX_UPLOAD_ALL_FIELDS
+#undef KFX_UPLOAD_FIELD
 
         gpu.host_staged_asset_bytes, gpu.arena_bytes_resident, gpu.arena_scratch_bytes_peak,
         gpu.arena_capacity_bytes,
@@ -630,7 +633,14 @@ bool RendererSoftware::present_rust_frame()
                 replay_after.replay_bind_groups - replay_before.replay_bind_groups,
                 replay_after.replay_buffers - replay_before.replay_buffers,
                 replay_after.replay_passes - replay_before.replay_passes,
-                replay_after.replay_staged_bytes - replay_before.replay_staged_bytes};
+                replay_after.replay_staged_bytes - replay_before.replay_staged_bytes,
+#define KFX_UPLOAD_FIELD(field) replay_after.field - replay_before.field,
+                KFX_UPLOAD_ALL_FIELDS
+#undef KFX_UPLOAD_FIELD
+            };
+#define KFX_UPLOAD_FIELD(field) replay.field = replay_after.field;
+            KFX_UPLOAD_GAUGES(KFX_UPLOAD_FIELD)
+#undef KFX_UPLOAD_FIELD
         }
         kfx_wgpu_allocation_counts(&replay_allocations, &replay_bytes);
         replay_allocations -= replay_start;

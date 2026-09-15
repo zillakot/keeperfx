@@ -1,3 +1,4 @@
+#include "kfx/renderer/UploadCounters.h"
 #pragma once
 #include "kfx/renderer/ArenaKindCounters.h"
 
@@ -82,6 +83,9 @@ struct PerformanceDrawingCounters {
     unsigned long long replay_buffers;
     unsigned long long replay_passes;
     unsigned long long replay_staged_bytes;
+#define KFX_UPLOAD_FIELD(field) unsigned long long field;
+    KFX_UPLOAD_ALL_FIELDS
+#undef KFX_UPLOAD_FIELD
     /* Trailing gauges are stored as observed, not differenced. */
     unsigned long long host_staged_asset_bytes, arena_bytes_resident, arena_scratch_bytes_peak;
     unsigned long long arena_capacity_bytes;
@@ -105,6 +109,9 @@ struct PerformanceReplayCounters {
     unsigned long long replay_buffers;
     unsigned long long replay_passes;
     unsigned long long replay_staged_bytes;
+#define KFX_UPLOAD_FIELD(field) unsigned long long field;
+    KFX_UPLOAD_ALL_FIELDS
+#undef KFX_UPLOAD_FIELD
 };
 
 struct PerformancePresenterCounters {

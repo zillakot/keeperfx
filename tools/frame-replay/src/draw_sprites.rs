@@ -1,3 +1,4 @@
+use super::upload;
 use super::*;
 
 pub(super) fn ordered(command: &Command) -> bool {
@@ -301,7 +302,8 @@ impl DrawRenderer {
                 <= self.device.limits().max_compute_workgroups_per_dimension,
             "ordered sprite layer exceeds device limit"
         );
-        let command_buffer = buffer(
+        let command_buffer = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "ordered sprite commands",
@@ -320,7 +322,8 @@ impl DrawRenderer {
                 .arena
                 .binding(&self.device, &self.queue, &mut self.counters),
         };
-        let parameters = buffer(
+        let parameters = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "sprite target dimensions",
@@ -344,10 +347,11 @@ impl DrawRenderer {
         let ordered = self.compute_sprite_ordered.clone();
         for layer in &layers {
             let indices = if layer.iter().enumerate().all(|(i, at)| *at as usize == i) {
-                self.identity_layer(layer.len())
+                Region::whole(self.identity_layer(layer.len()))
             } else {
                 self.counters.command_upload_bytes += layer.len() as u64 * 4;
-                buffer(
+                upload::stage(
+                    &self.uploads,
                     &self.device,
                     &mut self.counters,
                     "ordered sprite layer",
@@ -360,10 +364,10 @@ impl DrawRenderer {
                 layout: &self.compute_sprite_ordered.get_bind_group_layout(0),
                 entries: &[
                     entry(0, &target.indices),
-                    entry(1, &command_buffer),
+                    command_buffer.entry(1),
                     entry(2, &asset_buffer),
-                    entry(3, &parameters),
-                    entry(5, &indices),
+                    parameters.entry(3),
+                    indices.entry(5),
                 ],
             });
             let stamp = self.stamp(PASS_ORDERED_SPRITES);

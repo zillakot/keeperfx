@@ -74,6 +74,7 @@ fn serial_routes(plan: &[Step]) -> u64 {
 #[ignore = "requires a Metal adapter"]
 fn interleaved_families_keep_their_order() {
     let mut drawing = DrawRenderer::headless().unwrap();
+    drawing.configure_upload_rings([0; 3], 512).unwrap();
     let a = assets(&mut drawing);
     let sizes = [(71u32, 53u32), (47, 35), (23, 17)];
     let lenses: Vec<_> = sizes
@@ -140,6 +141,9 @@ fn interleaved_families_keep_their_order() {
     drawing.shadow_scratch_reset().unwrap();
     run(&mut drawing, &targets[0].clone());
     let separate = drawing.counters().batches - start;
+    drawing
+        .configure_upload_rings([2 << 20, 8 << 20, 1 << 20], 512)
+        .unwrap();
     let before = drawing.counters();
     drawing.shadow_scratch_reset().unwrap();
     drawing.frame_begin(targets[1][0]).unwrap();

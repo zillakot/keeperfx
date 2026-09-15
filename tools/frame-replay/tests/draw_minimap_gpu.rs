@@ -92,7 +92,18 @@ fn actual_native_minimap_world_background_and_markers() {
             assert_eq!(draw.readback(target).unwrap(), before);
         }
         asset.fill(71);
+        let before_upload = draw.counters().replay;
+        draw.frame_begin(target).unwrap();
         draw.submit(target, &[c]).unwrap();
+        draw.frame_end().unwrap();
+        let after_upload = draw.counters().replay;
+        assert_eq!(
+            after_upload.upload_ring_overflows - before_upload.upload_ring_overflows,
+            0
+        );
+        if mode != 4 {
+            assert!(after_upload.upload_queue_writes > before_upload.upload_queue_writes);
+        }
         draw.release_resource(source).unwrap();
         let actual = draw.readback(target).unwrap();
         if let Some(i) = actual

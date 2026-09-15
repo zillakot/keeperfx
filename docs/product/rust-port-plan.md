@@ -260,15 +260,13 @@ whole-process/GPU peak-memory gain is established.
 
 Next, in order:
 
-1. **Replay upload rings and coalescing first.** [Host attribution](../performance-baselines.md#replay-floor-measured-2026-09-15)
-   puts 78–82% of replay in upload, with roughly 73–80 mean transient buffer creations
-   and 113–137 arena writes per frame. Extend Region rings to serial command/tile
-   inputs and device-aligned uniforms, append CPU staging and flush safe ranges
-   together, preserving distinct ranges for every reader in the open encoder.
-   Coalesce arena writes without crossing GPU-written scratch; cache stable bind
-   groups afterwards, since their entire phase is only 0.04–0.06 ms. Test exact
-   parity, multiple replays/submission, growth/overflow and discard; prove gains
-   with matched offscreen cells and unchanged bytes before any speedup claim.
+1. **Validate replay upload rings and arena coalescing.** The A+B implementation
+   stages serial inputs through three rings and merges safe arena writes; bind-group
+   reuse remains separate. Initial rings are 2/8/1 MiB, capped at 8/16/2 MiB, with
+   explicit overflow diagnostics. Matched offscreen upload/replay means and tails,
+   write counts, bytes, CPU cost, uncapped throughput, and host surface/control
+   parity are pending. Retain the [replay attribution](../performance-baselines.md#replay-floor-measured-2026-09-15)
+   as control evidence and publish measured acceptance before claiming gains.
 2. **Remaining presenter cost.** Investigate host submission after replay is reduced;
    evaluate software index upload and late cursor restoration separately. Preserve
    `presentation_cpu` at most 1.0 ms and simulation cadence in uncapped comparisons.

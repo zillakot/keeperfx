@@ -36,6 +36,11 @@ fn serialized_boundary_attributes_submission_and_gpu_drain() {
         submit_wait_ns >= wait_ns,
         "{submit_wait_ns} must include the {wait_ns} ns GPU drain"
     );
+    assert!(after.replay.upload_queue_writes > before.replay.upload_queue_writes);
+    assert_eq!(
+        after.replay.upload_ring_overflows - before.replay.upload_ring_overflows,
+        0
+    );
     assert!(pack_ns > 0);
     assert!(pack_ns + submit_wait_ns <= total_ns);
     assert!(total_ns <= elapsed);

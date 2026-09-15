@@ -96,6 +96,36 @@ impl GpolyPreparer {
         rows: &wgpu::Buffer,
         stamp: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) -> Result<()> {
+        let inputs = Self::inputs(device, triangles, layout, rows, |label, words, usage| {
+            let _scope = Scope::new(Phase::Upload);
+            host::created_buffer();
+            host::staged_bytes(words.len() * 4);
+            crate::draw::upload::Region::whole(device.create_buffer_init(
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some(label),
+                    contents: &bytes(words),
+                    usage,
+                },
+            ))
+        })?;
+        self.encode_inputs(
+            device,
+            encoder,
+            triangles.len() as u32,
+            rows,
+            &inputs,
+            stamp,
+        );
+        Ok(())
+    }
+
+    pub(crate) fn inputs(
+        device: &wgpu::Device,
+        triangles: &[Triangle],
+        layout: &[RowLayout],
+        rows: &wgpu::Buffer,
+        mut upload: impl FnMut(&str, &[u32], wgpu::BufferUsages) -> crate::draw::upload::Region,
+    ) -> Result<[crate::draw::upload::Region; 3]> {
         ensure!(
             layout.len() == triangles.len(),
             "triangle row layout does not match the batch"
@@ -143,22 +173,16 @@ impl GpolyPreparer {
                 }
             }
         }
-        let upload = Scope::new(Phase::Upload);
-        host::created_buffer();
-        host::staged_bytes(words.len() * 4);
-        let input = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("immutable gpoly vertices"),
-            contents: &bytes(&words),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        host::created_buffer();
-        host::staged_bytes(16);
-        let parameters = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gpoly viewport"),
-            contents: &bytes(&[count, 0, 0, 0]),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        drop(upload);
+        let input = upload(
+            "immutable gpoly vertices",
+            &words,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let parameters = upload(
+            "gpoly viewport",
+            &[count, 0, 0, 0],
+            wgpu::BufferUsages::UNIFORM,
+        );
         let mut layout_words = Vec::with_capacity(layout.len() * 5);
         for entry in layout {
             layout_words.extend([
@@ -169,37 +193,37 @@ impl GpolyPreparer {
                 entry.height,
             ]);
         }
-        let upload = Scope::new(Phase::Upload);
-        host::created_buffer();
-        host::staged_bytes(layout_words.len() * 4);
-        let layout_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("gpoly row layout"),
-            contents: &bytes(&layout_words),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        drop(upload);
+        let layout_buffer = upload(
+            "gpoly row layout",
+            &layout_words,
+            wgpu::BufferUsages::STORAGE,
+        );
+        Ok([input, parameters, layout_buffer])
+    }
+
+    pub(crate) fn encode_inputs(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        count: u32,
+        rows: &wgpu::Buffer,
+        inputs: &[crate::draw::upload::Region; 3],
+        stamp: Option<wgpu::ComputePassTimestampWrites<'_>>,
+    ) {
+        let [input, parameters, layout_buffer] = inputs;
         let bind = Scope::new(Phase::Bind);
         host::created_bind_group();
         let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gpoly preparation"),
             layout: &self.pipeline.get_bind_group_layout(0),
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: input.as_entire_binding(),
-                },
+                input.entry(0),
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: rows.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: parameters.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: layout_buffer.as_entire_binding(),
-                },
+                parameters.entry(2),
+                layout_buffer.entry(3),
             ],
         });
         drop(bind);
@@ -214,6 +238,5 @@ impl GpolyPreparer {
             pass.set_bind_group(0, &bindings, &[]);
             pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
         }
-        Ok(())
     }
 }

@@ -61,8 +61,14 @@ int main()
     static_assert(offsetof(PerformanceReplayCounters, replay_staged_bytes) == 10 * sizeof(unsigned long long));
     assert(std::string(replay_counter_names[10]) == "replay_staged_bytes");
     static_assert(offsetof(PerformancePresenterCounters, replay) == 8 * sizeof(unsigned long long));
-    static_assert(sizeof(PerformancePresenterCounters) == 19 * sizeof(unsigned long long));
+    static_assert(sizeof(PerformancePresenterCounters) == (19 + KFX_UPLOAD_COUNTER_COUNT) * sizeof(unsigned long long));
+#define KFX_UPLOAD_FIELD(field) \
+    assert(std::string(replay_counter_names[offsetof(PerformanceReplayCounters, field) / sizeof(unsigned long long)]) == #field); \
+    assert(std::string(drawing_counter_names[offsetof(PerformanceDrawingCounters, field) / sizeof(unsigned long long)]) == #field); \
+    static_assert(offsetof(KfxWgpuDrawCounters, field) - offsetof(KfxWgpuDrawCounters, replay_pack_ns) == offsetof(PerformanceReplayCounters, field));
+    KFX_UPLOAD_ALL_FIELDS
+#undef KFX_UPLOAD_FIELD
     for (const auto name : drawing_counter_names) assert(name != nullptr);
     static_assert(offsetof(KfxWgpuDrawCounters, arena_by_kind) == 77 * sizeof(uint64_t));
-    static_assert(sizeof(KfxWgpuDrawCounters) == (77 + 19 * 6 + 1 + 11) * sizeof(uint64_t));
+    static_assert(sizeof(KfxWgpuDrawCounters) == (77 + 19 * 6 + 1 + 11 + KFX_UPLOAD_COUNTER_COUNT) * sizeof(uint64_t));
 }

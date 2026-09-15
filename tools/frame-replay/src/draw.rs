@@ -1,7 +1,10 @@
 #[path = "draw_host.rs"]
 pub(crate) mod host;
 pub use host::ReplayCounters;
+#[path = "draw_upload.rs"]
+pub(crate) mod upload;
 use host::{Phase, Scope};
+use upload::{Region, Uploads};
 
 #[path = "draw_arena_kinds.rs"]
 pub mod arena_kinds;
@@ -303,8 +306,7 @@ pub struct DrawRenderer {
     arena: arena::Arena,
     tile_index: TileIndex,
     box_policy: BoxPolicy,
-    stream_commands: PersistentBuffer,
-    stream_tiles: PersistentBuffer,
+    uploads: std::cell::RefCell<Uploads>,
     prepared_rows: PersistentBuffer,
     asset_generation: u64,
     /// Every pass of the frame, from the first record after a submit to the palette
@@ -452,8 +454,7 @@ impl DrawRenderer {
             ),
             tile_index: TileIndex::default(),
             box_policy: BoxPolicy::default(),
-            stream_commands: PersistentBuffer::default(),
-            stream_tiles: PersistentBuffer::default(),
+            uploads: std::cell::RefCell::new(Uploads::new(&limits)),
             prepared_rows: PersistentBuffer::default(),
             asset_generation: 1,
             last_submission: None,
@@ -640,6 +641,7 @@ impl DrawRenderer {
     /// Publishes the status word into the frame's encoder and submits it. The one
     /// submit of a production frame; a no-op when nothing was recorded.
     pub fn frame_submit(&mut self) -> Result<()> {
+        self.flush_uploads();
         let _scope = Scope::new(Phase::SubmitWait);
         let Some(mut encoder) = self.encoder.take() else {
             return Ok(());
@@ -661,7 +663,10 @@ impl DrawRenderer {
     /// Drops a half-recorded frame. Dropping a `CommandEncoder` without finishing it
     /// discards its recording, which is what an abort or a terminal failure wants.
     pub fn frame_discard(&mut self) {
-        if self.encoder.take().is_none() {
+        let had_encoder = self.encoder.take().is_some();
+        self.uploads.borrow_mut().discard();
+        self.arena.discard();
+        if !had_encoder {
             return;
         }
         if let Some(slot) = self.timing_slot.take()
@@ -672,7 +677,14 @@ impl DrawRenderer {
         self.end_encoder_scope();
     }
 
+    fn flush_uploads(&mut self) {
+        let _scope = Scope::new(Phase::Upload);
+        self.uploads.borrow_mut().flush(&self.queue);
+        self.arena.flush(&self.queue);
+    }
+
     fn close_encoder(&mut self) {
+        self.flush_uploads();
         let _scope = Scope::new(Phase::SubmitWait);
         let Some(mut encoder) = self.encoder.take() else {
             return;
@@ -684,6 +696,7 @@ impl DrawRenderer {
             .and_then(|(timings, slot)| timings.close(slot, &mut encoder));
         self.counters.submits += 1;
         self.last_submission = Some(self.queue.submit([encoder.finish()]));
+        self.uploads.borrow_mut().retire();
         self.end_encoder_scope();
         if let Some(slot) = closed {
             self.timings.as_mut().unwrap().map(slot);
@@ -691,14 +704,11 @@ impl DrawRenderer {
         }
     }
 
-    /// The arena pin scope and the stream ring's bump cursor both end with the
-    /// encoder, because that is the submission whose head every staged write reaches.
+    /// Releases encoder-scoped arena pins after submission or discard.
     fn end_encoder_scope(&mut self) {
         self.present_cursor = 0;
         self.arena.lock(false);
         self.arena.release_hold();
-        self.stream_commands.reset();
-        self.stream_tiles.reset();
         self.encoder_passes = 0;
     }
 
@@ -727,6 +737,19 @@ impl DrawRenderer {
         self.counters.waits += 1;
         self.counters.wait_ns += started.elapsed().as_nanos() as u64;
         status?;
+        Ok(())
+    }
+
+    /// Diagnostic ring budgets; zero selects immutable initialized inputs for parity checks.
+    pub fn configure_upload_rings(&mut self, capacities: [u64; 3], alignment: u64) -> Result<()> {
+        ensure!(
+            !self.frame_open() && self.encoder.is_none(),
+            "upload configuration requires an idle renderer"
+        );
+        let mut uploads = Uploads::new(&self.device.limits());
+        uploads.configure(capacities, alignment)?;
+        *self.uploads.borrow_mut() = uploads;
+        self.arena.coalesced = capacities != [0; 3];
         Ok(())
     }
 
@@ -875,14 +898,16 @@ impl DrawRenderer {
             (target.width, target.height),
             limit,
         )?;
-        let tile_buffer = buffer(
+        let tile_buffer = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "ordered tile lists",
             self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
-        let command_buffer = buffer(
+        let command_buffer = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "immutable ordered commands",
@@ -920,10 +945,10 @@ impl DrawRenderer {
             layout: &self.compute.get_bind_group_layout(0),
             entries: &[
                 entry(0, &target.indices),
-                entry(1, &command_buffer),
+                command_buffer.entry(1),
                 entry(2, &asset_buffer),
-                entry(3, &parameters),
-                entry(4, &tile_buffer),
+                parameters.entry(3),
+                tile_buffer.entry(4),
                 entry(5, self.terrain_rows_binding()),
                 entry(6, self.shadow_slot_binding()),
                 entry(7, self.status_binding()),
@@ -952,17 +977,14 @@ impl DrawRenderer {
 
     /// The uniform for one raster pass, with the dispatch extent its records need;
     /// `None` when the pass covers nothing.
-    fn pass_parameters(
-        &mut self,
-        target: &Target,
-        pass: &Pass,
-    ) -> Option<(wgpu::Buffer, u32, u32)> {
+    fn pass_parameters(&mut self, target: &Target, pass: &Pass) -> Option<(Region, u32, u32)> {
         let boxed = pass_box(pass, target.width, target.height);
         let (span_x, span_y) = (boxed[2] - boxed[0], boxed[3] - boxed[1]);
         if span_x == 0 || span_y == 0 {
             return None;
         }
-        let parameters = buffer(
+        let parameters = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "drawing dimensions",
@@ -1009,7 +1031,7 @@ impl DrawRenderer {
                 entry(0, &target.indices),
                 command_buffer.entry(1),
                 entry(2, asset_buffer),
-                entry(3, &parameters),
+                parameters.entry(3),
                 tile_buffer.entry(4),
                 entry(5, self.terrain_rows_binding()),
                 entry(6, self.shadow_slot_binding()),
@@ -1047,19 +1069,40 @@ impl DrawRenderer {
         let stamp = self.stamp(PASS_TERRAIN_PREPARE);
         let pipelines = self.triangles.take().unwrap();
         let device = self.device.clone();
-        let recorded = pipelines.prepare.encode(
+        let before = self.counters.buffers;
+        let before_bytes = self.counters.buffer_bytes;
+        let inputs = gpoly::GpolyPreparer::inputs(
             &device,
-            self.frame_encoder(),
             &pending.triangles,
             &pending.layout,
             &pending.rows,
-            stamp.compute(),
+            |label, words, usage| {
+                upload::stage(
+                    &self.uploads,
+                    &device,
+                    &mut self.counters,
+                    label,
+                    words,
+                    usage,
+                )
+            },
         );
+        self.counters.preparer_buffers += self.counters.buffers - before;
+        self.counters.preparer_buffer_bytes += self.counters.buffer_bytes - before_bytes;
+        self.counters.buffers = before;
+        self.counters.buffer_bytes = before_bytes;
+        let recorded = inputs.map(|inputs| {
+            pipelines.prepare.encode_inputs(
+                &device,
+                self.frame_encoder(),
+                pending.triangles.len() as u32,
+                &pending.rows,
+                &inputs,
+                stamp.compute(),
+            )
+        });
         self.triangles = Some(pipelines);
         recorded?;
-        self.counters.preparer_buffers += 3;
-        self.counters.preparer_buffer_bytes +=
-            pending.triangles.len() as u64 * 96 + pending.layout.len() as u64 * 20 + 16;
         self.counters.dispatches += 1;
         self.pass_boundary();
         Ok(())
@@ -1498,113 +1541,10 @@ impl ViewSpace {
     }
 }
 
-/// A storage binding that may be a sub-range of a renderer-owned ring; the kernels
-/// index from zero either way, because the range is bound rather than offset in the
-/// shader.
-#[derive(Clone)]
-pub(super) struct Region {
-    buffer: wgpu::Buffer,
-    offset: u64,
-    size: u64,
-}
-
-impl Region {
-    pub(super) fn whole(buffer: wgpu::Buffer) -> Self {
-        let size = buffer.size();
-        Self {
-            buffer,
-            offset: 0,
-            size,
-        }
-    }
-
-    pub(super) fn entry(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
-        wgpu::BindGroupEntry {
-            binding,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &self.buffer,
-                offset: self.offset,
-                size: std::num::NonZeroU64::new(self.size),
-            }),
-        }
-    }
-}
-
-/// Storage bindings start on this word boundary, which covers every device's
-/// `min_storage_buffer_offset_alignment`.
-const REGION_ALIGN_WORDS: u64 = 64;
-
-/// A renderer-owned buffer reused across frames, bump-allocated within the open
-/// encoder. A frame that replays more than once therefore writes each region at its
-/// own offset, which is what keeps the staged writes — all of which land before the
-/// first pass of the submission — from overwriting bytes an earlier pass reads.
 #[derive(Default)]
 pub(super) struct PersistentBuffer {
     buffer: Option<wgpu::Buffer>,
     words: u64,
-    cursor: u64,
-    demand: u64,
-    staging: Vec<u8>,
-}
-
-impl PersistentBuffer {
-    /// Ends the bump scope with the encoder and carries the frame's demand forward,
-    /// so the ring is sized between frames and never grows under a recorded pass.
-    pub(super) fn reset(&mut self) {
-        self.demand = self.demand.max(self.cursor);
-        self.cursor = 0;
-    }
-}
-
-fn persist(
-    slot: &mut PersistentBuffer,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    counters: &mut Counters,
-    label: &str,
-    words: &[u32],
-    usage: wgpu::BufferUsages,
-) -> Region {
-    let _scope = Scope::new(Phase::Upload);
-    let needed = words.len().max(1) as u64;
-    let start = slot.cursor.next_multiple_of(REGION_ALIGN_WORDS);
-    if slot.cursor == 0 {
-        let wanted = needed.max(slot.demand);
-        if slot.words < wanted {
-            let size = wanted.next_power_of_two().max(1024) * 4;
-            counters.buffers += 1;
-            counters.buffer_bytes += size;
-            host::created_buffer();
-            slot.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: usage | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            slot.words = size / 4;
-        }
-    }
-    if slot.buffer.is_none() || start + needed > slot.words {
-        // The ring cannot hold this region until the next frame sizes it, so the
-        // region becomes its own buffer, whose contents exist at creation.
-        slot.demand = slot.demand.max(start + needed);
-        let contents = if words.is_empty() { &[0][..] } else { words };
-        return Region::whole(buffer(device, counters, label, contents, usage));
-    }
-    let buffer = slot.buffer.clone().unwrap();
-    slot.cursor = start + needed;
-    if !words.is_empty() {
-        slot.staging.clear();
-        slot.staging
-            .extend(words.iter().flat_map(|word| word.to_le_bytes()));
-        host::staged_bytes(slot.staging.len());
-        queue.write_buffer(&buffer, start * 4, &slot.staging);
-    }
-    Region {
-        buffer,
-        offset: start * 4,
-        size: needed * 4,
-    }
 }
 
 fn pack_commands(
@@ -1881,6 +1821,8 @@ fn buffer(
 ) -> wgpu::Buffer {
     let _scope = Scope::new(Phase::Upload);
     host::created_buffer();
+    host::upload_event(label, 0, 1);
+    host::upload_event(label, 1, words.len() as u64 * 4);
     host::staged_bytes(words.len() * 4);
     let bytes: Vec<_> = words.iter().flat_map(|v| v.to_le_bytes()).collect();
     counters.buffers += 1;
