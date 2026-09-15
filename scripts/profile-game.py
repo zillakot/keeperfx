@@ -28,7 +28,8 @@ PRESENTER_COUNTERS = ("acquire_ns", "acquire_block_ns", "reconfigure_count", "pr
 REPLAY_PHASES = ("replay_pack_ns", "replay_upload_ns", "replay_bind_ns", "replay_encode_ns",
                  "replay_tile_index_ns", "replay_other_ns", "replay_submit_wait_ns")
 REPLAY_COUNTS = ("replay_bind_groups", "replay_buffers", "replay_passes", "replay_staged_bytes")
-UPLOAD_FIELDS = ('upload_queue_writes', 'upload_queue_bytes', 'upload_queued_bytes', 'upload_ring_overflows', 'upload_overflow_bytes', 'upload_oversized_frames', 'upload_padding_bytes', 'upload_records_capacity', 'upload_records_used', 'upload_records_high_water', 'upload_indices_capacity', 'upload_indices_used', 'upload_indices_high_water', 'upload_uniforms_capacity', 'upload_uniforms_used', 'upload_uniforms_high_water', 'upload_arena_dirty_bytes')
+PACKED_MEASUREMENT_FIELDS = ('capture_schema', 'arena_representation', 'upload_transport', 'arena_source_bytes', 'arena_logical_upload_bytes', 'arena_transfer_bytes', 'upload_cpu_copy_bytes', 'upload_cpu_copy_ns', 'upload_expand_ns', 'upload_staging_copy_ns', 'upload_api_ns', 'upload_copy_encode_ns', 'upload_copy_commands', 'upload_copy_bytes', 'upload_init_bytes', 'staging_buffers_created', 'staging_capacity_bytes', 'staging_inflight_bytes', 'staging_peak_bytes', 'staging_map_wait_ns', 'staging_fallbacks', 'staging_padding_bytes', 'snapshot_copy_bytes', 'snapshot_pack_bytes')
+UPLOAD_FIELDS = ('upload_queue_writes', 'upload_queue_bytes', 'upload_queued_bytes', 'upload_ring_overflows', 'upload_overflow_bytes', 'upload_oversized_frames', 'upload_padding_bytes', 'upload_records_capacity', 'upload_records_used', 'upload_records_high_water', 'upload_indices_capacity', 'upload_indices_used', 'upload_indices_high_water', 'upload_uniforms_capacity', 'upload_uniforms_used', 'upload_uniforms_high_water', 'upload_arena_dirty_bytes') + PACKED_MEASUREMENT_FIELDS
 UPLOAD_LABELS = ('record_ring', 'index_ring', 'uniform_ring', 'immutable_ordered_commands', 'ordered_tile_lists', 'drawing_dimensions', 'ordered_sprite_commands', 'sprite_target_dimensions', 'ordered_sprite_layer', 'minimap_target_view', 'shadow_arena_region', 'snapshot_triangle_commands', 'snapshot_triangle_tiles', 'snapshot_image_commands', 'snapshot_image_tile_lists', 'immutable_gpoly_vertices', 'gpoly_viewport', 'gpoly_row_layout', 'arena_assets', 'snapshot_tables', 'arena_flush', 'immutable_asset_versions', 'triangle_immutable_assets', 'snapshot_triangle_fallback_assets', 'immutable_lens_sources_and_maps', 'gpu_snapshot_sampling_arena', 'ordered_sprite_identity_layer', 'sprite_artwork_and_run_boundaries', 'minimap_semantic_cells_and_styles', 'immutable_shadow_artwork', 'persistent_asset_arena', 'effect_target_view', 'compatibility')
 UPLOAD_METRICS = ('creates', 'create_bytes', 'reservations', 'payload_bytes', 'writes', 'write_bytes')
 UPLOAD_COUNTERS = UPLOAD_FIELDS + tuple(f"upload_{label}_{metric}" for label in UPLOAD_LABELS for metric in UPLOAD_METRICS)
@@ -54,7 +55,7 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "tile_entries_transition", "tile_entries_terrain_tri",
                     "gpu_raster_ns", "gpu_terrain_prepare_ns",
                     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
-                    "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
+                    "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns", "gpu_snapshot_raster_ns", "gpu_snapshot_pack_ns",
                     "gpu_timed_passes", "gpu_untimed_passes", "gpu_pass_union_ns",
                     "target_trig_geometry_bytes",
                     "target_trig_table_bytes",
@@ -82,7 +83,7 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "arena_live_bytes",
                     "arena_retired_bytes",
                     "arena_growth_peak_bytes")
-UPLOAD_GAUGES = ('upload_records_capacity', 'upload_records_used', 'upload_records_high_water', 'upload_indices_capacity', 'upload_indices_used', 'upload_indices_high_water', 'upload_uniforms_capacity', 'upload_uniforms_used', 'upload_uniforms_high_water')
+UPLOAD_GAUGES = ('upload_records_capacity', 'upload_records_used', 'upload_records_high_water', 'upload_indices_capacity', 'upload_indices_used', 'upload_indices_high_water', 'upload_uniforms_capacity', 'upload_uniforms_used', 'upload_uniforms_high_water') + ('capture_schema', 'arena_representation', 'upload_transport', 'staging_capacity_bytes', 'staging_inflight_bytes', 'staging_peak_bytes')
 DRAWING_GAUGES = (*UPLOAD_GAUGES, "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
                   "arena_capacity_bytes",
                   "arena_live_bytes",
@@ -487,7 +488,7 @@ def summarize_presenter(presenter, samples, required=False):
 def summarize_replay(replay_data, samples):
     if replay_data is None:
         return None
-    if not isinstance(replay_data, dict) or tuple(replay_data.get("counters", ())) not in (REPLAY_COUNTERS, REPLAY_PHASES + REPLAY_COUNTS):
+    if not isinstance(replay_data, dict) or tuple(replay_data.get("counters", ())) not in (REPLAY_COUNTERS, tuple(n for n in REPLAY_COUNTERS if n not in PACKED_MEASUREMENT_FIELDS), REPLAY_PHASES + REPLAY_COUNTS):
         raise RuntimeError("replay attribution counter names do not match this profiler")
     names = replay_data["counters"]
     rows = replay_data.get("per_frame")
@@ -497,11 +498,21 @@ def summarize_replay(replay_data, samples):
     if any(not isinstance(row, list) or len(row) != len(names)
            or any(type(value) is not int or value < 0 for value in row) for row in rows):
         raise RuntimeError("invalid replay attribution row")
+    metadata = {}
+    for name, labels in (("capture_schema", {2: 2}), ("arena_representation", {1: "expanded_u32", 2: "packed_u8"}), ("upload_transport", {1: "queue", 2: "mapped_copy"})):
+        values = {row[names.index(name)] for row in rows} if name in names else set()
+        metadata[name] = labels.get(next(iter(values))) if len(values) == 1 else None
+    ledgers = None
+    if metadata.get("capture_schema") == 2:
+        at = lambda row, name: row[names.index(name)]
+        factor = {"expanded_u32": 4, "packed_u8": 1}.get(metadata["arena_representation"])
+        ledgers = {"logical_source_equal": factor is not None and all(at(r, "arena_logical_upload_bytes") == factor * at(r, "arena_source_bytes") for r in rows),
+                   "physical_transfer_equal": all(at(r, "replay_staged_bytes") == at(r, "upload_queue_bytes") + at(r, "upload_copy_bytes") + at(r, "upload_init_bytes") for r in rows)}
     phases = {name: [row[names.index(name)] for row in rows] for name in REPLAY_PHASES}
     totals = [sum(values) for values in zip(*phases.values())]
     residual = [outer - total for outer, total in zip(replay, totals)]
     outside = sum(abs(value) > outer * 0.05 for value, outer in zip(residual, replay))
-    return {"source": "presenter.replay", "frames": len(rows), "phases_ms": {name: distribution(values) for name, values in phases.items()},
+    return {"metadata": metadata, "ledgers": ledgers, "source": "presenter.replay", "frames": len(rows), "phases_ms": {name: distribution(values) for name, values in phases.items()},
             "counts": {name: drawing_distribution([row[names.index(name)] for row in rows], name in UPLOAD_GAUGES)
                        for name in (*REPLAY_COUNTS, *UPLOAD_COUNTERS) if name in names},
             "total_ms": distribution(totals), "replay_ms": distribution(replay),
@@ -542,6 +553,7 @@ def summarize_drawing(drawing, presentations):
     schemas += [tuple(name for name in schema if name != "replay_submit_wait_ns") for schema in schemas]
     schemas += [tuple(name for name in schema if name not in UPLOAD_COUNTERS) for schema in schemas]
     schemas += [tuple(name for name in schema if name not in REPLAY_COUNTERS) for schema in schemas]
+    schemas += [tuple(n for n in schema if n not in PACKED_MEASUREMENT_FIELDS and n not in ("gpu_snapshot_raster_ns", "gpu_snapshot_pack_ns")) for schema in schemas]
     if names not in schemas:
         raise RuntimeError("drawing counter names do not match this profiler")
     rows = drawing.get("per_frame")
@@ -682,6 +694,10 @@ def write_report(output, report):
         for name, stats in {**replay["phases_ms"], "Phase sum": replay["total_ms"],
                             "Replay scope": replay["replay_ms"], "Residual against replay": replay["residual_ms"]}.items():
             lines.append(f"| {name} | {stats['mean']:.6f} | {stats['p95']:.6f} | {stats['max']:.6f} |")
+        lines += ["", "Arena representation: " + str(replay.get("metadata", {}).get("arena_representation") or "unavailable") +
+                  "; transport: " + str(replay.get("metadata", {}).get("upload_transport") or "unavailable") + ".",
+                  "Copy and API timers below are nested within Upload; they are not additional phases.",
+                  "Same-replay ledger checks: " + str(replay.get("ledgers") or "unavailable") + "."]
         fraction = replay["residual_fraction"]
         label = "unavailable (zero replay)" if fraction is None else f"{fraction:.2%}"
         lines += ["", f"Signed residual / replay: {label}; frames outside ±5%: {replay['frames_outside_5_percent']}.", "",

@@ -392,14 +392,19 @@ impl Arena {
         label: &str,
     ) {
         let _scope = Scope::new(Phase::Upload);
+        host::arena_payload(bytes.len(), bytes.len() * 4);
         if self.capacity as u64 * 4 > 32 << 20 {
             self.flush(queue);
+            let copy = host::UploadTimer::new(host::UploadPart::Expand, bytes.len() * 4);
             let expanded: Vec<_> = bytes
                 .iter()
                 .flat_map(|&b| u32::from(b).to_le_bytes())
                 .collect();
+            drop(copy);
+            host::arena_transfer(expanded.len());
             if !expanded.is_empty() {
-                queue.write_buffer(
+                host::write_buffer(
+                    queue,
                     self.buffer.as_ref().unwrap(),
                     u64::from(offset) * 4,
                     &expanded,
@@ -416,6 +421,7 @@ impl Arena {
             self.flush(queue);
         }
         let start = offset as usize * 4;
+        let copy = host::UploadTimer::new(host::UploadPart::Expand, bytes.len() * 4);
         for (dst, &byte) in self.image.bytes[start..start + bytes.len() * 4]
             .as_chunks_mut::<4>()
             .0
@@ -424,6 +430,7 @@ impl Arena {
         {
             dst.copy_from_slice(&u32::from(byte).to_le_bytes());
         }
+        drop(copy);
         self.image.mark(start, bytes.len() * 4, self.generation);
         host::upload_event(label, 2, 1);
         host::upload_event(label, 3, bytes.len() as u64 * 4);
@@ -444,7 +451,13 @@ impl Arena {
         self.image.merge(self.generation);
         for dirty in self.image.dirty.drain(..) {
             let bytes = &self.image.bytes[dirty.start..dirty.end];
-            queue.write_buffer(self.buffer.as_ref().unwrap(), dirty.start as u64, bytes);
+            host::write_buffer(
+                queue,
+                self.buffer.as_ref().unwrap(),
+                dirty.start as u64,
+                bytes,
+            );
+            host::arena_transfer(bytes.len());
             host::upload_event("arena flush", 4, 1);
             host::upload_event("arena flush", 5, bytes.len() as u64);
             host::staged_bytes(bytes.len());

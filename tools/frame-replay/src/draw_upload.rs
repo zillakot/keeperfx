@@ -223,6 +223,7 @@ impl Ring {
         self.high_water = self.high_water.max(start + size);
         host::upload_padding(start - prior);
         self.image.resize((start + size) as usize, 0);
+        let copy = host::UploadTimer::new(host::UploadPart::Copy, size as usize);
         for (dst, word) in self.image[start as usize..]
             .as_chunks_mut::<4>()
             .0
@@ -231,6 +232,7 @@ impl Ring {
         {
             dst.copy_from_slice(&word.to_le_bytes());
         }
+        drop(copy);
         self.dirty.get_or_insert(start);
         Some(Region {
             buffer: self.buffer.as_ref()?.clone(),
@@ -243,7 +245,7 @@ impl Ring {
     fn flush(&mut self, queue: &wgpu::Queue) {
         if let Some(start) = self.dirty.take() {
             let bytes = &self.image[start as usize..];
-            queue.write_buffer(self.buffer.as_ref().unwrap(), start, bytes);
+            host::write_buffer(queue, self.buffer.as_ref().unwrap(), start, bytes);
             host::upload_event(self.label, 4, 1);
             host::upload_event(self.label, 5, bytes.len() as u64);
             host::staged_bytes(bytes.len());

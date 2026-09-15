@@ -838,3 +838,22 @@ its report is explicitly labelled headless. It is **not native window performanc
 and must not be compared to a live SDL/Metal or Rust surface baseline.
 CI runs redistributable checks without original game assets. Native performance
 runs remain local, and their results are not CI performance thresholds.
+
+### Packed-arena measurement schema
+
+Capture schema 2 records representation (`arena_representation`: 1 expanded_u32,
+2 packed_u8) and transport (`upload_transport`: 1 queue, 2 mapped_copy) as gauges.
+The same `presenter.replay` interval contains `arena_source_bytes`,
+`arena_logical_upload_bytes` and `arena_transfer_bytes`. Logical bytes exclude
+padding/gaps; transfer bytes include actual arena queue traffic. Snapshot GPU
+copies are separate. Physical staging reconciles as queue + explicit copy +
+initialized-buffer bytes. Older captures leave new measurements unavailable.
+
+`upload_cpu_copy_ns` includes expansion and renderer staging-copy submetrics;
+`upload_api_ns` measures wgpu calls. These are nested within Upload. CPU copy bytes
+count renderer writes; wgpu's hidden memcpy is not directly timed. Direct staging
+pool/copy counters remain zero on the queue baseline. Snapshot raster and future
+snapshot packing have separate GPU categories. Optional `KFX_WGPU_PASS_TRACE`
+writes bounded pass-instance durations at renderer destruction; use it only for
+separate diagnostics, with zero dropped/untimed instances required for coverage.
+Instrumentation overhead and host parity remain host measurement gates.

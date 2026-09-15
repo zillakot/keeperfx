@@ -263,6 +263,7 @@ impl DrawRenderer {
             ],
         });
         let compute = self.compute.clone();
+        let stamp = self.stamp(timing::PASS_SNAPSHOT_RASTER);
         let mut copied = 0;
         {
             let _scope = Scope::new(Phase::Encode);
@@ -270,10 +271,11 @@ impl DrawRenderer {
             for (source, offset, size) in &copies {
                 encoder.copy_buffer_to_buffer(source, 0, &assets, *offset, *size);
                 copied += *size;
+                host::snapshot_copy(*size);
             }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("immutable source overlapping destination images"),
-                timestamp_writes: None,
+                timestamp_writes: stamp.compute(),
             });
             pass.set_pipeline(&compute);
             pass.set_bind_group(0, &binding, &[]);

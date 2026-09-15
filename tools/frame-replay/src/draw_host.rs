@@ -70,6 +70,30 @@ pub struct ReplayCounters {
     pub upload_uniforms_used: u64,
     pub upload_uniforms_high_water: u64,
     pub upload_arena_dirty_bytes: u64,
+    pub capture_schema: u64,
+    pub arena_representation: u64,
+    pub upload_transport: u64,
+    pub arena_source_bytes: u64,
+    pub arena_logical_upload_bytes: u64,
+    pub arena_transfer_bytes: u64,
+    pub upload_cpu_copy_bytes: u64,
+    pub upload_cpu_copy_ns: u64,
+    pub upload_expand_ns: u64,
+    pub upload_staging_copy_ns: u64,
+    pub upload_api_ns: u64,
+    pub upload_copy_encode_ns: u64,
+    pub upload_copy_commands: u64,
+    pub upload_copy_bytes: u64,
+    pub upload_init_bytes: u64,
+    pub staging_buffers_created: u64,
+    pub staging_capacity_bytes: u64,
+    pub staging_inflight_bytes: u64,
+    pub staging_peak_bytes: u64,
+    pub staging_map_wait_ns: u64,
+    pub staging_fallbacks: u64,
+    pub staging_padding_bytes: u64,
+    pub snapshot_copy_bytes: u64,
+    pub snapshot_pack_bytes: u64,
     pub upload_routes: [[u64; 6]; 33],
 }
 
@@ -104,6 +128,30 @@ impl Default for ReplayCounters {
             upload_uniforms_used: 0,
             upload_uniforms_high_water: 0,
             upload_arena_dirty_bytes: 0,
+            capture_schema: 2,
+            arena_representation: 1,
+            upload_transport: 1,
+            arena_source_bytes: 0,
+            arena_logical_upload_bytes: 0,
+            arena_transfer_bytes: 0,
+            upload_cpu_copy_bytes: 0,
+            upload_cpu_copy_ns: 0,
+            upload_expand_ns: 0,
+            upload_staging_copy_ns: 0,
+            upload_api_ns: 0,
+            upload_copy_encode_ns: 0,
+            upload_copy_commands: 0,
+            upload_copy_bytes: 0,
+            upload_init_bytes: 0,
+            staging_buffers_created: 0,
+            staging_capacity_bytes: 0,
+            staging_inflight_bytes: 0,
+            staging_peak_bytes: 0,
+            staging_map_wait_ns: 0,
+            staging_fallbacks: 0,
+            staging_padding_bytes: 0,
+            snapshot_copy_bytes: 0,
+            snapshot_pack_bytes: 0,
             upload_routes: [[0; 6]; 33],
         }
     }
@@ -149,6 +197,30 @@ impl ReplayCounters {
         self.upload_uniforms_used = other.upload_uniforms_used;
         self.upload_uniforms_high_water = other.upload_uniforms_high_water;
         self.upload_arena_dirty_bytes += other.upload_arena_dirty_bytes;
+        self.capture_schema = other.capture_schema;
+        self.arena_representation = other.arena_representation;
+        self.upload_transport = other.upload_transport;
+        self.arena_source_bytes += other.arena_source_bytes;
+        self.arena_logical_upload_bytes += other.arena_logical_upload_bytes;
+        self.arena_transfer_bytes += other.arena_transfer_bytes;
+        self.upload_cpu_copy_bytes += other.upload_cpu_copy_bytes;
+        self.upload_cpu_copy_ns += other.upload_cpu_copy_ns;
+        self.upload_expand_ns += other.upload_expand_ns;
+        self.upload_staging_copy_ns += other.upload_staging_copy_ns;
+        self.upload_api_ns += other.upload_api_ns;
+        self.upload_copy_encode_ns += other.upload_copy_encode_ns;
+        self.upload_copy_commands += other.upload_copy_commands;
+        self.upload_copy_bytes += other.upload_copy_bytes;
+        self.upload_init_bytes += other.upload_init_bytes;
+        self.staging_buffers_created += other.staging_buffers_created;
+        self.staging_capacity_bytes = other.staging_capacity_bytes;
+        self.staging_inflight_bytes = other.staging_inflight_bytes;
+        self.staging_peak_bytes = other.staging_peak_bytes;
+        self.staging_map_wait_ns += other.staging_map_wait_ns;
+        self.staging_fallbacks += other.staging_fallbacks;
+        self.staging_padding_bytes += other.staging_padding_bytes;
+        self.snapshot_copy_bytes += other.snapshot_copy_bytes;
+        self.snapshot_pack_bytes += other.snapshot_pack_bytes;
         for (dst, src) in self.upload_routes.iter_mut().zip(other.upload_routes) {
             for (dst, src) in dst.iter_mut().zip(src) {
                 *dst += src;
@@ -360,6 +432,66 @@ impl DerefMut for ComputePass<'_> {
     }
 }
 
+pub(crate) enum UploadPart {
+    Expand,
+    Copy,
+    Api,
+}
+pub(crate) struct UploadTimer {
+    start: Option<Instant>,
+    part: UploadPart,
+    bytes: u64,
+}
+impl UploadTimer {
+    pub(crate) fn new(part: UploadPart, bytes: usize) -> Self {
+        Self {
+            start: CLOCK.with_borrow(|c| c.as_ref().map(|_| Instant::now())),
+            part,
+            bytes: bytes as u64,
+        }
+    }
+}
+impl Drop for UploadTimer {
+    fn drop(&mut self) {
+        if let Some(start) = self.start {
+            let ns = start.elapsed().as_nanos() as u64;
+            count(|c| match self.part {
+                UploadPart::Expand => {
+                    c.upload_expand_ns += ns;
+                    c.upload_cpu_copy_ns += ns;
+                    c.upload_cpu_copy_bytes += self.bytes;
+                }
+                UploadPart::Copy => {
+                    c.upload_staging_copy_ns += ns;
+                    c.upload_cpu_copy_ns += ns;
+                    c.upload_cpu_copy_bytes += self.bytes;
+                }
+                UploadPart::Api => c.upload_api_ns += ns,
+            });
+        }
+    }
+}
+pub(crate) fn write_buffer(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
+    let _scope = Scope::new(Phase::Upload);
+    let _api = UploadTimer::new(UploadPart::Api, 0);
+    queue.write_buffer(buffer, offset, bytes);
+}
+pub(crate) fn arena_payload(source: usize, logical: usize) {
+    count(|c| {
+        c.arena_source_bytes += source as u64;
+        c.arena_logical_upload_bytes += logical as u64;
+    });
+}
+pub(crate) fn arena_transfer(bytes: usize) {
+    count(|c| c.arena_transfer_bytes += bytes as u64);
+}
+pub(crate) fn initialized_bytes(bytes: usize) {
+    count(|c| c.upload_init_bytes += bytes as u64);
+}
+pub(crate) fn snapshot_copy(bytes: u64) {
+    count(|c| c.snapshot_copy_bytes += bytes);
+}
+
 pub(crate) fn upload_event(label: &str, metric: usize, value: u64) {
     count(|c| {
         let index = UPLOAD_LABELS
@@ -407,6 +539,37 @@ pub(crate) fn arena_dirty(bytes: u64) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn aligned_byte_ledgers_and_nested_copy_timers() {
+        let replay = Replay::begin();
+        {
+            let _upload = Scope::new(Phase::Upload);
+            let copy = UploadTimer::new(UploadPart::Expand, 28);
+            arena_payload(7, 28);
+            drop(copy);
+            arena_transfer(32);
+            upload_event("arena flush", 5, 32);
+            staged_bytes(32);
+            initialized_bytes(12);
+            staged_bytes(12);
+        }
+        let c = replay.finish();
+        assert_eq!(c.arena_source_bytes * 4, c.arena_logical_upload_bytes);
+        assert_eq!(c.arena_transfer_bytes, 32);
+        assert_eq!(
+            c.replay_staged_bytes,
+            c.upload_queue_bytes + c.upload_copy_bytes + c.upload_init_bytes
+        );
+        assert_eq!(c.upload_cpu_copy_bytes, 28);
+        assert_eq!(
+            c.upload_cpu_copy_ns,
+            c.upload_expand_ns + c.upload_staging_copy_ns
+        );
+        assert!(c.replay_upload_ns >= c.upload_cpu_copy_ns);
+        assert_eq!(c.capture_schema, 2);
+        assert_eq!(Replay::begin().finish().arena_source_bytes, 0);
+    }
 
     #[test]
     fn exclusive_clock_partition() {

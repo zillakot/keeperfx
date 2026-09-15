@@ -1446,6 +1446,8 @@ impl AssetPacker<'_> {
                     arena::OVERFLOW
                 );
                 let offset = assets.len() as u32;
+                let _scope = Scope::new(Phase::Upload);
+                let _copy = host::UploadTimer::new(host::UploadPart::Expand, length * 4);
                 assets.extend(bytes[..length].iter().map(|byte| u32::from(*byte)));
                 offsets.insert(id, offset);
                 Ok(offset)
@@ -1824,7 +1826,11 @@ fn buffer(
     host::upload_event(label, 0, 1);
     host::upload_event(label, 1, words.len() as u64 * 4);
     host::staged_bytes(words.len() * 4);
+    let copy = host::UploadTimer::new(host::UploadPart::Copy, words.len() * 4);
     let bytes: Vec<_> = words.iter().flat_map(|v| v.to_le_bytes()).collect();
+    drop(copy);
+    host::initialized_bytes(bytes.len());
+    let _api = host::UploadTimer::new(host::UploadPart::Api, 0);
     counters.buffers += 1;
     counters.buffer_bytes += bytes.len() as u64;
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

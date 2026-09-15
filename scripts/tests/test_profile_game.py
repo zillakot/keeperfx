@@ -200,6 +200,28 @@ class ProfileTests(unittest.TestCase):
             (output / "raw.csv.json").write_text(json.dumps(metadata))
             self.assertIsNone(profile.summarize(output, arguments())["replay_host"])
 
+    def test_packed_measurement_metadata_and_same_replay_conservation(self):
+        names = profile.REPLAY_COUNTERS
+        row = [0] * len(names)
+        values = dict(capture_schema=2, arena_representation=1, upload_transport=1,
+                      arena_source_bytes=7, arena_logical_upload_bytes=28,
+                      arena_transfer_bytes=32, upload_queue_bytes=48,
+                      upload_init_bytes=4, replay_staged_bytes=52, replay_upload_ns=100,
+                      upload_cpu_copy_ns=60, upload_expand_ns=60)
+        for name, value in values.items():
+            row[names.index(name)] = value
+        result = profile.summarize_replay(dict(counters=names, per_frame=[row]), {"replay": [100]})
+        self.assertEqual(result["metadata"]["arena_representation"], "expanded_u32")
+        self.assertTrue(all(result["ledgers"].values()))
+        self.assertEqual(result["total_ms"]["mean"], 0.0001)
+        row[names.index("replay_staged_bytes")] += 1
+        result = profile.summarize_replay(dict(counters=names, per_frame=[row]), {"replay": [100]})
+        self.assertFalse(result["ledgers"]["physical_transfer_equal"])
+        legacy = tuple(n for n in names if n not in profile.PACKED_MEASUREMENT_FIELDS)
+        result = profile.summarize_replay(dict(counters=legacy, per_frame=[[row[names.index(n)] for n in legacy]]), {"replay": [100]})
+        self.assertIsNone(result["metadata"]["arena_representation"])
+        self.assertIsNone(result["ledgers"])
+
     def test_replay_residual_signed_outliers_zero_and_legacy(self):
         data = {"counters": list(profile.REPLAY_COUNTERS),
                 "per_frame": [[100] * 7 + [1, 2, 3, 4] + [0] * len(profile.UPLOAD_COUNTERS), [200] * 7 + [2, 3, 4, 5] + [0] * len(profile.UPLOAD_COUNTERS)]}

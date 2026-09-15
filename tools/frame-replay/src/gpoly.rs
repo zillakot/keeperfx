@@ -100,10 +100,15 @@ impl GpolyPreparer {
             let _scope = Scope::new(Phase::Upload);
             host::created_buffer();
             host::staged_bytes(words.len() * 4);
+            let copy = host::UploadTimer::new(host::UploadPart::Copy, words.len() * 4);
+            let payload = bytes(words);
+            drop(copy);
+            host::initialized_bytes(payload.len());
+            let _api = host::UploadTimer::new(host::UploadPart::Api, 0);
             crate::draw::upload::Region::whole(device.create_buffer_init(
                 &wgpu::util::BufferInitDescriptor {
                     label: Some(label),
-                    contents: &bytes(words),
+                    contents: &payload,
                     usage,
                 },
             ))
