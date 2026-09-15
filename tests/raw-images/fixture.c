@@ -12,6 +12,7 @@ enum { WIDTH = 211, HEIGHT = 139, SIZE = WIDTH * HEIGHT };
 static uint8_t pixels[SIZE], initial[SIZE], expected[SIZE], asset[256 * 256];
 static unsigned submissions, boundaries, count;
 static int enabled = 1, decline;
+static struct { int keyed; uint32_t kind; uint64_t hi, lo, generation; } last_key;
 static FILE *fixture;
 static void require(int condition, const char *message)
 {
@@ -26,8 +27,20 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
     const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
     const struct KfxWgpuNativeResource *table, KfxWgpuNativeOracle oracle, void *context)
 {
+    return kfx_wgpu_native_draw_named(target, command, source, NULL, table, oracle, context);
+}
+int kfx_wgpu_native_draw_named(const struct KfxGpolyTarget *target,
+    const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
+    const struct KfxWgpuNativeKey *name, const struct KfxWgpuNativeResource *table,
+    KfxWgpuNativeOracle oracle, void *context)
+{
     (void)table;
     submissions++;
+    last_key.keyed = name != NULL;
+    last_key.kind = name ? name->kind : 0;
+    last_key.hi = name ? name->hi : 0;
+    last_key.lo = name ? name->lo : 0;
+    last_key.generation = name ? name->generation : 0;
     if (decline) return 0;
     require(target->pixels == pixels && target->pitch == WIDTH, "wrong target");
     require(!memcmp(pixels, initial, SIZE), "CPU destination writes before GPU submission");
@@ -122,6 +135,33 @@ int main(int argc, char **argv)
     fseek(fixture, 4, SEEK_SET);
     fwrite(&count, sizeof(count), 1, fixture);
     fclose(fixture);
+    fixture = NULL;
     printf("%u actual native raw image/tile/clear fixtures\n", count);
+
+    /* Identity: an unregistered buffer has no name the drawing context can trust, a
+     * registered one keys by its own address, and a reload renames it. */
+    memcpy(pixels, initial, SIZE);
+    pixel_size = 1;
+    lbDisplay.PhysicalScreenWidth = WIDTH;
+    static uint8_t unregistered[256 * 256];
+    copy_raw8_image_buffer(pixels, WIDTH, HEIGHT, 39, 27, 7, 6, unregistered, 17, 13);
+    require(!last_key.keyed, "unregistered raw image was named");
+    draw_slab64k_background_immediate(0, 0, 64, 64);
+    require(last_key.keyed && last_key.kind == KFX_WGPU_DRAW_KEY_TILED_IMAGE &&
+        last_key.lo == (uint64_t)(uintptr_t)asset, "tile name wrong");
+    raw(17, 13, 39, 27, 7, 6);
+    require(last_key.keyed && last_key.kind == KFX_WGPU_DRAW_KEY_RAW_IMAGE &&
+        last_key.lo == (uint64_t)(uintptr_t)asset && last_key.hi == 0 &&
+        last_key.generation == kfx_render_asset_generation, "raw image name wrong");
+    uint64_t named = last_key.generation;
+    raw(17, 13, 83, 61, 0, 0);
+    require(last_key.keyed && last_key.lo == (uint64_t)(uintptr_t)asset &&
+        last_key.generation == named, "destination rect changed the raw image name");
+    kfx_render_assets_changed();
+    raw(17, 13, 39, 27, 7, 6);
+    require(last_key.keyed && last_key.generation == named + 1, "reload did not rename");
+    kfx_render_asset_range_forget(asset);
+    raw(17, 13, 39, 27, 7, 6);
+    require(!last_key.keyed, "forgotten range kept its name");
     return 0;
 }

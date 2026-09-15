@@ -910,6 +910,9 @@ void compressed_window_draw(void)
 
 void unload_map_and_window(void)
 {
+    // The campaign map's name spans live simulation state, so it dies with the screen.
+    kfx_render_asset_range_forget(map_screen);
+    kfx_render_assets_changed();
     clear_light_system(&game.lish);
     clear_things_and_persons_data();
     clear_mapmap();
@@ -967,15 +970,18 @@ TbBool load_map_and_window(LevelNumber lvnum)
         ERRORLOG("Not enough memory in game structure for Land Map background \"%s.raw\"",land_view);
         return false;
     }
+    // Bumped on both sides of the load so a resource cached mid-write is invalidated too.
+    kfx_render_assets_changed();
     if (LbFileLoadAt(fname, &game.land_map_start) != flen)
     {
         ERRORLOG("Unable to load Land Map background \"%s.raw\"",land_view);
         return false;
     }
     map_screen = &game.land_map_start;
-    // Texture blocks memory isn't used here, so reuse it instead of allocating
-    // Bumped on both sides of the load so a mid-write cache entry is invalidated too.
+    kfx_render_asset_range(map_screen, LANDVIEW_MAP_WIDTH * LANDVIEW_MAP_HEIGHT);
+    // This bump closes the raw load and opens the window load below.
     kfx_render_assets_changed();
+    // Texture blocks memory isn't used here, so reuse it instead of allocating
     unsigned char* ptr = block_mem;
     memcpy(frontend_backup_palette, &frontend_palette, PALETTE_SIZE);
     // Now prepare window sprite file name and load the file

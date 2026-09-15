@@ -144,13 +144,22 @@ drawing context, with:
   `kfx_wgpu_draw_resource_create_keyed(kind, key_hi, key_lo, generation)` resolves a key to the handle
   already resident for it, so terrain tiles, terrain fade tables and the lookup tables of
   `kfx_wgpu_native_draw` hold one arena id across frames instead of the bridge rescanning a 64-entry
-  texture cache and a 16-entry table cache. Bytes the caller cannot name — anything outside a range
-  registered with `kfx_render_asset_range` — take a per-call resource; tables built on a caller's stack
-  still compare content until their emitters carry the table identity. The only bump is
-  `kfx_render_assets_changed()`, from the texture map load, the fade and ghost rebuild, the land view and
-  the torture screen; a key seen with a new generation takes a new handle, because a recorded command
-  must still name the bytes it was issued against. `FullRedraw` and `ReadBarrier` do not bump it;
-  `FullRedraw` releases the keyed resources.
+  texture cache and a 16-entry table cache. `kfx_wgpu_native_draw_named` extends that to a command's
+  source asset, which is how raw images, tiled backgrounds and DBC glyphs are named: an image by the
+  loader's buffer address, a glyph by its font, character and the three colour words the asset carries,
+  with the destination rectangle, scale and clip left in the record where they cannot reach the key.
+  Bytes the caller cannot name — anything outside a range registered with `kfx_render_asset_range` —
+  take a per-call resource; tables built on a caller's stack still compare content until their emitters
+  carry the table identity. The only bump is `kfx_render_assets_changed()`, from the texture map load,
+  the fade and ghost rebuild, the land view, the torture screen, the front-end background and parchment
+  loads, the unicode font load, and each `LbDataFree` that actually releases a buffer, which also drops
+  that buffer's range so a later allocation at the address cannot inherit its name. A range is dropped
+  again where its storage stops being an image: leaving the front end and unloading the campaign map.
+  A key seen with a new generation takes a new handle, because a recorded command must still name the
+  bytes it was issued against. `FullRedraw` and `ReadBarrier` do not bump it; `FullRedraw` releases the
+  keyed resources.
+  Huge sprites stay per-call: their run list is flattened from the scaling arrays and the target
+  extent, so the bytes carry the position the key must not, and they need the asset split first.
 - **Sprites are three assets, not one.** A sprite asset used to be one per-call buffer holding the
   expanded artwork, the scaling ranges and a copy of a 256-byte remap. Only the ranges are per call —
   they carry the sprite's position on screen — so the artwork is keyed by the address of the artwork

@@ -9,6 +9,7 @@ KfxGpolySink kfx_gpoly_sink;
 void *kfx_gpoly_sink_context;
 
 uint64_t kfx_render_asset_generation = 1;
+uint64_t kfx_render_asset_range_drops;
 uint64_t kfx_render_sprite_generation = 1;
 
 static struct { const unsigned char *base; size_t length; } asset_ranges[KFX_RENDER_ASSET_RANGES];
@@ -26,10 +27,27 @@ void kfx_render_sprites_changed(void)
 void kfx_render_asset_range(const void *base, size_t length)
 {
     if (!base || !length) return;
+    for (int i = 0; i < KFX_RENDER_ASSET_RANGES; ++i)
+        if (asset_ranges[i].base == base) {
+            asset_ranges[i].length = length;
+            return;
+        }
     for (int i = 0; i < KFX_RENDER_ASSET_RANGES; ++i) {
-        if (asset_ranges[i].base != base && asset_ranges[i].base != NULL) continue;
+        if (asset_ranges[i].base != NULL) continue;
         asset_ranges[i].base = (const unsigned char *)base;
         asset_ranges[i].length = length;
+        return;
+    }
+    ++kfx_render_asset_range_drops;
+}
+
+void kfx_render_asset_range_forget(const void *base)
+{
+    if (!base) return;
+    for (int i = 0; i < KFX_RENDER_ASSET_RANGES; ++i) {
+        if (asset_ranges[i].base != base) continue;
+        asset_ranges[i].base = NULL;
+        asset_ranges[i].length = 0;
         return;
     }
 }
@@ -38,10 +56,12 @@ int kfx_render_asset_stable(const void *bytes, size_t length)
 {
     if (!bytes || !length) return 0;
     const unsigned char *first = (const unsigned char *)bytes;
+    // Registrations may nest, so a range that starts before these bytes but ends inside
+    // them is not an answer; keep looking for one that covers them.
     for (int i = 0; i < KFX_RENDER_ASSET_RANGES; ++i) {
         const unsigned char *base = asset_ranges[i].base;
         if (!base || first < base || first >= base + asset_ranges[i].length) continue;
-        return (size_t)(base + asset_ranges[i].length - first) >= length;
+        if ((size_t)(base + asset_ranges[i].length - first) >= length) return 1;
     }
     return 0;
 }

@@ -448,10 +448,18 @@ static void dbc_dispatch_bitmap(struct DbcOracle *o)
         target = (struct KfxGpolyTarget){SwTargetWScreen(), pitch, height, pitch};
     }
     o->offset = (ptrdiff_t)wy * target.pitch + wx;
+    /* Only a font of the fixed table has a name that survives a reload; anything else
+     * draws unnamed rather than sharing a key with a font it is not. */
+    uint64_t glyph_id = 0;
+    for (size_t i = 0; i < sizeof(dbcfonts) / sizeof(dbcfonts[0]); ++i)
+        if (active_dbcfont == &dbcfonts[i]) {
+            if (o->draw.draw_char <= 0xffff) glyph_id = (i + 1) << 16 | o->draw.draw_char;
+            break;
+        }
     if (kfx_wgpu_bitmap_font(&target, wx, wy, o->window.width, o->window.height,
         o->x, o->y + o->draw.vertical_offset, o->draw.sprite_data, o->sw, o->sh,
         o->draw.bits_width, o->draw.bits_height, o->scaled, o->foreground,
-        o->background, o->shadow, dbc_bitmap_oracle, o)) return;
+        o->background, o->shadow, glyph_id, dbc_bitmap_oracle, o)) return;
     if (kfx_wgpu_native_cpu_barrier()) dbc_native_bitmap(o);
 }
 
@@ -1581,6 +1589,7 @@ static short load_unifont_file(struct AsianFont * dbcfont)
     dbcfont->data = data_buf;
     dbcfont->widths = widths;
     dbcfont->offsets = offsets;
+    kfx_render_assets_changed();
     return 0;
 }
 

@@ -24,14 +24,21 @@ static int disjoint(const uint8_t *source, size_t length, const uint8_t *dst, si
     return a < b ? length <= b - a : capacity <= a - b;
 }
 
+/* The image bytes are the loader's buffer as loaded, so a registered range names them
+ * for as long as the generation holds; destination rect and scale stay in the record. */
 static int submit(uint8_t *dst, int pitch, int height, struct KfxWgpuDrawCommand *command,
-    const uint8_t *source, int sw, int sh, KfxWgpuNativeOracle oracle, void *context)
+    const uint8_t *source, int sw, int sh, uint32_t key_kind,
+    KfxWgpuNativeOracle oracle, void *context)
 {
     if (!source || sw <= 0 || sh <= 0 || sw > 8192 || sh > 8192 ||
         (size_t)sw * sh > 16 * 1024 * 1024 || !oracle ||
         !disjoint(source, (size_t)sw * sh, dst, (size_t)pitch * height)) return 0;
     struct KfxGpolyTarget target = {dst, pitch, height, pitch};
-    struct KfxWgpuNativeResource asset = {source, (size_t)sw * sh, sw, sh, sw, NULL, 0, 0};
+    size_t length = (size_t)sw * sh;
+    struct KfxWgpuNativeResource asset = {source, length, sw, sh, sw, NULL, 0, 0};
+    struct KfxWgpuNativeKey name = {key_kind, 0, (uint64_t)(uintptr_t)source,
+        kfx_render_asset_generation};
+    int named = kfx_render_asset_stable(source, length);
     command->abi_version = KFX_WGPU_DRAW_ABI_VERSION;
     command->transparent = KFX_WGPU_DRAW_OPAQUE;
     command->clip_width = pitch;
@@ -39,7 +46,8 @@ static int submit(uint8_t *dst, int pitch, int height, struct KfxWgpuDrawCommand
     command->source_width = sw;
     command->source_height = sh;
     struct RawOracle wrapper = {oracle, context};
-    return kfx_wgpu_native_draw(&target, command, &asset, NULL, raw_oracle, &wrapper);
+    return kfx_wgpu_native_draw_named(&target, command, &asset, named ? &name : NULL, NULL,
+        raw_oracle, &wrapper);
 }
 
 int kfx_wgpu_raw_image(uint8_t *dst, int pitch, int height, int dw, int dh, int x, int y,
@@ -58,7 +66,8 @@ int kfx_wgpu_raw_image(uint8_t *dst, int pitch, int height, int dw, int dh, int 
     command.start_high = (uint32_t)y;
     command.step_low = dw;
     command.step_high = dh;
-    return submit(dst, pitch, height, &command, source, sw, sh, oracle, context);
+    return submit(dst, pitch, height, &command, source, sw, sh,
+        KFX_WGPU_DRAW_KEY_RAW_IMAGE, oracle, context);
 }
 
 int kfx_wgpu_raw_tile(uint8_t *dst, int pitch, int height, int x, int y, int width, int rows,
@@ -72,7 +81,8 @@ int kfx_wgpu_raw_tile(uint8_t *dst, int pitch, int height, int x, int y, int wid
     struct KfxWgpuDrawCommand command = {0};
     command.kind = KFX_WGPU_DRAW_TILED_IMAGE;
     command.x = x; command.y = y; command.width = width; command.height = rows;
-    return submit(dst, pitch, height, &command, source, size, size, oracle, context);
+    return submit(dst, pitch, height, &command, source, size, size,
+        KFX_WGPU_DRAW_KEY_TILED_IMAGE, oracle, context);
 }
 
 struct ClearOracle { int width, height; uint8_t colour; };

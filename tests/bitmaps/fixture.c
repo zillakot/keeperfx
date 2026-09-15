@@ -8,6 +8,7 @@ static unsigned short flags;
 static FILE *fixture;
 static unsigned submissions, count, barriers;
 static int enabled = 1, decline, barrier_ok = 1;
+static struct { int keyed; uint32_t kind; uint64_t hi, lo, generation; } last_key;
 enum { WIDTH = 83, HEIGHT = 61, SIZE = WIDTH * HEIGHT };
 static uint8_t pixels[SIZE], expected[SIZE], initial[SIZE];
 static void require(int condition, const char *message)
@@ -25,8 +26,20 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
     const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
     const struct KfxWgpuNativeResource *table, KfxWgpuNativeOracle oracle, void *context)
 {
+    return kfx_wgpu_native_draw_named(target, command, source, NULL, table, oracle, context);
+}
+int kfx_wgpu_native_draw_named(const struct KfxGpolyTarget *target,
+    const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
+    const struct KfxWgpuNativeKey *name, const struct KfxWgpuNativeResource *table,
+    KfxWgpuNativeOracle oracle, void *context)
+{
     (void)table;
     submissions++;
+    last_key.keyed = name != NULL;
+    last_key.kind = name ? name->kind : 0;
+    last_key.hi = name ? name->hi : 0;
+    last_key.lo = name ? name->lo : 0;
+    last_key.generation = name ? name->generation : 0;
     if (decline) return 0;
     require(target->pixels == pixels && target->pitch == WIDTH, "wrong target");
     require(!memcmp(pixels, initial, SIZE), "CPU destination writes before GPU submission");
@@ -199,5 +212,43 @@ int main(int argc, char **argv)
     require(!kfx_wgpu_bitmap_huge(pixels, WIDTH, HEIGHT, xsteps_array, ysteps_array,
         &huge, 4, huge_oracle, &huge_context), "truncated huge asset accepted");
     printf("%u actual native huge sprite/glyph fixtures; %u CPU barriers\n", count, barriers);
+
+    /* Identity: a glyph is named by its font and character, and the three colour words
+     * are part of the asset, so they are part of the name. */
+    memcpy(pixels, initial, SIZE);
+    flags = 0;
+    active_dbcfont = &fontdata;
+    font(bits, 16, 16, 24, 24, 3, 2, 255, -1, 0);
+    require(!last_key.keyed, "glyph outside the font table was named");
+    dbcfonts[0] = fontdata;
+    active_dbcfont = &dbcfonts[0];
+    struct AsianFontWindow window = {71, 53, WIDTH, pixels + WIDTH * 3 + 5};
+    long x = 5;
+    draw_dbc_char(0x4e2d, &window, &x, 5, 24);
+    require(last_key.keyed && last_key.kind == KFX_WGPU_DRAW_KEY_GLYPH &&
+        last_key.hi == ((uint64_t)1 << 16 | 0x4e2d) &&
+        last_key.generation == kfx_render_asset_generation, "glyph name wrong");
+    uint64_t colours = last_key.lo, generation = last_key.generation;
+    x = 25;
+    draw_dbc_char(0x4e2d, &window, &x, 17, 24);
+    require(last_key.hi == ((uint64_t)1 << 16 | 0x4e2d) && last_key.lo == colours,
+        "glyph position changed the name");
+    x = 5;
+    draw_dbc_char(0xac00, &window, &x, 5, 24);
+    require(last_key.hi == ((uint64_t)1 << 16 | 0xac00), "character not in the name");
+    dbc_colour0 = 71;
+    x = 5;
+    draw_dbc_char(0x4e2d, &window, &x, 5, 24);
+    require(last_key.lo != colours, "glyph colours not in the name");
+    dbc_colour0 = 0;
+    kfx_render_assets_changed();
+    x = 5;
+    draw_dbc_char(0x4e2d, &window, &x, 5, 24);
+    require(last_key.generation == generation + 1, "font reload did not rename");
+    dbcfonts[1] = fontdata;
+    active_dbcfont = &dbcfonts[1];
+    x = 5;
+    draw_dbc_char(0x4e2d, &window, &x, 5, 24);
+    require(last_key.hi == ((uint64_t)2 << 16 | 0x4e2d), "font not in the name");
     return 0;
 }
