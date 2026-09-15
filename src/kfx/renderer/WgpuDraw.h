@@ -123,9 +123,6 @@ struct KfxWgpuDrawCounters {
     uint64_t arena_miss_generation_bytes;
     uint64_t arena_miss_eviction_bytes;
     uint64_t arena_explicit_forgets;
-    /* Resources the drawing context holds under a key, a gauge. Keys are never reused
-     * for other bytes, so this is the number of distinct named assets kept resident. */
-    uint64_t keyed_resources;
     uint64_t arena_capacity_bytes;
     uint64_t arena_live_bytes;
     uint64_t arena_retired_bytes;
@@ -146,6 +143,10 @@ struct KfxWgpuDrawCounters {
 #define KFX_UPLOAD_FIELD(field) uint64_t field;
     KFX_UPLOAD_ALL_FIELDS
 #undef KFX_UPLOAD_FIELD
+
+    /* Resources the drawing context holds under a key, a gauge. Keys are never reused
+     * for other bytes, so this is the number of distinct named assets kept resident. */
+    uint64_t keyed_resources;
 
 
 };

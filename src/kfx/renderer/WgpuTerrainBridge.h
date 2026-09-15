@@ -224,7 +224,12 @@ private:
        They also hold the bytes the caller passed, so a mutation behind an unchanged key
        shows up as a KFX_WGPU_DRAW_VERIFY comparison failure. */
     std::map<uint64_t, std::vector<uint8_t>> m_replay_assets;
-    KeyMemo m_texture_memo = {}, m_fade_memo = {}, m_table_memo = {};
+    KeyMemo m_texture_memo = {}, m_fade_memo = {};
+    /* One slot per live lookup-table identity: a single slot missed on every alternation
+       between two tables and rebuilt an 80 KiB concatenation the context already held. */
+    static constexpr size_t kTableMemos = 4;
+    std::array<KeyMemo, kTableMemos> m_table_memos = {};
+    size_t m_table_memo_next = 0;
     std::vector<uint8_t> m_readback;
     Counters m_counts;
 };

@@ -1475,7 +1475,6 @@ pub struct DrawCounters {
     arena_miss_generation_bytes: u64,
     arena_miss_eviction_bytes: u64,
     arena_explicit_forgets: u64,
-    keyed_resources: u64,
     arena_capacity_bytes: u64,
     arena_live_bytes: u64,
     arena_retired_bytes: u64,
@@ -1536,6 +1535,7 @@ pub struct DrawCounters {
     snapshot_copy_bytes: u64,
     snapshot_pack_bytes: u64,
     upload_routes: [[u64; 6]; 33],
+    keyed_resources: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1606,7 +1606,6 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 arena_miss_generation_bytes: arena.miss_generation_bytes,
                 arena_miss_eviction_bytes: arena.miss_eviction_bytes,
                 arena_explicit_forgets: arena.explicit_forgets,
-                keyed_resources: drawing.keyed_resources(),
                 arena_capacity_bytes: arena.capacity_bytes,
                 arena_live_bytes: arena.live_bytes,
                 arena_retired_bytes: arena.retired_bytes,
@@ -1666,6 +1665,7 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 snapshot_copy_bytes: counters.replay.snapshot_copy_bytes,
                 snapshot_pack_bytes: counters.replay.snapshot_pack_bytes,
                 upload_routes: counters.replay.upload_routes,
+                keyed_resources: drawing.keyed_resources(),
             });
             Ok(Some(1))
         });
@@ -1713,9 +1713,10 @@ mod draw_abi_tests {
             std::mem::offset_of!(DrawCounters, replay_staged_bytes),
             204 * 8
         );
+        // The trailing 1 is keyed_resources, appended after the upload fields.
         assert_eq!(
             std::mem::size_of::<DrawCounters>(),
-            (79 + 19 * 6 + 1 + 11 + 239) * 8
+            (79 + 19 * 6 + 1 + 11 + 239 + 1) * 8
         );
     }
 

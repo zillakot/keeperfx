@@ -958,15 +958,21 @@ int main()
             rect.width = rect.clip_width = 4;
             rect.height = rect.clip_height = 2;
             KfxWgpuNativeResource keyed_table = {fade.data(), fade.size(), 256, 64, 256, nullptr, 0, 0};
+            // A second identity: the memo must hold both, or alternating commands would
+            // rebuild the concatenation the context already holds.
+            KfxWgpuNativeResource paired = {first.data(), first.size(), 256, 64, 256,
+                second.data(), second.size(), 0};
             const uint64_t created = keyed_creates, live = live_resources;
-            for (unsigned i = 0; i < 2; ++i)
+            for (unsigned i = 0; i < 4; ++i) {
                 assert(bridge.SubmitNative(run_target, rect, nullptr, &keyed_table, nullptr, nullptr) == 1);
-            assert(keyed_creates == created + 1 && live_resources == live + 1);
+                assert(bridge.SubmitNative(run_target, rect, nullptr, &paired, nullptr, nullptr) == 1);
+            }
+            assert(keyed_creates == created + 2 && live_resources == live + 2);
             std::vector<uint8_t> unnamed = fade;
             KfxWgpuNativeResource content_table = {unnamed.data(), unnamed.size(), 256, 64, 256, nullptr, 0, 0};
             for (unsigned i = 0; i < 2; ++i)
                 assert(bridge.SubmitNative(run_target, rect, nullptr, &content_table, nullptr, nullptr) == 1);
-            assert(keyed_creates == created + 1 && live_resources == live + 2);
+            assert(keyed_creates == created + 2 && live_resources == live + 3);
             assert(bridge.GetCounters().failures == 0);
         }
         {
@@ -994,12 +1000,17 @@ int main()
             kfx_wgpu_terrain_boundary(1);
             assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &top, first.data(), fade.data()) == 1);
             kfx_wgpu_terrain_boundary(0);
+            const uint64_t invalid = bridge.GetCounters().invalid_frames;
             fail_keyed_purge = true;
             bridge.FullRedraw();
             fail_keyed_purge = false;
+            // The redraw that failed is one invalid frame like any other; what it leaves
+            // behind is the residency, which no later redraw can reach.
             assert(!bridge.FrameValid() && bridge.GetCounters().resource_purge_failures == 1);
+            assert(bridge.GetCounters().invalid_frames == invalid + 1);
             bridge.FullRedraw();
             assert(bridge.FrameValid() && bridge.GetCounters().resource_purge_failures == 1);
+            assert(bridge.GetCounters().invalid_frames == invalid + 1);
         }
         // An unregistered pointer carries no name, so its bytes take a per-call resource.
         assert(kfx_render_asset_stable(first.data(), first.size()));

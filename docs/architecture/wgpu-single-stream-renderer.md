@@ -513,8 +513,15 @@ Each step is one PR and keeps every existing fixture green.
   fixed for the process, so the live set grows only toward the number of distinct pages and tables the
   session ever draws and never with command count. GPU pressure is handled by the arena's own LRU, which
   drops residency while the key and its handle survive and re-uploads as an eviction miss; host bytes are
-  released by `FullRedraw`'s purge. `keyed_resources` in the drawing counters reports the live set so the
-  assumption is observable rather than assumed.
+  released by `FullRedraw`'s purge. A resident keyed asset costs its bytes about three times — the arena
+  region, the `Resource` copy the drawing context keeps, and the bridge's replay snapshot for terrain
+  kinds — so the whole texture page space is roughly 3 × 8 KiB per distinct page drawn.
+  `keyed_resources` in the drawing counters reports the live set so the assumption is observable rather
+  than assumed.
+- **A refused purge costs one frame and leaks for the life of the context.** `FullRedraw` invalidates
+  that frame, so the CPU redraws it and play continues; what it cannot do is reach the resources the
+  context refused to release, and no later redraw retries them. `resource_purge_failures` is a gate
+  counter for exactly that reason.
 - **A generation bump reads as `misses_new_id`, not `misses_generation`.** A bump takes a new handle so a
   command already recorded keeps the bytes it was issued against, which makes the new handle a new arena
   id. The bump is observed as `arena_explicit_forgets` rising with the superseded handles and

@@ -373,7 +373,9 @@ bool WgpuTerrainBridge::PurgeResources()
     m_native_tables.clear();
     purged = CollectSuperseded() && purged;
     m_replay_assets.clear();
-    m_texture_memo = m_fade_memo = m_table_memo = {};
+    m_texture_memo = m_fade_memo = {};
+    m_table_memos = {};
+    m_table_memo_next = 0;
     if (!purged) ++m_counts.resource_purge_failures;
     return purged;
 }
@@ -391,9 +393,10 @@ void WgpuTerrainBridge::FullRedraw()
     ClearPending();
     m_resident_lease = false;
     m_allow_terrain = false;
-    // A refused purge leaves residency unproven, so the frame stays invalid and the CPU
-    // keeps the target until a redraw that could release it.
-    m_frame_invalid = !purged;
+    m_frame_invalid = false;
+    /* A refused purge leaves residency the caller was told is gone: the CPU keeps this
+       frame, and the resources behind it stay allocated for the life of the context. */
+    if (!purged) Invalidate();
     m_gpu_dirty = false;
     m_gpu_valid = false;
 }
@@ -615,8 +618,12 @@ uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, si
                                                  : StableKey(table.tail, table.tail_length);
     const Extent extent = {length, table.width, table.height, table.pitch};
     if (key != nullptr && (table.tail == nullptr || tail_key != nullptr)) {
-        const uint64_t memoized = MemoHandle(m_table_memo, key, tail_key, extent);
-        if (memoized != 0) return memoized;
+        // Before the concatenation: a resident key needs no bytes, and the tables are
+        // 64 KiB and 80 KiB.
+        for (const auto& memo : m_table_memos) {
+            const uint64_t memoized = MemoHandle(memo, key, tail_key, extent);
+            if (memoized != 0) return memoized;
+        }
         std::vector<uint8_t> bytes;
         bytes.reserve(length);
         bytes.insert(bytes.end(), table.bytes, table.bytes + table.length);
@@ -625,7 +632,11 @@ uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, si
         const uint64_t handle = KeyedResource(KFX_WGPU_DRAW_KEY_NATIVE_TABLE, key, tail_key,
             kfx_render_asset_generation, bytes.data(), extent);
         // No replay half: RasterizePending only replays terrain, so no snapshot is kept.
-        if (handle != 0) m_table_memo = {key, tail_key, kfx_render_asset_generation, extent, handle};
+        if (handle != 0) {
+            m_table_memos[m_table_memo_next] = {key, tail_key, kfx_render_asset_generation,
+                extent, handle};
+            m_table_memo_next = (m_table_memo_next + 1) % kTableMemos;
+        }
         return handle;
     }
     for (const auto& resource : m_native_tables) {
