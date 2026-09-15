@@ -120,7 +120,11 @@ private:
     struct Extent {
         size_t length;
         uint32_t width, height, pitch;
-        bool operator==(const Extent&) const = default;
+        bool operator==(const Extent& other) const
+        {
+            return length == other.length && width == other.width
+                && height == other.height && pitch == other.pitch;
+        }
     };
     /* The handle a key resolved to last, so a run of spans over one page does not cross
        the ABI again. Valid only while that handle lives: a generation bump supersedes the
