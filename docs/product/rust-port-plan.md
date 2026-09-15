@@ -284,7 +284,7 @@ square cuts the overlapped minimap pass 82% offscreen uncapped busy 1080p, 0.453
 
 Next, in order:
 
-1. **Drawing-family scene matrix** (in flight, `tooling/drawing-coverage-matrix`). A
+1. **Drawing-family scene matrix** (in flight on a local branch, not yet pushed). A
    control-session harness with no engine change, so it carries no parity risk. The coverage
    slices below cannot produce an acceptance number until a scene reaches their family, and
    the performance items need the same scenes, so this gates both. Acceptance: every drawing
