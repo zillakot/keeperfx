@@ -14,6 +14,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+API_ACTIONS = {"script": "map_command", "console": "console_command"}
 
 
 def read_session(path):
@@ -53,10 +54,10 @@ class Client:
         self.stream.close()
         self.socket.close()
 
-    def request(self, op, **fields):
+    def exchange(self, message):
         self.ack += 1
         self.socket.settimeout(max(0.01, min(2, self.deadline - time.monotonic())))
-        message = dict(action="control", token=self.session["token"], ack=self.ack, op=op, **fields)
+        message = dict(message, token=self.session["token"], ack=self.ack)
         self.socket.sendall(json.dumps(message, separators=(",", ":")).encode() + b"\n")
         while True:
             raw = self.stream.readline(4097)
@@ -67,10 +68,17 @@ class Client:
                 continue
             if not reply.get("success"):
                 raise RuntimeError(reply.get("error", reply))
-            data = reply["data"]
-            if data.get("session") != self.session["session_id"]:
-                raise RuntimeError("wrong game session")
-            return data
+            return reply
+
+    def request(self, op, **fields):
+        data = self.exchange(dict(action="control", op=op, **fields))["data"]
+        if data.get("session") != self.session["session_id"]:
+            raise RuntimeError("wrong game session")
+        return data
+
+    def api(self, action, **fields):
+        """Non-control API action; the game answers without a control state block."""
+        self.exchange(dict(action=action, **fields))
 
     def run(self, op, **fields):
         conditions = fields.pop("until", [])
@@ -82,7 +90,11 @@ class Client:
                 raise ValueError("invalid state predicate")
             expected[key] = value if key == "presenter" else json.loads(value)
         before = self.request("state")
-        result = self.request(op, **fields)
+        if op in API_ACTIONS:
+            self.api(API_ACTIONS[op], command=fields["command"])
+            result = self.request("state")
+        else:
+            result = self.request(op, **fields)
         if op == "quit":
             exit_path = Path(self.session["work"]) / "exit.json"
             while not exit_path.exists():
@@ -92,7 +104,7 @@ class Client:
             result["exit"] = json.loads(exit_path.read_text())
             if result["exit"]["returncode"] != 0 or result["exit"]["timed_out"]:
                 raise RuntimeError(f"game exited abnormally: {result['exit']}")
-        if op not in ("state", "quit"):
+        if op not in ("state", "quit") and op not in API_ACTIONS:
             command = result["command"]
             while result["busy"] or result["completed"] < command:
                 if time.monotonic() >= self.deadline:
@@ -109,6 +121,8 @@ class Client:
         for state in (before, result):
             state.pop("session", None)
         output = dict(input_source="native game event injection", op=op, before=before, after=result)
+        if op in API_ACTIONS:
+            output.update(input_source="game API action", action=API_ACTIONS[op], command=fields["command"])
         if op == "snapshot":
             screenshot = Path(self.session["work"]) / "scrshots" / f"control-{result['command']}.png"
             if not screenshot.is_file():
@@ -117,7 +131,68 @@ class Client:
         return output
 
 
+def validate_launch(args):
+    if not 60 <= args.lifetime <= 3600 or (args.level is not None and not 1 <= args.level <= 99999):
+        raise ValueError("lifetime must be 60..3600 seconds and level 1..99999")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", args.campaign):
+        raise ValueError("invalid campaign identifier")
+    language = getattr(args, "language", None)
+    if language and not re.fullmatch(r"[A-Za-z]{3}", language):
+        raise ValueError("language must be a three-letter code")
+    modes = getattr(args, "ingame_res", None)
+    if modes and not all(re.fullmatch(r"\d{3,4}x\d{3,4}[wf]\d{1,2}|DESKTOP", mode) for mode in modes.split()):
+        raise ValueError("invalid in-game video mode list")
+    if getattr(args, "rotate_mode", None) not in (None, 0, 1, 2):
+        raise ValueError("rotate mode must be 0, 1 or 2")
+    turns = getattr(args, "turns_per_second", None)
+    if turns is not None and not 1 <= turns <= 50:
+        raise ValueError("turns per second must be 1..50")
+    startup = getattr(args, "startup_timeout", None)
+    if startup is not None and not 30 <= startup <= 600:
+        raise ValueError("startup timeout must be 30..600 seconds")
+
+
+def setting(text, key, value):
+    """Replace the configuration line, or add it when the file does not carry the key."""
+    text, count = re.subn(rf"^{key}\s*=.*$", f"{key}={value}", text, flags=re.M)
+    return text if count else text + f"\n{key}={value}\n"
+
+
+def prepare_session(args, work, engine, port):
+    """Rewrite the cloned configuration for this session and return its descriptor."""
+    config = work / "keeperfx.cfg"
+    text = config.read_text().replace("API_ENABLED=FALSE", "API_ENABLED=TRUE")
+    text = setting(text, "API_PORT", port)
+    text = setting(text, "INGAME_RES", getattr(args, "ingame_res", None) or "640x480w32 DESKTOP 800x600w32")
+    if getattr(args, "language", None):
+        text = setting(text, "LANGUAGE", args.language)
+    if getattr(args, "turns_per_second", None):
+        # The legacy fixed pacing ignores the rate, so the delta-time loop has to be on.
+        text = setting(text, "DELTA_TIME", "ON")
+        text = setting(text, "TURNS_PER_SECOND", args.turns_per_second)
+    if getattr(args, "movie_scaling", None) is not None:
+        text = setting(text, "RESIZE_MOVIES", "ON" if args.movie_scaling else "OFF")
+    config.write_text(text)
+    if getattr(args, "rotate_mode", None) is not None:
+        (work / "save/settings.toml").write_text(f"[video]\nrotate_mode = {args.rotate_mode}\n")
+    manifest = dict(format="KFXCONTROL1", token=secrets.token_hex(32), session_id=secrets.token_hex(16),
+                    port=port, work=str(work), engine=str(engine),
+                    engine_sha256=hashlib.sha256(engine.read_bytes()).hexdigest(),
+                    backend=args.backend, verify=args.verify, lifetime=args.lifetime,
+                    draw_backend=args.draw_backend, draw_verify=args.draw_verify,
+                    args=["-altinput", "-skipheartzoom"])
+    manifest["args"] += ["-bullfrog"] if getattr(args, "play_movies", False) else ["-nointro"]
+    if getattr(args, "cheats", False):
+        manifest["args"] += ["-alex"]
+    if getattr(args, "smoothing", False):
+        manifest["args"] += ["-vidsmooth"]
+    if args.level:
+        manifest["args"] += ["-campaign", args.campaign, "-level", str(args.level)]
+    return manifest
+
+
 def launch(args):
+    validate_launch(args)
     work = args.out.resolve()
     if not work.is_relative_to((ROOT / "out").resolve()) or work == (ROOT / "out").resolve():
         raise ValueError("session output must be a new directory under repository out/")
@@ -136,25 +211,14 @@ def launch(args):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    config = work / "keeperfx.cfg"
-    text = config.read_text().replace("API_ENABLED=FALSE", "API_ENABLED=TRUE")
-    text = re.sub(r"^API_PORT\s*=.*$", f"API_PORT={port}", text, flags=re.M)
-    text = re.sub(r"^INGAME_RES\s*=.*$", "INGAME_RES=640x480w32 DESKTOP 800x600w32", text, flags=re.M)
-    config.write_text(text)
-    manifest = dict(format="KFXCONTROL1", token=secrets.token_hex(32), session_id=secrets.token_hex(16), port=port, work=str(work),
-                    engine=str(engine), engine_sha256=hashlib.sha256(engine.read_bytes()).hexdigest(),
-                    backend=args.backend, verify=args.verify, lifetime=args.lifetime,
-                    draw_backend=args.draw_backend, draw_verify=args.draw_verify,
-                    args=["-nointro", "-altinput", "-skipheartzoom"])
-    if args.level:
-        manifest["args"] += ["-campaign", args.campaign, "-level", str(args.level)]
+    manifest = prepare_session(args, work, engine, port)
     descriptor = work / "session.json"
     descriptor.write_text(json.dumps(manifest, indent=2) + "\n")
     descriptor.chmod(0o600)
     with (work / "supervisor.log").open("w") as log:
         subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_supervise", "--session", str(descriptor)],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + (getattr(args, "startup_timeout", None) or 60)
     while time.monotonic() < deadline:
         if (work / "exit.json").exists():
             raise RuntimeError(f"game exited during startup; inspect {work / 'keeperfx.log'}")
@@ -218,10 +282,19 @@ def main():
     launch_parser.add_argument("--lifetime", type=int, default=1200)
     launch_parser.add_argument("--campaign", default="keeporig")
     launch_parser.add_argument("--level", type=int)
+    launch_parser.add_argument("--cheats", action="store_true", help="pass -alex, which the lua/dbc console commands require")
+    launch_parser.add_argument("--play-movies", action="store_true", help="keep the startup movies and force the Bullfrog logo movie")
+    launch_parser.add_argument("--smoothing", action="store_true", help="pass -vidsmooth, which enables the screen smoothing pass")
+    launch_parser.add_argument("--ingame-res", help="replace the in-game video mode list, e.g. 320x200w32")
+    launch_parser.add_argument("--language", help="three-letter language code written to the isolated configuration")
+    launch_parser.add_argument("--rotate-mode", type=int, choices=(0, 1, 2), help="0 iso wibble, 1 iso straight, 2 front view")
+    launch_parser.add_argument("--startup-timeout", type=int, help="seconds to wait for the control API; startup movies delay it")
+    launch_parser.add_argument("--turns-per-second", type=int, help="slow the simulation so short animations span drawn frames")
+    launch_parser.add_argument("--movie-scaling", type=int, choices=(0, 1), help="0 plays movies unscaled, which uses the movie draw kind")
     supervisor = sub.add_parser("_supervise", help=argparse.SUPPRESS)
     supervisor.add_argument("--session", type=Path, required=True)
     operations = ("state", "move", "click", "drag", "key", "chord", "cycle-mode", "wait", "resize",
-                  "minimize", "restore", "focus", "snapshot", "cancel", "quit")
+                  "minimize", "restore", "focus", "snapshot", "script", "console", "cancel", "quit")
     for op in operations:
         command = sub.add_parser(op)
         command.add_argument("--session", type=Path, required=True)
@@ -241,6 +314,8 @@ def main():
         if op == "resize":
             command.add_argument("width", type=int)
             command.add_argument("height", type=int)
+        if op in API_ACTIONS:
+            command.add_argument("command", help="level script line (script) or console command (console)")
         if op in ("click", "drag", "key", "chord", "wait", "cycle-mode"):
             command.add_argument("--frames", type=int, default=3)
     args = parser.parse_args()
@@ -248,10 +323,10 @@ def main():
         supervise(args.session)
         return
     if args.command == "launch":
-        if not 60 <= args.lifetime <= 3600 or (args.level is not None and not 1 <= args.level <= 99999):
-            parser.error("lifetime must be 60..3600 seconds and level 1..99999")
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", args.campaign):
-            parser.error("invalid campaign identifier")
+        try:
+            validate_launch(args)
+        except ValueError as error:
+            parser.error(str(error))
         output = launch(args)
     else:
         data = read_session(args.session)

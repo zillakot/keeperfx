@@ -38,6 +38,14 @@ its live GPU comparison. Drawing defaults to software; `--draw-backend wgpu` sel
 GPU drawing path and `--draw-verify` adds its CPU oracle comparison, which is a parity
 check rather than a performance run. `--level 1 --campaign keeporig` starts gameplay directly.
 
+Further launch options exist to reach drawing paths a default session never enters:
+`--cheats` passes `-alex`, which the `lua` and `dbc` console commands require; `--play-movies`
+keeps the startup movies and forces the short Bullfrog logo movie; `--smoothing` passes
+`-vidsmooth`; `--ingame-res` replaces the in-game video mode list (the parchment fade state is only
+entered below 321 pixels wide); `--language` writes a three-letter language code, and a
+double-byte language switches all text to the Asian glyph path; `--rotate-mode 2` writes the
+isolated `save/settings.toml` so the level starts in front view.
+
 The descriptor is private (0600) inside the new session directory (0700). Keep it
 private: its random token authorizes all API actions in that process, including
 legacy Lua/console actions. The engine opts in only with valid
@@ -76,6 +84,10 @@ the actual active SDL or wgpu instance, including a fallback.
   320–4096 by 200–2160. These operations exercise real window lifecycle events.
 - `snapshot` schedules the existing renderer screenshot path and returns the PNG
   path. This is the game frame; live GPU comparison requires `--verify` separately.
+- `script "COMMAND"` and `console "COMMAND"` send a level-script line or a console
+  command through the game API instead of the input queue, which is how a check
+  possesses a creature or activates a Lua lens. Both are refused while the game is
+  paused, and `lua`, `dbc` and the other cheat commands need `--cheats`.
 - `cancel` releases held inputs; `quit` dispatches the standard quit event and
   waits for the supervised process to exit normally.
 
@@ -118,6 +130,7 @@ remains unchanged when control is disabled.
 
 ```sh
 python3 -m unittest discover -s scripts/tests -p 'test_game_control.py'
+python3 -m unittest discover -s scripts/tests -p 'test_drawing_coverage.py'
 cmake -S tests/api -B out/api-tests
 cmake --build out/api-tests
 ctest --test-dir out/api-tests --output-on-failure
@@ -153,3 +166,38 @@ record the executable hash and final Rust verification counts; run performance
 comparisons separately with native control and the API disabled. Available displays
 must actually have distinct backing scales to establish backing-scale transition
 coverage.
+
+## Drawing-family scene matrix
+
+`scripts/drawing-coverage.py` runs one control session per drawing-family scene with
+`KFX_DRAW_BACKEND=wgpu`, `KFX_WGPU_DRAW_VERIFY=1` and `KFX_WGPU_DRAW_STATS`, then writes the
+table of which drawing family each scene reached. It exists because batch volume in a
+dungeon session says nothing about families that session never enters.
+
+```sh
+python3 scripts/drawing-coverage.py --list
+python3 scripts/drawing-coverage.py --engine out/macos/keeperfx --game-dir out/game
+python3 scripts/drawing-coverage.py --scenes possession-lens --summarize-only
+```
+
+The run holds `/private/tmp/keeperfx-timing.lock` throughout, waits for the console to
+unlock and for any other game to exit, and never starts two sessions at once. Each scene
+keeps its isolated session directory under `out/drawing-coverage/<scene>/` with
+`drawing.json`, the per-operation replies, screenshots and `scene.json`; `summary.json` and
+`summary.md` hold the matrix, and a run over part of the scenes writes a `summary-<scenes>`
+pair instead so it cannot overwrite the full one. Only a scene recorded as complete is
+skipped on a later run, so an interrupted or failed scene is retried while its partial record
+is kept, and a failed scene does not stop the others. Every scene writes the isolated
+`save/settings.toml`, because a session without that file keeps the unclamped defaults
+(`shadows` 4) while a session with one takes the load path and its sanity clamps
+(`shadows` 3); writing it everywhere keeps the scenes comparable.
+
+Counters are not one per family, and some rows have no counter that is theirs at all: the
+front view, primitives, text sprites and the clear only move counters every scene moves, so
+the matrix reports them as exercised rather than measured. DBC glyphs and huge bitmaps share the bitmap arena kind,
+the landview zoom shares the map-view kind with the parchment, smoothing shares
+`transition_commands` with map fades, and a Lua lens has no counter of its own. Those rows
+are reported as scene-attributed: the value only proves the family in the scene built to
+reach it, and a non-zero value anywhere else is reported but does not count. Families with
+no hook at all — general lines, screenshots, the unhooked frontend write, palette effects —
+are reported as having no counter rather than as covered.
