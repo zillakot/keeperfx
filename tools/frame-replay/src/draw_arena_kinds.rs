@@ -88,7 +88,7 @@ impl SourceLengths {
         } else {
             c.misses += 1;
             c.source_bytes += length as u64;
-            c.bytes += length as u64 * 4;
+            c.bytes += length as u64 * super::assets::STRIDE as u64;
             if kind == ResourceKind::Trig {
                 counters.arena_trig_texture_source_bytes += length.saturating_sub(60) as u64;
             }

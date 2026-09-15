@@ -160,7 +160,7 @@ impl DrawRenderer {
         let base = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
         let words = packer.finish();
         let assets = match &words {
-            Some(words) => buffer(
+            Some(words) => byte_buffer(
                 &self.device,
                 &mut self.counters,
                 "minimap semantic cells and styles",

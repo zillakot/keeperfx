@@ -238,7 +238,7 @@ impl DrawRenderer {
             for (&id, &offset) in &batch.tables {
                 let bytes = &self.resources[&id].bytes;
                 self.arena
-                    .stage_expanded(&self.queue, base + offset, bytes, "snapshot tables");
+                    .stage_bytes(&self.queue, base + offset, bytes, "snapshot tables");
                 uploaded += bytes.len() as u64 * 4;
             }
         } else {

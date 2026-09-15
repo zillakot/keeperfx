@@ -145,7 +145,7 @@ impl DrawRenderer {
         let base = packer.offset(command.source, bytes, ResourceKind::Lens)?;
         let words = packer.finish();
         let assets = match &words {
-            Some(words) => buffer(
+            Some(words) => byte_buffer(
                 &self.device,
                 &mut self.counters,
                 "immutable lens sources and maps",

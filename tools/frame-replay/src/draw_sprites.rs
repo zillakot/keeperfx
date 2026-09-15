@@ -311,7 +311,7 @@ impl DrawRenderer {
             wgpu::BufferUsages::STORAGE,
         );
         let asset_buffer = match &assets {
-            Some(assets) => buffer(
+            Some(assets) => byte_buffer(
                 &self.device,
                 &mut self.counters,
                 "sprite artwork and run boundaries",
@@ -391,7 +391,7 @@ impl DrawRenderer {
         self.counters.batches += layers.len() as u64;
         self.counters.commands += run.len() as u64;
         if let Some(assets) = &assets {
-            self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+            self.counters.asset_upload_bytes += assets.len() as u64 * assets::STRIDE as u64;
         }
         self.counters.command_upload_bytes += words.len() as u64 * 4;
         Ok(())

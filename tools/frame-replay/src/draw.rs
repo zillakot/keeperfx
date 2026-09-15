@@ -16,6 +16,8 @@ pub use arena::ArenaCounters;
 #[path = "draw_frame.rs"]
 mod frame_queue;
 pub use frame_queue::FrameCounters;
+#[path = "draw_assets.rs"]
+pub mod assets;
 #[path = "draw_bitmap.rs"]
 mod bitmap;
 #[path = "draw_map_view.rs"]
@@ -915,7 +917,7 @@ impl DrawRenderer {
             wgpu::BufferUsages::STORAGE,
         );
         let asset_buffer = match &assets {
-            Some(assets) => buffer(
+            Some(assets) => byte_buffer(
                 &self.device,
                 &mut self.counters,
                 "immutable asset versions",
@@ -927,7 +929,7 @@ impl DrawRenderer {
                 .binding(&self.device, &self.queue, &mut self.counters),
         };
         if let Some(assets) = &assets {
-            self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+            self.counters.asset_upload_bytes += assets.len() as u64 * assets::STRIDE as u64;
         }
         self.counters.command_upload_bytes +=
             (words.len() + self.tile_index.data().len()) as u64 * 4;
@@ -1364,11 +1366,10 @@ fn bounds(x: i32, y: i32, width: u32, height: u32) -> Result<[u32; 4]> {
     ])
 }
 
-/// Resolves an asset handle to the word offset the kernels sample from, either
-/// in the persistent arena or in a batch-lifetime asset vector.
+/// Resolves a source-byte offset in the arena or the batch.
 pub(super) enum AssetPacker<'a> {
     Batch {
-        assets: Vec<u32>,
+        assets: Vec<u8>,
         offsets: HashMap<u64, u32>,
         limit: usize,
     },
@@ -1447,8 +1448,8 @@ impl AssetPacker<'_> {
                 );
                 let offset = assets.len() as u32;
                 let _scope = Scope::new(Phase::Upload);
-                let _copy = host::UploadTimer::new(host::UploadPart::Expand, length * 4);
-                assets.extend(bytes[..length].iter().map(|byte| u32::from(*byte)));
+                let _copy = host::UploadTimer::new(host::UploadPart::Copy, length);
+                assets.extend_from_slice(&bytes[..length]);
                 offsets.insert(id, offset);
                 Ok(offset)
             }
@@ -1464,13 +1465,13 @@ impl AssetPacker<'_> {
 
     pub(super) fn uploaded_bytes(&self) -> u64 {
         match self {
-            Self::Batch { assets, .. } => assets.len() as u64 * 4,
+            Self::Batch { assets, .. } => assets.len() as u64 * assets::STRIDE as u64,
             Self::Arena { counters, .. } => counters.asset_upload_bytes,
         }
     }
 
     /// `None` when the assets are resident in the arena instead.
-    pub(super) fn finish(self) -> Option<Vec<u32>> {
+    pub(super) fn finish(self) -> Option<Vec<u8>> {
         match self {
             Self::Batch { mut assets, .. } => {
                 if assets.is_empty() {
@@ -1812,6 +1813,30 @@ fn pack_records<'a>(
         words.extend([c.transparent, 0, 0, 0]);
     }
     Ok(words)
+}
+
+fn byte_buffer(
+    device: &wgpu::Device,
+    counters: &mut Counters,
+    label: &str,
+    source: &[u8],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    let _scope = Scope::new(Phase::Upload);
+    let bytes = assets::encode(source);
+    host::created_buffer();
+    host::upload_event(label, 0, 1);
+    host::upload_event(label, 1, bytes.len() as u64);
+    host::staged_bytes(bytes.len());
+    host::initialized_bytes(bytes.len());
+    counters.buffers += 1;
+    counters.buffer_bytes += bytes.len() as u64;
+    let _api = host::UploadTimer::new(host::UploadPart::Api, 0);
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: &bytes,
+        usage,
+    })
 }
 
 fn buffer(

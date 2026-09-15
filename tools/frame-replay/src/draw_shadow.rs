@@ -160,7 +160,7 @@ impl DrawRenderer {
         let base = packer.offset(source, bytes, ResourceKind::Shadow)?;
         let values = packer.finish();
         let input = match &values {
-            Some(values) => buffer(
+            Some(values) => byte_buffer(
                 &self.device,
                 &mut self.counters,
                 "immutable shadow artwork",

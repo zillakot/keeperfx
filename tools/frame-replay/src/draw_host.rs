@@ -129,7 +129,7 @@ impl Default for ReplayCounters {
             upload_uniforms_high_water: 0,
             upload_arena_dirty_bytes: 0,
             capture_schema: 2,
-            arena_representation: 1,
+            arena_representation: if super::assets::PACKED { 2 } else { 1 },
             upload_transport: 1,
             arena_source_bytes: 0,
             arena_logical_upload_bytes: 0,

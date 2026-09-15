@@ -16,3 +16,4 @@ crate-type = ["rlib", "staticlib"]
 
 [features]
 live-surface = []
+packed-arena = []

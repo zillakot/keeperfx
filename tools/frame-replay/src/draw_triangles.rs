@@ -109,8 +109,8 @@ impl DrawRenderer {
         );
         let asset_buffer = match &assets {
             Some(assets) => {
-                self.counters.asset_upload_bytes += assets.len() as u64 * 4;
-                buffer(
+                self.counters.asset_upload_bytes += assets.len() as u64 * assets::STRIDE as u64;
+                byte_buffer(
                     &self.device,
                     &mut self.counters,
                     "triangle immutable assets",
