@@ -8,6 +8,10 @@ static unsigned count, submissions, ordered_count;
 static int decline, enabled = 1;
 enum { WIDTH = 83, HEIGHT = 61, SIZE = WIDTH * HEIGHT };
 static uint8_t target_pixels[SIZE], expected[SIZE], initial[SIZE], glass[65536], ghost[65536], alpha[65536], remap[256];
+/* The expanded artwork of the last accepted command, so the clipped-height case can
+   compare two decoded heights of one identity. */
+static uint8_t last_artwork[2 * 7 * 5];
+static size_t last_artwork_length;
 
 static void require(int condition, const char *message)
 {
@@ -44,6 +48,8 @@ int kfx_wgpu_native_draw_sprite(const struct KfxGpolyTarget *target,
     require(lbDisplay.WScreen == target_pixels && lbDisplay.GraphicsWindowPtr == target_pixels + lbDisplay.GraphicsWindowY * WIDTH + lbDisplay.GraphicsWindowX,
         "oracle failed to restore target aliases");
     require(!memcmp(target_pixels, initial, SIZE), "oracle modified live target");
+    last_artwork_length = source->length;
+    memcpy(last_artwork, source->bytes, last_artwork_length);
     require(source->length == (size_t)command->source_width * command->source_height * 2 &&
         ranges->length == (size_t)(command->source_width + command->source_height) * 8 &&
         remap->length == 256, "sprite asset parts have the wrong lengths");
@@ -188,6 +194,34 @@ int main(int argc, char **argv)
     lbDisplay.GraphicsWindowX = 3;
     lbDisplay.GraphicsWindowWidth = 73;
     lbDisplay.GraphicsWindowPtr = target_pixels + 5 * WIDTH + 3;
+    /* The decoded height is part of the artwork's name, because a keepersprite clipped by
+       water_source_cutoff draws the same RLE at a shorter height. One identity at two
+       heights must expand twice, and the shorter expansion must be the taller's row
+       prefix; both are also written to the fixture, so the GPU compares their pixels with
+       the legacy kernels like every other case. */
+    {
+        uint8_t tall[sizeof(last_artwork)];
+        size_t tall_length;
+        flags = 0;
+        for (unsigned clipped = 0; clipped < 2; clipped++) {
+            buffer.height = clipped ? 3 : 5;
+            LbSpriteSetScalingData(9, 7, 7, buffer.height, 7, buffer.height);
+            memcpy(target_pixels, initial, SIZE);
+            unsigned before = submissions;
+            LbSpriteDrawUsingScalingData(0, 0, &buffer);
+            require(submissions == before + 1, "clipped-height sprite declined");
+            if (clipped) break;
+            tall_length = last_artwork_length;
+            memcpy(tall, last_artwork, tall_length);
+        }
+        require(tall_length == 2 * 7 * 5 && last_artwork_length == 2 * 7 * 3,
+            "a clipped height must decode to its own artwork length");
+        require(memcmp(tall, last_artwork, last_artwork_length) == 0,
+            "the clipped artwork must be the full-height one's row prefix");
+        require(memcmp(tall + last_artwork_length, last_artwork, 2 * 7) != 0,
+            "the two heights must not decode to the same artwork");
+        buffer.height = 5;
+    }
     for (unsigned ordered = 0; ordered < 2; ordered++) {
         flags = ordered ? Lb_SPRITE_FLIP_HORIZ | Lb_SPRITE_FLIP_VERTIC : 0;
         buffer.height = 5;

@@ -101,7 +101,7 @@ int main(int argc, char **argv)
             lbDisplay.WScreen = lbDisplay.GraphicsWindowPtr = pixels;
             render_ghost = pixels;
             // Mutable bytes, so no identity: a target alias must never be kept resident.
-        struct TbSourceBuffer source = {alias == 0 ? pixels + 45 : data, 3, 1, 3, NULL};
+            struct TbSourceBuffer source = {alias == 0 ? pixels + 45 : data, 3, 1, 3, NULL};
             if (alias == 1) LbSpriteDrawRemapUsingScalingData(0, 0, &source, pixels);
             else LbSpriteDrawUsingScalingData(0, 0, &source);
         }

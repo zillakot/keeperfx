@@ -341,7 +341,8 @@ observations, not acquired-surface performance or whole-process memory proof.
 
 Branch binary SHA256
 `82d7e6c516e350d7e855c2423dcf8a1aabe25a8d203d3fef69225e6a1782f163`, built with
-`-DKFX_RUST_PRESENTER=ON`, against the reference run of source `c8687e108`, binary SHA256
+`-DKFX_RUST_PRESENTER=ON` — the same binary the timing cells below ran — against the
+reference run of source `c8687e108`, binary SHA256
 `3359fe9a45a81a867e1cf48a274b795c9c6984acd00676764a2fd509b22ec0b4`
 (`out/wgpu-migration/minimap-split-runs/drawing-coverage/`), which is master with the
 minimap split and without this change. Identities are in
@@ -373,7 +374,7 @@ interned lookups for every one of the 36,271 sprite commands, 97.6%. The 36,742 
 36,271 per-call ranges plus 471 artwork and remap misses. `arena_misses_generation`,
 `arena_misses_eviction`, `arena_misses_size_class`, `arena_evictions` and
 `arena_overflows` are zero here and in the `front-view` and `dbc-text` scenes.
-`arena_sprite_bytes` is 91,546 per frame in `front-view` (203.6 commands) and 9,260 in
+`arena_sprite_bytes` is 91,546 per frame in `front-view` (203.6 commands) and 9,259.5 in
 `dbc-text` (7.6 commands).
 
 `resource_snapshot_bytes` falls to 0.613 of the reference. That matches the prediction of
@@ -392,19 +393,37 @@ complete with every gate counter zero — `failures`, `invalid_frames`,
 `missing_cpu_barriers` — and 82,692 of 82,693 batches CPU-verified in `dungeon-busy`,
 50,399 of 50,399 in `front-view` and 7,048 of 7,048 in `dbc-text`. No scene in the harness
 draws a keepersprite with `water_source_cutoff != 0`, so the clipped-height key is covered
-by the fixtures and not by a live scene. Run outputs are under
+by the fixtures and not by a live scene: `tests/sprites/fixture.c` draws one identity at
+decoded heights 5 and 3, asserts the two expansions differ in length and that the shorter
+is the taller's row prefix, and writes both to the oracle, which replays them against the
+legacy kernels like every other case. Run outputs are under
 `out/wgpu-migration/sprite-interning-runs/drawing-coverage/`.
 
-Timing was measured separately on the preceding head `3eb39f0d1`, recorded in
-`out/wgpu-migration/sprite-interning-runs/timing-3eb39f0d1.md`: offscreen busy 1920x1080,
-capped and uncapped matched pairs against a build of master `66c8e8764`, guards on, timing
-lock held, 40 warmup and 200 measured turns, 20 turns/s, VSync off. Capped holds 60.00 FPS
-in both pairs; uncapped is 288.1 and 265.8 FPS on the baseline against 289.9 and 292.1 on
-the branch, inside a 22 FPS baseline spread, so no gain is claimed. `arena_sprite_bytes`
-falls 543-561 KB to 69-72 KB per frame and `arena_bytes_uploaded` 63% capped and 79%
-uncapped. Replay host time falls in all four pairs, 0.06 ms capped and 0.07-0.15 ms
-uncapped, carried by the upload phase; consistent in sign but inside the capped pair
-spread, so recorded rather than claimed.
+Timing, binary SHA256
+`82d7e6c516e350d7e855c2423dcf8a1aabe25a8d203d3fef69225e6a1782f163` against a build of
+master `66c8e8764`, binary SHA256
+`4463b2ff847f5a842ba832caee19b680c07f18caba225f8618dba87128fccffc`, recorded in
+`out/wgpu-migration/sprite-interning-runs/timing-a2217496b.md` with a first run on the
+preceding head in `timing-3eb39f0d1.md`. Offscreen busy 1920x1080, capped and uncapped,
+two matched pairs per cap mode with the order alternated, guards on, timing lock held by
+the schedule, VSync off, interpolation on, 20 turns/s, 40 warmup and 200 measured turns,
+600 replay-host frames per cell, GPU timing on, cycle gate skipped. Eight of eight cells
+complete, both surface gates verified, drawing gate passed; waits, arena overflows and
+generation misses zero in every cell.
+
+Both capped pairs hold 60.00 FPS. `arena_sprite_bytes` falls from 531–558 KB to 70–71 KB
+per frame and `arena_bytes_uploaded` by 61% capped and 79% uncapped, with 183–189 sprite
+hits per frame. The replay upload phase is lower in every cell, 0.14 and 0.29 ms capped
+and 0.04 and 0.09 ms uncapped.
+
+The GPU and FPS readings go both ways and are not claimed either direction. Capped pass
+union 9.19 and 8.95 → 9.25 and 9.47 ms; uncapped union 3.33 and 3.33 → 3.50 and 3.31 ms;
+uncapped FPS 288.7 and 288.7 → 275.6 and 290.9, so pair 1 reads −13 FPS with +0.17 ms of
+union while pair 2 reads +2 FPS with −0.02 ms, against +2 and +26 FPS in the first run.
+All of that is inside the recorded pair spread: **no regression is shown and no FPS gain
+is claimed**, and the slice lands on the byte and parity gates rather than on frame time.
+The one pass-level figure that is consistent across both pairs of both runs is the ordered
+sprite pass, 1.03 → 1.01 ms.
 
 ### Minimap dispatch box, measured 2026-09-15
 
