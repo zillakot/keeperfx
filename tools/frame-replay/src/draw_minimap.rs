@@ -14,8 +14,11 @@ fn background_colours(header: &[u32; 24], bytes: &[u8]) -> [u32; 32] {
         for (index, &colour) in bytes[start..start + (header[15] / 38569) as usize]
             .iter()
             .enumerate()
+            .rev()
         {
-            colours[colour as usize / 8] |= (index as u32) << ((colour as u32 & 7) * 4);
+            let shift = (u32::from(colour) & 7) * 4;
+            let word = &mut colours[usize::from(colour) / 8];
+            *word = (*word & !(15 << shift)) | ((index as u32 & 15) << shift);
         }
     }
     colours
@@ -287,5 +290,33 @@ mod tests {
         h[18] = 9000;
         assert!(validate(&command, &encode(h), 64, 64).is_err());
         assert!(validate(&command, &[0; 12], 64, 64).is_err());
+    }
+
+    fn table(dictionary: &[u8]) -> [u32; 32] {
+        let mut header = [0; 24];
+        header[12] = 4;
+        header[15] = dictionary.len() as u32 * 38569;
+        let mut bytes = vec![0; 4];
+        bytes.extend_from_slice(dictionary);
+        background_colours(&header, &bytes)
+    }
+
+    fn index(colours: &[u32; 32], colour: u8) -> u32 {
+        (colours[colour as usize / 8] >> ((u32::from(colour) & 7) * 4)) & 15
+    }
+
+    #[test]
+    fn duplicate_and_overflowing_dictionary_entries_keep_their_own_nibble() {
+        let colours = table(&[9, 17, 9, 16]);
+        assert_eq!(index(&colours, 9), 0);
+        assert_eq!(index(&colours, 17), 1);
+        assert_eq!(index(&colours, 16), 3);
+        assert_eq!(index(&colours, 8), 0);
+
+        let dictionary: Vec<u8> = (8..28).collect();
+        let colours = table(&dictionary);
+        for (position, &colour) in dictionary.iter().enumerate() {
+            assert_eq!(index(&colours, colour), position as u32 & 15);
+        }
     }
 }
