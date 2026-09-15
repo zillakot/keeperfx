@@ -134,7 +134,7 @@ int kfx_wgpu_sprite(long posx, long posy, const struct TbSourceBuffer *source,
             if (run > 0 && !kfx_wgpu_native_read_barrier(rle, n)) { valid = 0; break; }
             if (run > 0) for (unsigned i = 0; i < n; i++) {
                 asset[2 * (y * w + x + i)] = *rle++;
-                asset[2 * (y * w + x + i) + 1] = ordered && i + 1 == n ? 2 : 1;
+                asset[2 * (y * w + x + i) + 1] = i + 1 == n ? 2 : 1;
             }
             x += n;
         }

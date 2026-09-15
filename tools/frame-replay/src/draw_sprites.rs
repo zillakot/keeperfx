@@ -32,10 +32,7 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<[i64; 4]>
     for row in source.bytes[..axis].chunks_exact(w * 2) {
         let mut in_run = false;
         for pixel in row.as_chunks::<2>().0 {
-            ensure!(
-                pixel[1] <= if ordered(command) { 2 } else { 1 },
-                "invalid sprite coverage"
-            );
+            ensure!(pixel[1] <= 2, "invalid sprite coverage");
             if ordered(command) {
                 ensure!(pixel[1] != 0 || !in_run, "unterminated sprite run");
                 in_run = pixel[1] == 1;
@@ -425,7 +422,7 @@ mod tests {
             key: None,
         };
         validate(&command, &resource).unwrap();
-        resource.bytes[1] = 2;
+        resource.bytes[1] = 3;
         assert!(validate(&command, &resource).is_err());
         resource.bytes[1] = 1;
         resource.bytes[2..6].copy_from_slice(&u32::MAX.to_le_bytes());
