@@ -24,6 +24,105 @@ fn background_colours(header: &[u32; 24], bytes: &[u8]) -> [u32; 32] {
     colours
 }
 
+const PATTERN_LOW: i64 = 2;
+const PATTERN_HIGH: i64 = 3;
+const SWEEP_LIMIT: i64 = 1 << 16;
+
+fn pattern_within_bound(h: &[u32; 24], b: &[u8]) -> bool {
+    (0..h[18] as usize).all(|i| {
+        let o = h[22] as usize + i * 8;
+        o + 8 <= b.len()
+            && [o, o + 4].into_iter().all(|s| {
+                let delta = i64::from(i32::from_le_bytes(b[s..s + 4].try_into().unwrap()));
+                (-PATTERN_LOW..=PATTERN_HIGH).contains(&delta)
+            })
+    })
+}
+
+fn grow(centre: [i64; 2], low: i64, high: i64) -> [i64; 4] {
+    [
+        centre[0] - low,
+        centre[1] - low,
+        centre[0] + high + 1,
+        centre[1] + high + 1,
+    ]
+}
+
+fn merge(a: [i64; 4], b: [i64; 4]) -> [i64; 4] {
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].max(b[2]),
+        a[3].max(b[3]),
+    ]
+}
+
+/// Half-open box, clamped to `[0, h[5])`, containing every pixel the minimap kernel
+/// can write. Supersets are safe; an empty box means the command writes nothing.
+fn written_box(h: &[u32; 24], b: &[u8]) -> [u32; 4] {
+    let d = i64::from(h[5]);
+    let full = [0, 0, h[5], h[5]];
+    let si = |i: usize| i64::from(h[i] as i32);
+    let centre = [si(16), si(17)];
+    let raw = match h[0] {
+        1 => {
+            if !pattern_within_bound(h, b) {
+                return full;
+            }
+            let spread = si(19).abs();
+            grow(centre, PATTERN_LOW + spread, PATTERN_HIGH + spread)
+        }
+        2 => {
+            let radius = i64::from(h[18]) + 1;
+            if radius >= d / 2 {
+                return full;
+            }
+            grow(centre, radius, radius)
+        }
+        3 => {
+            if !pattern_within_bound(h, b) || si(21) - 4 > SWEEP_LIMIT {
+                return full;
+            }
+            let step = [h[6] as i32, h[7] as i32];
+            let mut pos = [h[16] as i32, h[17] as i32];
+            let mut remaining = si(21) - 4;
+            let mut swept: Option<[i64; 4]> = None;
+            while remaining > 0 {
+                if pos[0] < 0
+                    || pos[1] < 0
+                    || (pos[0] >> 8) >= h[5] as i32
+                    || (pos[1] >> 8) >= h[5] as i32
+                {
+                    break;
+                }
+                let (Some(x), Some(y)) = (pos[0].checked_add(step[0]), pos[1].checked_add(step[1]))
+                else {
+                    return full;
+                };
+                pos = [x, y];
+                let next = grow(
+                    [i64::from(x >> 8), i64::from(y >> 8)],
+                    PATTERN_LOW,
+                    PATTERN_HIGH,
+                );
+                swept = Some(swept.map_or(next, |seen| merge(seen, next)));
+                remaining -= 4;
+            }
+            match swept {
+                Some(swept) => swept,
+                None => return [0; 4],
+            }
+        }
+        _ => return full,
+    };
+    let clamp = |v: i64| v.clamp(0, d) as u32;
+    let bounds = [clamp(raw[0]), clamp(raw[1]), clamp(raw[2]), clamp(raw[3])];
+    if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
+        return [0; 4];
+    }
+    bounds
+}
+
 fn validate(c: &Command, b: &[u8], width: u32, height: u32) -> Result<[u32; 24]> {
     ensure!(b.len() >= HEADER, "short minimap header");
     let h: [u32; 24] =
@@ -113,12 +212,15 @@ impl DrawRenderer {
             .context("unknown minimap source")?;
         let h = validate(c, &source.bytes, width, height)?;
         let colours = background_colours(&h, &source.bytes);
+        let bounds = written_box(&h, &source.bytes);
+        let (span_x, span_y) = (bounds[2] - bounds[0], bounds[3] - bounds[1]);
         ensure!(
             source.bytes.len() as u64 * 4 <= self.storage_limit(),
             "minimap source exceeds GPU storage"
         );
         ensure!(
-            h[5].div_ceil(8) <= self.device.limits().max_compute_workgroups_per_dimension,
+            span_x.div_ceil(8).max(span_y.div_ceil(8))
+                <= self.device.limits().max_compute_workgroups_per_dimension,
             "minimap dispatch exceeds GPU limit"
         );
         if self.minimap.is_none() {
@@ -179,6 +281,14 @@ impl DrawRenderer {
         );
         let base = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
         let words = packer.finish();
+        if span_x == 0 || span_y == 0 {
+            if let Some(words) = &words {
+                self.counters.asset_upload_bytes += words.len() as u64 * assets::STRIDE as u64;
+            }
+            self.counters.batches += 1;
+            self.counters.commands += 1;
+            return self.check_status();
+        }
         let assets = match &words {
             Some(words) => byte_buffer(
                 &self.device,
@@ -200,9 +310,10 @@ impl DrawRenderer {
             &dummy
         };
         let target = &self.targets[&target_id];
-        let mut view_words = [0; 36];
+        let mut view_words = [0; 40];
         view_words[..4].copy_from_slice(&[target.width, target.pitch, target.offset, base]);
-        view_words[4..].copy_from_slice(&colours);
+        view_words[4..36].copy_from_slice(&colours);
+        view_words[36..].copy_from_slice(&bounds);
         let view = upload::stage(
             &self.uploads,
             &self.device,
@@ -230,7 +341,7 @@ impl DrawRenderer {
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(h[5].div_ceil(8), h[5].div_ceil(8), 1);
+            pass.dispatch_workgroups(span_x.div_ceil(8), span_y.div_ceil(8), 1);
         }
         self.counters.dispatches += 1;
         self.pass_boundary();
