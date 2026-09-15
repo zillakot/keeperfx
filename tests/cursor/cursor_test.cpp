@@ -59,16 +59,45 @@ static uint64_t upload(const KfxGpolyTarget& t)
     kfx_wgpu_draw_resource_release(drawing, asset, error, sizeof(error));
     return target;
 }
-extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget* t, const KfxWgpuDrawCommand* command,
-    const KfxWgpuNativeResource* resource, const KfxWgpuNativeResource*, KfxWgpuNativeOracle oracle, void* context)
+extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
+    const KfxWgpuNativeResource*, const KfxWgpuNativeResource*, KfxWgpuNativeOracle, void*)
+{ check(false, "unexpected unnamed native draw"); return 0; }
+static uint64_t cursor_artwork_uploads, cursor_artwork_hits;
+// The bridge's cursor branch, against the real keyed resource ABI.
+extern "C" int kfx_wgpu_native_draw_sprite(const KfxGpolyTarget* t, const KfxWgpuDrawCommand* command,
+    const KfxWgpuSpriteAssets* assets, KfxWgpuNativeOracle oracle, void* context)
 {
+    check(command->kind == KFX_WGPU_DRAW_SPRITE && assets && assets->artwork && assets->ranges &&
+        assets->remap && !assets->table, "cursor sprite assets");
+    check(assets->artwork->cursor && assets->identity && assets->generation,
+        "cursor artwork is unnamed or unmarked");
+    check(assets->artwork->length == 2u * command->source_width * command->source_height &&
+        assets->ranges->length == 8u * (command->source_width + command->source_height) &&
+        assets->remap->length == 256, "cursor asset lengths");
     uint64_t target = shared_target ? shared_target : upload(*t);
-    uint64_t asset = kfx_wgpu_draw_resource_create(drawing, resource->bytes, resource->length,
-        1, 1, 1, error, sizeof(error));
-    check(asset, "sprite resource");
-    auto c = *command; c.source = asset;
+    uint64_t previous = 0;
+    const uint64_t artwork = kfx_wgpu_draw_resource_create_keyed(drawing,
+        KFX_WGPU_DRAW_KEY_CURSOR_ARTWORK,
+        (uint64_t(command->source_width) << 32) | command->source_height,
+        uint64_t(reinterpret_cast<uintptr_t>(assets->identity)), assets->generation,
+        assets->artwork->bytes, assets->artwork->length, 1, 1, 1, &previous, error, sizeof(error));
+    check(artwork, "cursor artwork resource");
+    if (previous == artwork) ++cursor_artwork_hits; else ++cursor_artwork_uploads;
+    kfx_wgpu_draw_resource_mark_cursor(drawing, artwork);
+    const uint64_t ranges = kfx_wgpu_draw_resource_create(drawing, assets->ranges->bytes,
+        assets->ranges->length, 1, 1, 1, error, sizeof(error));
+    const uint64_t remap = kfx_wgpu_draw_resource_create(drawing, assets->remap->bytes,
+        assets->remap->length, 1, 1, 1, error, sizeof(error));
+    check(ranges && remap, "cursor range or remap resource");
+    auto c = *command;
+    c.source = artwork;
+    c.start_low = uint32_t(ranges); c.start_high = uint32_t(ranges >> 32);
+    c.step_low = uint32_t(remap); c.step_high = uint32_t(remap >> 32);
     check(kfx_wgpu_draw_submit(drawing, target, &c, 1, error, sizeof(error)) == 1, "direct draw");
-    kfx_wgpu_draw_resource_release(drawing, asset, error, sizeof(error));
+    kfx_wgpu_draw_resource_release(drawing, ranges, error, sizeof(error));
+    kfx_wgpu_draw_resource_release(drawing, remap, error, sizeof(error));
+    if (previous && previous != artwork)
+        kfx_wgpu_draw_resource_release(drawing, previous, error, sizeof(error));
     std::vector<uint8_t> expected(t->pixels, t->pixels + size_t(t->pitch) * t->height);
     oracle(expected.data(), t->pitch, context);
     check(kfx_wgpu_draw_readback(drawing, target, t->pixels, expected.size(), t->pitch, error, sizeof(error)) == 1, "direct read");
@@ -262,6 +291,22 @@ int main()
         for (unsigned i = 0; i < 4 + alignment; ++i) check(guarded[i] == 203, "direct prefix guard");
         for (size_t i = 4 + alignment + 41 * 31; i < guarded.size(); ++i) check(guarded[i] == 203, "direct suffix guard");
     }
+    /* One pointer sprite across 108 draws is one upload: the artwork is named by the
+       address of its RLE, and only the ranges carry where the pointer sits. */
+    check(cursor_artwork_uploads == 1 && cursor_artwork_hits == 107,
+        "cursor artwork was not resident across direct draws");
+    {
+        // A pointer pack reloaded behind the same address: the bump is what re-uploads.
+        kfx_render_sprites_changed();
+        std::vector<uint8_t> guarded(41 * 31 + 8, 203);
+        auto* pixels = guarded.data() + 4;
+        for (size_t i = 0; i < 41 * 31; ++i) pixels[i] = i * 19;
+        steps(xs, ys, 0, 0, 1, 37, 31);
+        KfxGpolyTarget target = {pixels, 37, 31, 41};
+        check(kfx_wgpu_cursor_direct(target, &sprite, xs, ys), "cursor after a generation bump declined");
+        check(cursor_artwork_uploads == 2 && cursor_artwork_hits == 107,
+            "a sprite generation bump did not replace the cursor artwork");
+    }
     SDL_Palette* palette = SDL_CreatePalette(256);
     SDL_Color colours[256];
     for (int i = 0; i < 256; ++i) colours[i] = {uint8_t(i), uint8_t(i), uint8_t(i), 255};
@@ -403,6 +448,7 @@ int main()
     check(after.copies.snapshots && after.copies.snapshot_copy_bytes && after.copies.sampling_copy_bytes &&
         after.gpu.readback_bytes && after.failures == 3, "missing counters");
     SDL_DestroyPalette(palette);
+    check(kfx_wgpu_draw_resources_purge_keyed(drawing, error, sizeof(error)) == 1, "keyed purge");
     kfx_wgpu_draw_destroy(drawing);
     std::printf("%u actual native direct cursor cases; 81 advanced compositions/restores; 30 pointer lifecycle traces including 18 shared frames; 24 checkpoint-free swap tails; failure checkpoints and borrowed targets exact\n", direct_cases);
 }

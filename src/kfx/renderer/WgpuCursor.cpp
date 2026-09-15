@@ -30,8 +30,25 @@ void put(std::vector<uint8_t>& data, size_t at, uint32_t value)
 {
     for (unsigned i = 0; i < 4; ++i) data[at + i] = value >> (i * 8);
 }
+/* The three parts of a cursor sprite asset. Only the ranges are per call: they carry
+ * where the pointer sits this frame, while the expanded artwork is a function of the
+ * pointer sprite alone and is named by the address of its RLE. */
+struct CursorArtwork {
+    std::vector<uint8_t> pixels, ranges;
+    uint32_t width = 0, height = 0;
+};
+const uint8_t* identity_remap()
+{
+    static uint8_t table[256];
+    static bool ready;
+    if (!ready) {
+        for (unsigned i = 0; i < 256; ++i) table[i] = uint8_t(i);
+        ready = true;
+    }
+    return table;
+}
 bool sprite_asset(const TbSprite* sprite, const int32_t* xs, const int32_t* ys,
-    std::vector<uint8_t>& asset)
+    CursorArtwork& asset)
 {
     if (!kfx_wgpu_native_read_barrier(sprite, sprite ? sizeof(*sprite) : 0)) return false;
     if (!sprite || !sprite->Data || !sprite->SWidth || !sprite->SHeight || !xs || !ys ||
@@ -39,8 +56,10 @@ bool sprite_asset(const TbSprite* sprite, const int32_t* xs, const int32_t* ys,
     const unsigned w = sprite->SWidth, h = sprite->SHeight;
     if (!kfx_wgpu_native_read_barrier(xs, w * 8) ||
         !kfx_wgpu_native_read_barrier(ys, h * 8)) return false;
-    const size_t axis = size_t(w) * h * 2;
-    asset.assign(axis + 8 * (w + h) + 256, 0);
+    asset.width = w;
+    asset.height = h;
+    asset.pixels.assign(size_t(w) * h * 2, 0);
+    asset.ranges.assign(8 * (size_t(w) + h), 0);
     for (unsigned a = 0; a < 2; ++a) {
         const int32_t* steps = a ? ys : xs;
         int previous = -1;
@@ -49,9 +68,9 @@ bool sprite_asset(const TbSprite* sprite, const int32_t* xs, const int32_t* ys,
             if (start < 0 || n < 0 || start + n > 16384 ||
                 (previous >= 0 && start != previous)) return false;
             previous = start + n;
-            const size_t at = axis + 8 * ((a ? w : 0) + i);
-            put(asset, at, start);
-            put(asset, at + 4, n);
+            const size_t at = 8 * ((a ? w : 0) + i);
+            put(asset.ranges, at, start);
+            put(asset.ranges, at + 4, n);
         }
     }
     const uint8_t* rle = sprite->Data;
@@ -65,13 +84,12 @@ bool sprite_asset(const TbSprite* sprite, const int32_t* xs, const int32_t* ys,
             if (n > w - x) return false;
             if (run > 0 && !kfx_wgpu_native_read_barrier(rle, n)) return false;
             if (run > 0) for (unsigned i = 0; i < n; ++i) {
-                asset[2 * (y * w + x + i)] = *rle++;
-                asset[2 * (y * w + x + i) + 1] = 1;
+                asset.pixels[2 * (y * w + x + i)] = *rle++;
+                asset.pixels[2 * (y * w + x + i) + 1] = 1;
             }
             x += n;
         }
     }
-    for (unsigned i = 0; i < 256; ++i) asset[asset.size() - 256 + i] = i;
     return true;
 }
 KfxWgpuDrawCommand command(uint32_t kind, uint32_t width, uint32_t height)
@@ -111,14 +129,20 @@ int kfx_wgpu_cursor_direct(const KfxGpolyTarget& target, const TbSprite* sprite,
 {
     if (!kfx_wgpu_native_enabled()) return 0;
     kfx_wgpu_native_flush();
-    std::vector<uint8_t> asset;
+    CursorArtwork asset;
     if (!sprite_asset(sprite, xs, ys, asset)) return 0;
     auto c = command(KFX_WGPU_DRAW_SPRITE, target.width, target.height);
-    c.source_width = sprite->SWidth;
-    c.source_height = sprite->SHeight;
-    const KfxWgpuNativeResource source = {asset.data(), asset.size(), 1, 1, 1, nullptr, 0, 1};
+    c.source_width = asset.width;
+    c.source_height = asset.height;
+    const KfxWgpuNativeResource artwork = {asset.pixels.data(), asset.pixels.size(),
+        1, 1, 1, nullptr, 0, 1};
+    const KfxWgpuNativeResource ranges = {asset.ranges.data(), asset.ranges.size(),
+        1, 1, 1, nullptr, 0, 0};
+    const KfxWgpuNativeResource remap = {identity_remap(), 256, 1, 1, 1, nullptr, 0, 0};
+    const KfxWgpuSpriteAssets assets = {&artwork, &ranges, &remap, nullptr, sprite->Data,
+        kfx_render_sprite_generation, KFX_REMAP_NONE};
     Oracle o = {sprite, xs, ys, target.height};
-    const int result = kfx_wgpu_native_draw(&target, &c, &source, nullptr, oracle, &o);
+    const int result = kfx_wgpu_native_draw_sprite(&target, &c, &assets, oracle, &o);
     totals.sprite_draws += result != 0;
     return result;
 }
@@ -128,8 +152,7 @@ struct WgpuCursor::State {
     bool owned, failed = false;
     uint64_t sprite = 0, raster = 0, background = 0, backup = 0, screen = 0;
     uint32_t width = 0, height = 0, screen_width = 0, screen_height = 0;
-    std::vector<uint8_t> artwork;
-    uint32_t artwork_width = 0, artwork_height = 0;
+    CursorArtwork artwork;
     SDL_Surface* backup_checkpoint = nullptr;
     bool backup_cpu_valid = true;
     char error[1024] = {};
@@ -267,14 +290,12 @@ bool WgpuCursor::InitialiseTarget(uint32_t width, uint32_t height, const TbSprit
 {
     auto& s = *state;
     if (s.failed || s.sprite || !width || !height) return false;
-    std::vector<uint8_t> asset;
     if (spr) {
+        CursorArtwork asset;
         if (!sprite_asset(spr, xs, ys, asset)) return false;
-        s.artwork = asset; s.artwork_width = spr->SWidth; s.artwork_height = spr->SHeight;
-    } else {
-        if (s.artwork.empty()) return false;
-        asset = s.artwork;
-    }
+        s.artwork = std::move(asset);
+    } else if (s.artwork.pixels.empty()) return false;
+    const CursorArtwork& asset = s.artwork;
     if (!s.context) s.context = kfx_wgpu_draw_create(s.error, sizeof(s.error));
     if (!s.context) return s.good(false);
     s.width = width; s.height = height;
@@ -285,18 +306,29 @@ bool WgpuCursor::InitialiseTarget(uint32_t width, uint32_t height, const TbSprit
     if (!s.backup) return s.good(false);
     s.raster = kfx_wgpu_draw_target_create(s.context, width, height, s.error, sizeof(s.error));
     if (!s.raster) return s.good(false);
-    uint64_t resource = kfx_wgpu_draw_resource_create(s.context, asset.data(), asset.size(), 1, 1, 1, s.error, sizeof(s.error));
-    if (!resource) return s.good(false);
-    kfx_wgpu_draw_resource_mark_cursor(s.context, resource);
+    const uint64_t parts[] = {
+        kfx_wgpu_draw_resource_create(s.context, asset.pixels.data(), asset.pixels.size(),
+            1, 1, 1, s.error, sizeof(s.error)),
+        kfx_wgpu_draw_resource_create(s.context, asset.ranges.data(), asset.ranges.size(),
+            1, 1, 1, s.error, sizeof(s.error)),
+        kfx_wgpu_draw_resource_create(s.context, identity_remap(), 256,
+            1, 1, 1, s.error, sizeof(s.error))};
+    bool ok = parts[0] && parts[1] && parts[2];
+    if (ok) kfx_wgpu_draw_resource_mark_cursor(s.context, parts[0]);
     auto clear = command(KFX_WGPU_DRAW_CLEAR, width, height);
     clear.colour = 255;
     auto draw = command(KFX_WGPU_DRAW_SPRITE, width, height);
-    draw.source = resource;
-    draw.source_width = s.artwork_width;
-    draw.source_height = s.artwork_height;
+    draw.source = parts[0];
+    draw.source_width = asset.width;
+    draw.source_height = asset.height;
+    draw.start_low = uint32_t(parts[1]);
+    draw.start_high = uint32_t(parts[1] >> 32);
+    draw.step_low = uint32_t(parts[2]);
+    draw.step_high = uint32_t(parts[2] >> 32);
     const KfxWgpuDrawCommand commands[] = {clear, draw};
-    bool ok = kfx_wgpu_draw_submit(s.context, s.raster, commands, 2, s.error, sizeof(s.error)) == 1;
-    kfx_wgpu_draw_resource_release(s.context, resource, s.error, sizeof(s.error));
+    ok = ok && kfx_wgpu_draw_submit(s.context, s.raster, commands, 2, s.error, sizeof(s.error)) == 1;
+    for (auto part : parts)
+        if (part) kfx_wgpu_draw_resource_release(s.context, part, s.error, sizeof(s.error));
     if (ok) s.sprite = kfx_wgpu_draw_target_snapshot(s.context, s.raster, 0, 0, width, height, width, s.error, sizeof(s.error));
     if (ok && s.sprite) ++totals.sprite_draws;
     return s.good(ok && s.sprite);
@@ -363,8 +395,6 @@ bool WgpuCursor::RefreshContext()
     auto* previous = state;
     state = new State(borrowed);
     state->artwork = previous->artwork;
-    state->artwork_width = previous->artwork_width;
-    state->artwork_height = previous->artwork_height;
     state->backup_checkpoint = previous->backup_checkpoint;
     bool ok = InitialiseTarget(previous->width, previous->height, nullptr, nullptr, nullptr);
     auto& s = *state;

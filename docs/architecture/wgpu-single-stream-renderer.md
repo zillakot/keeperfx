@@ -181,7 +181,15 @@ drawing context, with:
   `step_low`/`step_high`, which no sprite kernel reads, so `KfxWgpuDrawCommand` stays 112 bytes; the
   packer resolves them into record words 15 and 25 and zeroes the accumulator for a sprite. An emitter
   with no name for its artwork may still submit the three parts as one resource and no handles, and the
-  packer derives the two offsets from the artwork's own.
+  packer derives the two offsets from the artwork's own; the test fixtures are what still use that form.
+  The pointer sprite splits the same way and keys on the address of its RLE under the same generation,
+  in a key namespace of its own because the cursor path expands one address into different coverage
+  bytes than the sprite path does. Its remap is the identity table and interns by content, so a frame
+  pays only for the scaling ranges that say where the pointer sits. That namespace is the safe fix
+  rather than the only one: the run-end marker the sprite expansion writes as coverage 2 is read only
+  by `sprite_ordered`, which is gated on a `source_x` bit the cursor command never sets, so aligning
+  the cursor expansion with the sprite one would retire the namespace and let a sheet sprite drawn on
+  both paths share one resident copy instead of two — a deliberate follow-up, not part of this slice.
 - **LRU residency** over `last_used_frame`, never evicting anything the frame under construction
   references. Capacity is `min(max_storage_buffer_binding_size, max_buffer_size)` — 128 MiB at wgpu
   defaults, since every `request_device` passes `&Default::default()` — so 128 MiB of real asset bytes
