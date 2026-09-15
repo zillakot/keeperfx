@@ -71,6 +71,17 @@ struct PerformanceDrawingCounters {
     unsigned long long arena_explicit_forgets;
     struct KfxArenaKindCounters arena_by_kind[KFX_ARENA_KIND_COUNT];
     unsigned long long arena_trig_texture_source_bytes;
+    unsigned long long replay_pack_ns;
+    unsigned long long replay_upload_ns;
+    unsigned long long replay_bind_ns;
+    unsigned long long replay_encode_ns;
+    unsigned long long replay_tile_index_ns;
+    unsigned long long replay_other_ns;
+    unsigned long long replay_submit_wait_ns;
+    unsigned long long replay_bind_groups;
+    unsigned long long replay_buffers;
+    unsigned long long replay_passes;
+    unsigned long long replay_staged_bytes;
     /* Trailing gauges are stored as observed, not differenced. */
     unsigned long long host_staged_asset_bytes, arena_bytes_resident, arena_scratch_bytes_peak;
     unsigned long long arena_capacity_bytes;
@@ -82,9 +93,24 @@ struct PerformanceDrawingCounters {
 void performance_drawing_backend(const char* backend);
 void performance_drawing_frame(const struct PerformanceDrawingCounters* cumulative);
 
+struct PerformanceReplayCounters {
+    unsigned long long replay_pack_ns;
+    unsigned long long replay_upload_ns;
+    unsigned long long replay_bind_ns;
+    unsigned long long replay_encode_ns;
+    unsigned long long replay_tile_index_ns;
+    unsigned long long replay_other_ns;
+    unsigned long long replay_submit_wait_ns;
+    unsigned long long replay_bind_groups;
+    unsigned long long replay_buffers;
+    unsigned long long replay_passes;
+    unsigned long long replay_staged_bytes;
+};
+
 struct PerformancePresenterCounters {
     unsigned long long acquire_ns, acquire_block_ns, reconfigure_count, present_record_ns, submit_ns;
     unsigned long long replay_ns, allocations, allocated_bytes;
+    struct PerformanceReplayCounters replay;
 };
 void performance_presenter_frame(const struct PerformancePresenterCounters* counters);
 

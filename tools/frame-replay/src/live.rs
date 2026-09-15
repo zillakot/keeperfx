@@ -1423,6 +1423,17 @@ pub struct DrawCounters {
     arena_by_kind:
         [crate::draw::arena_kinds::ArenaKindCounters; crate::draw::arena_kinds::ARENA_KINDS],
     arena_trig_texture_source_bytes: u64,
+    replay_pack_ns: u64,
+    replay_upload_ns: u64,
+    replay_bind_ns: u64,
+    replay_encode_ns: u64,
+    replay_tile_index_ns: u64,
+    replay_other_ns: u64,
+    replay_submit_wait_ns: u64,
+    replay_bind_groups: u64,
+    replay_buffers: u64,
+    replay_passes: u64,
+    replay_staged_bytes: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -1499,6 +1510,17 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 arena_growth_peak_bytes: arena.growth_peak_bytes,
                 arena_by_kind: counters.arena_by_kind,
                 arena_trig_texture_source_bytes: counters.arena_trig_texture_source_bytes,
+                replay_pack_ns: counters.replay.replay_pack_ns,
+                replay_upload_ns: counters.replay.replay_upload_ns,
+                replay_bind_ns: counters.replay.replay_bind_ns,
+                replay_encode_ns: counters.replay.replay_encode_ns,
+                replay_tile_index_ns: counters.replay.replay_tile_index_ns,
+                replay_other_ns: counters.replay.replay_other_ns,
+                replay_submit_wait_ns: counters.replay.replay_submit_wait_ns,
+                replay_bind_groups: counters.replay.replay_bind_groups,
+                replay_buffers: counters.replay.replay_buffers,
+                replay_passes: counters.replay.replay_passes,
+                replay_staged_bytes: counters.replay.replay_staged_bytes,
             });
             Ok(Some(1))
         });
@@ -1517,7 +1539,39 @@ mod draw_abi_tests {
             48
         );
         assert_eq!(std::mem::offset_of!(DrawCounters, arena_by_kind), 77 * 8);
-        assert_eq!(std::mem::size_of::<DrawCounters>(), (77 + 19 * 6 + 1) * 8);
+        assert_eq!(std::mem::offset_of!(DrawCounters, replay_pack_ns), 192 * 8);
+        assert_eq!(
+            std::mem::offset_of!(DrawCounters, replay_upload_ns),
+            193 * 8
+        );
+        assert_eq!(std::mem::offset_of!(DrawCounters, replay_bind_ns), 194 * 8);
+        assert_eq!(
+            std::mem::offset_of!(DrawCounters, replay_encode_ns),
+            195 * 8
+        );
+        assert_eq!(
+            std::mem::offset_of!(DrawCounters, replay_tile_index_ns),
+            196 * 8
+        );
+        assert_eq!(std::mem::offset_of!(DrawCounters, replay_other_ns), 197 * 8);
+        assert_eq!(
+            std::mem::offset_of!(DrawCounters, replay_submit_wait_ns),
+            198 * 8
+        );
+        assert_eq!(
+            std::mem::offset_of!(DrawCounters, replay_bind_groups),
+            199 * 8
+        );
+        assert_eq!(std::mem::offset_of!(DrawCounters, replay_buffers), 200 * 8);
+        assert_eq!(std::mem::offset_of!(DrawCounters, replay_passes), 201 * 8);
+        assert_eq!(
+            std::mem::offset_of!(DrawCounters, replay_staged_bytes),
+            202 * 8
+        );
+        assert_eq!(
+            std::mem::size_of::<DrawCounters>(),
+            (77 + 19 * 6 + 1 + 11) * 8
+        );
     }
 
     #[test]

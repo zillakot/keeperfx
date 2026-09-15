@@ -122,6 +122,116 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(report["resources"]["rust_allocations"]["calls_per_presentation"], 0.5)
             self.assertTrue(any("HEADLESS" in item for item in report["limitations"]))
 
+    def test_replay_host_partition_alignment_and_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            engine_output(output)
+            metadata = drawing_metadata(output, 19)
+            replay = [7_000_000 + index * 100 for index in range(20)]
+            metadata["replay_scope"] = True
+            metadata["presenter"] = {"per_frame": [[0] * 8 for _ in replay],
+                                     "replay": {"counters": list(profile.REPLAY_COUNTERS),
+                                                "per_frame": [[1_000_000] * 7 + [1, 2, 3, 4] for _ in replay]}}
+            with (output / "raw.csv").open("a") as stream:
+                for turn, duration in zip(range(40, 60), replay):
+                    stream.write(f"replay,{turn},{duration}\n")
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            report = profile.summarize(output, arguments())
+            host = report["replay_host"]
+            self.assertEqual(host["source"], "presenter.replay")
+            self.assertEqual(host["frames"], 20)
+            self.assertEqual(host["total_ms"]["mean"], 7)
+            self.assertAlmostEqual(host["residual_ms"]["mean"], 0.00095)
+            self.assertAlmostEqual(host["residual_ms"]["p95"], 0.001805)
+            self.assertAlmostEqual(host["residual_ms"]["max"], 0.0019)
+            self.assertTrue(host["within_5_percent"])
+            self.assertAlmostEqual(host["residual_fraction"], 0.00095 / 7.00095)
+            report.update(request=dict(vars(arguments()), campaign="keeporig", level=1),
+                          engine_sha256="engine", assets={"sha256": "assets"})
+            profile.write_report(output, report)
+            text = (output / "report.md").read_text()
+            self.assertIn("## Replay host attribution", text)
+            self.assertIn("| Residual against replay | 0.000950 | 0.001805 | 0.001900 |", text)
+            self.assertIn("replay_submit_wait_ns", text)
+            self.assertIn("replay_staged_bytes", text)
+
+    def test_replay_1_10_1_ms_excludes_prior_replay_and_checkpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            engine_output(output)
+            metadata = drawing_metadata(output, 19)
+            replay = [1_000_000, 10_000_000, 1_000_000] + [1_000_000] * 17
+            metadata["replay_scope"] = True
+            for index, row in enumerate(metadata["drawing"]["per_frame"]):
+                row[profile.DRAWING_COUNTERS.index("replay_pack_ns")] = replay[index] + 50_000_000
+            metadata["presenter"] = {"per_frame": [[0] * 8 for _ in replay],
+                                     "replay": {"counters": list(profile.REPLAY_COUNTERS),
+                                                "per_frame": [[duration] + [0] * 10 for duration in replay]}}
+            with (output / "raw.csv").open("a") as stream:
+                for turn, duration in zip(range(40, 60), replay):
+                    stream.write(f"replay,{turn},{duration}\n")
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            host = profile.summarize(output, arguments())["replay_host"]
+            self.assertEqual(host["frames"], 20)
+            self.assertEqual(host["residual_ms"]["mean"], 0)
+            self.assertEqual(host["residual_ms"]["p95"], 0)
+            self.assertEqual(host["residual_ms"]["max"], 0)
+            self.assertEqual(host["max_absolute_residual_fraction"], 0)
+            self.assertTrue(host["within_5_percent"])
+            del metadata["presenter"]["replay"]
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            self.assertIsNone(profile.summarize(output, arguments())["replay_host"])
+
+    def test_replay_residual_signed_outliers_zero_and_legacy(self):
+        data = {"counters": list(profile.REPLAY_COUNTERS),
+                "per_frame": [[100] * 7 + [1, 2, 3, 4], [200] * 7 + [2, 3, 4, 5]]}
+        result = profile.summarize_replay(data, {"replay": [700, 1200]})
+        self.assertAlmostEqual(result["residual_ms"]["mean"], -0.0001)
+        self.assertEqual(result["frames_outside_5_percent"], 1)
+        self.assertFalse(result["within_5_percent"])
+        self.assertEqual(result["max_absolute_residual_fraction"], 1 / 6)
+        zero = profile.summarize_replay(data, {"replay": [0, 0]})
+        self.assertIsNone(zero["residual_fraction"])
+        self.assertEqual(zero["frames_outside_5_percent"], 2)
+        with self.assertRaisesRegex(RuntimeError, "every presentation"):
+            profile.summarize_replay(data, {"replay": [700]})
+        for bad in ([], [[0] * 10] * 2, [[-1] * 11] * 2, [[True] * 11] * 2):
+            with self.assertRaisesRegex(RuntimeError, "every presentation|invalid replay attribution row"):
+                profile.summarize_replay(dict(data, per_frame=bad), {"replay": [700, 1200]})
+        self.assertIsNone(profile.summarize_replay(None, {"replay": [1] * 20}))
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            engine_output(output)
+            metadata = drawing_metadata(output, 19)
+            old = metadata["drawing"]
+            index = old["counters"].index("replay_submit_wait_ns")
+            old["counters"].pop(index)
+            for row in old["per_frame"]:
+                row.pop(index)
+            self.assertIn("replay_pack_ns", profile.summarize_drawing(old, 20)["per_frame"])
+            for field in profile.REPLAY_COUNTERS:
+                if field not in old["counters"]:
+                    continue
+                index = old["counters"].index(field)
+                old["counters"].pop(index)
+                for row in old["per_frame"]:
+                    row.pop(index)
+            self.assertNotIn("replay_pack_ns", profile.summarize_drawing(old, 20)["per_frame"])
+            old["counters"].append("replay_pack_ns")
+            with self.assertRaisesRegex(RuntimeError, "names do not match"):
+                profile.summarize_drawing(old, 20)
+
+    def test_software_capture_has_no_presenter_replay_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            metadata = engine_output(output)
+            metadata["presenter"] = {"per_frame": [],
+                                     "replay": {"counters": list(profile.REPLAY_COUNTERS), "per_frame": []}}
+            (output / "raw.csv.json").write_text(json.dumps(metadata))
+            report = profile.summarize(output, arguments())
+            self.assertIsNone(report["presenter"])
+            self.assertIsNone(report["replay_host"])
+
     def test_presenter_fields_and_per_frame_cpu_tail(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)

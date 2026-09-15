@@ -73,6 +73,7 @@ impl DrawRenderer {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        let encode = Scope::new(Phase::Encode);
         let encoder = self.frame_encoder();
         for row in 0..height {
             encoder.copy_buffer_to_buffer(
@@ -86,6 +87,7 @@ impl DrawRenderer {
                 u64::from(width) * 4,
             );
         }
+        drop(encode);
         self.pass_boundary();
         self.check_status()?;
         self.target_snapshots.insert(
@@ -173,6 +175,7 @@ impl DrawRenderer {
             )
         } else {
             let mut words = vec![0u32; batch.asset_words.max(1)];
+            let _scope = Scope::new(Phase::Upload);
             for (&id, &offset) in &batch.tables {
                 let offset = offset as usize;
                 for (at, &byte) in self.resources[&id].bytes.iter().enumerate() {
@@ -228,12 +231,14 @@ impl DrawRenderer {
         // encoder, so this staged write cannot reach a region a recorded pass reads.
         let mut uploaded = 0;
         if self.arena.enabled() {
+            let _scope = Scope::new(Phase::Upload);
             for (&id, &offset) in &batch.tables {
                 let bytes: Vec<_> = self.resources[&id]
                     .bytes
                     .iter()
                     .flat_map(|&b| u32::from(b).to_le_bytes())
                     .collect();
+                host::staged_bytes(bytes.len());
                 self.queue
                     .write_buffer(&assets, u64::from(base + offset) * 4, &bytes);
                 uploaded += bytes.len() as u64;
@@ -262,6 +267,7 @@ impl DrawRenderer {
         let compute = self.compute.clone();
         let mut copied = 0;
         {
+            let _scope = Scope::new(Phase::Encode);
             let encoder = self.frame_encoder();
             for (source, offset, size) in &copies {
                 encoder.copy_buffer_to_buffer(source, 0, &assets, *offset, *size);

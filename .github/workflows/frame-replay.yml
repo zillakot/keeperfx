@@ -201,6 +201,8 @@ jobs:
         run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_terrain_binning_gpu -- --ignored --nocapture --test-threads=1
       - name: Check tight sprite, triangle and bitmap bin boxes against the whole-target bounds
         run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_record_binning_gpu -- --ignored --nocapture --test-threads=1
+      - name: Check serialized replay host submission and GPU drain attribution
+        run: KFX_WGPU_GPU_TIMING=2 cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_replay_host_gpu -- --ignored --nocapture --test-threads=1
       - name: Check one encoder and one submit per frame
         run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_one_submit_gpu -- --ignored --nocapture --test-threads=1
       - name: Replay synthetic frames and sequences

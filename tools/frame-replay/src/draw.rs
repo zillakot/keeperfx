@@ -1,3 +1,8 @@
+#[path = "draw_host.rs"]
+pub(crate) mod host;
+pub use host::ReplayCounters;
+use host::{Phase, Scope};
+
 #[path = "draw_arena_kinds.rs"]
 pub mod arena_kinds;
 use arena_kinds::ResourceKind;
@@ -193,6 +198,7 @@ pub(super) struct Target {
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Counters {
+    pub replay: ReplayCounters,
     pub arena_by_kind: [arena_kinds::ArenaKindCounters; arena_kinds::ARENA_KINDS],
     pub arena_trig_texture_source_bytes: u64,
     pub batches: u64,
@@ -254,7 +260,7 @@ struct PresentBuffers {
 }
 
 pub struct DrawRenderer {
-    device: wgpu::Device,
+    device: host::Device,
     queue: wgpu::Queue,
     last_submission: Option<wgpu::SubmissionIndex>,
     compute: wgpu::ComputePipeline,
@@ -303,7 +309,7 @@ pub struct DrawRenderer {
     asset_generation: u64,
     /// Every pass of the frame, from the first record after a submit to the palette
     /// pass and the cursor restore. Submitted once, by `kfx_wgpu_present`.
-    encoder: Option<wgpu::CommandEncoder>,
+    encoder: Option<host::Encoder>,
     encoder_passes: u64,
     timing_slot: Option<usize>,
     serialize_passes: bool,
@@ -402,7 +408,7 @@ impl DrawRenderer {
         let timings = PassTimings::new(&device, &queue);
         let serialize_passes = timings.is_some() && timing::serialized();
         Ok(Self {
-            device,
+            device: host::Device(device),
             queue,
             compute,
             compute_sprite_ordered,
@@ -469,6 +475,7 @@ impl DrawRenderer {
     }
 
     pub fn check_status(&self) -> Result<()> {
+        let _scope = Scope::new(Phase::Other);
         if let Some(error) = &*self.failure.lock().unwrap() {
             anyhow::bail!("{error}");
         }
@@ -530,7 +537,8 @@ impl DrawRenderer {
     /// The frame's single encoder, opened on the first record after a submit together
     /// with the arena pin scope and, when GPU timing is on, the ring slot its passes
     /// stamp into. Every pass of the frame is recorded into it.
-    pub(super) fn frame_encoder(&mut self) -> &mut wgpu::CommandEncoder {
+    pub(super) fn frame_encoder(&mut self) -> &mut host::Encoder {
+        let _scope = Scope::new(Phase::Encode);
         if self.encoder.is_none() {
             if let Some(timings) = &mut self.timings {
                 self.timing_slot = timings.open(&self.device);
@@ -538,7 +546,9 @@ impl DrawRenderer {
             self.arena.hold();
             self.arena.lock(true);
             self.encoder_passes = 0;
-            self.encoder = Some(self.device.create_command_encoder(&Default::default()));
+            self.encoder = Some(host::Encoder(
+                self.device.create_command_encoder(&Default::default()),
+            ));
         }
         self.encoder.as_mut().unwrap()
     }
@@ -575,6 +585,7 @@ impl DrawRenderer {
     /// Reserves this pass's timestamp pair, opening the frame encoder so the pair
     /// belongs to the submission that will carry the pass.
     pub(super) fn stamp(&mut self, kind: usize) -> Stamp {
+        let _scope = Scope::new(Phase::Encode);
         self.frame_encoder();
         let slot = self.timing_slot;
         Stamp(
@@ -629,6 +640,7 @@ impl DrawRenderer {
     /// Publishes the status word into the frame's encoder and submits it. The one
     /// submit of a production frame; a no-op when nothing was recorded.
     pub fn frame_submit(&mut self) -> Result<()> {
+        let _scope = Scope::new(Phase::SubmitWait);
         let Some(mut encoder) = self.encoder.take() else {
             return Ok(());
         };
@@ -661,6 +673,7 @@ impl DrawRenderer {
     }
 
     fn close_encoder(&mut self) {
+        let _scope = Scope::new(Phase::SubmitWait);
         let Some(mut encoder) = self.encoder.take() else {
             return;
         };
@@ -705,6 +718,7 @@ impl DrawRenderer {
 
     /// Blocks until the queue drains, accumulating the measured stall.
     pub(super) fn wait_for_queue(&mut self) -> Result<()> {
+        let _scope = Scope::new(Phase::SubmitWait);
         let started = std::time::Instant::now();
         let status = self.device.poll(wgpu::PollType::Wait {
             submission_index: None,
@@ -1551,6 +1565,7 @@ fn persist(
     words: &[u32],
     usage: wgpu::BufferUsages,
 ) -> Region {
+    let _scope = Scope::new(Phase::Upload);
     let needed = words.len().max(1) as u64;
     let start = slot.cursor.next_multiple_of(REGION_ALIGN_WORDS);
     if slot.cursor == 0 {
@@ -1559,6 +1574,7 @@ fn persist(
             let size = wanted.next_power_of_two().max(1024) * 4;
             counters.buffers += 1;
             counters.buffer_bytes += size;
+            host::created_buffer();
             slot.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size,
@@ -1581,6 +1597,7 @@ fn persist(
         slot.staging.clear();
         slot.staging
             .extend(words.iter().flat_map(|word| word.to_le_bytes()));
+        host::staged_bytes(slot.staging.len());
         queue.write_buffer(&buffer, start * 4, &slot.staging);
     }
     Region {
@@ -1862,6 +1879,9 @@ fn buffer(
     words: &[u32],
     usage: wgpu::BufferUsages,
 ) -> wgpu::Buffer {
+    let _scope = Scope::new(Phase::Upload);
+    host::created_buffer();
+    host::staged_bytes(words.len() * 4);
     let bytes: Vec<_> = words.iter().flat_map(|v| v.to_le_bytes()).collect();
     counters.buffers += 1;
     counters.buffer_bytes += bytes.len() as u64;
@@ -2038,6 +2058,7 @@ impl TileIndex {
         extent: (u32, u32),
         limit: usize,
     ) -> Result<()> {
+        let _scope = Scope::new(Phase::TileIndex);
         let (width, height) = extent;
         let records = words.as_chunks::<RECORD_WORDS>().0;
         let count = segments.len().max(1);

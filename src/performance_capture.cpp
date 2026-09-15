@@ -121,6 +121,18 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     KFX_ARENA_KINDS(KFX_ARENA_FIELDS)
 #undef KFX_ARENA_FIELDS
     "arena_trig_texture_source_bytes",
+    "replay_pack_ns",
+    "replay_upload_ns",
+    "replay_bind_ns",
+    "replay_encode_ns",
+    "replay_tile_index_ns",
+    "replay_other_ns",
+    "replay_submit_wait_ns",
+    "replay_bind_groups",
+    "replay_buffers",
+    "replay_passes",
+    "replay_staged_bytes",
+
     "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
     "arena_capacity_bytes",
     "arena_live_bytes",
@@ -128,6 +140,21 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "arena_growth_peak_bytes"};
 static_assert(sizeof(PerformanceDrawingCounters) == DrawingCounterCount * sizeof(unsigned long long),
     "drawing counters must be a packed array of unsigned long long");
+
+constexpr int ReplayCounterCount = sizeof(PerformanceReplayCounters) / sizeof(unsigned long long);
+constexpr const char* replay_counter_names[ReplayCounterCount] = {
+    "replay_pack_ns",
+    "replay_upload_ns",
+    "replay_bind_ns",
+    "replay_encode_ns",
+    "replay_tile_index_ns",
+    "replay_other_ns",
+    "replay_submit_wait_ns",
+    "replay_bind_groups",
+    "replay_buffers",
+    "replay_passes",
+    "replay_staged_bytes"};
+static_assert(sizeof(PerformanceReplayCounters) == 11 * sizeof(unsigned long long));
 
 struct Profile {
     const char* output = std::getenv("KFX_PERF_OUTPUT");
@@ -266,7 +293,18 @@ void finish(Profile& p)
             c.acquire_ns, c.acquire_block_ns, c.reconfigure_count, c.present_record_ns, c.submit_ns,
             c.replay_ns, c.allocations, c.allocated_bytes);
     }
-    std::fprintf(info, "]}}\n");
+    std::fprintf(info, "],\"replay\":{\"counters\":[");
+    for (int i = 0; i < ReplayCounterCount; ++i)
+        std::fprintf(info, "%s%s", i ? "," : "", json_quote(replay_counter_names[i]).c_str());
+    std::fprintf(info, "],\"per_frame\":[");
+    for (size_t frame = 0; frame < p.presenter_frames.size(); ++frame) {
+        const auto& c = p.presenter_frames[frame].replay;
+        std::fprintf(info, "%s[%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu]", frame ? "," : "",
+            c.replay_pack_ns, c.replay_upload_ns, c.replay_bind_ns, c.replay_encode_ns,
+            c.replay_tile_index_ns, c.replay_other_ns, c.replay_submit_wait_ns,
+            c.replay_bind_groups, c.replay_buffers, c.replay_passes, c.replay_staged_bytes);
+    }
+    std::fprintf(info, "]}}}\n");
     failed = std::ferror(info) != 0;
     failed = std::fclose(info) != 0 || failed;
     if (failed) { std::remove(path.c_str()); fail(p, "writing metadata"); return; }

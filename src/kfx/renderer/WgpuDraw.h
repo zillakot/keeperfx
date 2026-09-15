@@ -128,6 +128,18 @@ struct KfxWgpuDrawCounters {
     uint64_t arena_growth_peak_bytes;
     struct KfxArenaKindCounters arena_by_kind[KFX_ARENA_KIND_COUNT];
     uint64_t arena_trig_texture_source_bytes;
+    uint64_t replay_pack_ns;
+    uint64_t replay_upload_ns;
+    uint64_t replay_bind_ns;
+    uint64_t replay_encode_ns;
+    uint64_t replay_tile_index_ns;
+    uint64_t replay_other_ns;
+    uint64_t replay_submit_wait_ns;
+    uint64_t replay_bind_groups;
+    uint64_t replay_buffers;
+    uint64_t replay_passes;
+    uint64_t replay_staged_bytes;
+
 
 };
 #pragma pack(pop)
