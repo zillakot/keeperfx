@@ -108,7 +108,7 @@ impl DrawRenderer {
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("native minimap"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("draw_minimap.wgsl").into()),
+                    source: wgpu::ShaderSource::Wgsl(assets::shader(include_str!("draw_minimap.wgsl")).into()),
                 });
             self.minimap = Some(MinimapState {
                 pipeline: self
@@ -214,7 +214,7 @@ impl DrawRenderer {
         self.counters.batches += 1;
         self.counters.commands += 1;
         if let Some(words) = &words {
-            self.counters.asset_upload_bytes += words.len() as u64 * 4;
+            self.counters.asset_upload_bytes += words.len() as u64 * assets::STRIDE as u64;
         }
         self.check_status()
     }

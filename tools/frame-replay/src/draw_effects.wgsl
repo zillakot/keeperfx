@@ -2,10 +2,10 @@
 fn address(i: u32) -> u32 { return target_view.z + (i / target_view.x) * target_view.y + i % target_view.x; }
 @group(0) @binding(0) var<storage, read_write> indices: array<u32>;
 @group(0) @binding(1) var<storage, read> assets: array<u32>;
-fn data(i: u32) -> u32 { return assets[target_view.w + i]; }
+fn data(i: u32) -> u32 { return byte(target_view.w + i); }
 fn word(n: u32) -> u32 {
     let a = n * 4u;
-    return data(a) | (data(a+1u) << 8u) | (data(a+2u) << 16u) | (data(a+3u) << 24u);
+    return le32(target_view.w + a);
 }
 fn source(offset: u32) -> u32 {
     if word(6u) != 0u {

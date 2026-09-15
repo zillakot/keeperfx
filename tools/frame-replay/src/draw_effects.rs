@@ -117,7 +117,7 @@ impl DrawRenderer {
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("ordered native lens"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("draw_effects.wgsl").into()),
+                    source: wgpu::ShaderSource::Wgsl(assets::shader(include_str!("draw_effects.wgsl")).into()),
                 });
             let pipeline = self
                 .device
@@ -188,7 +188,7 @@ impl DrawRenderer {
         self.counters.batches += 1;
         self.counters.commands += 1;
         if let Some(words) = &words {
-            self.counters.asset_upload_bytes += words.len() as u64 * 4;
+            self.counters.asset_upload_bytes += words.len() as u64 * assets::STRIDE as u64;
         }
         Ok(())
     }

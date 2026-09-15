@@ -2,9 +2,9 @@
 fn address(i: u32) -> u32 { return target_view.z + (i / target_view.x) * target_view.y + i % target_view.x; }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(1) var<storage, read> assets: array<u32>;
-fn data(i:u32)->u32 {return assets[target_view.w+i];}
+fn data(i:u32)->u32 {return byte(target_view.w+i);}
 @group(0) @binding(2) var<storage, read> background: array<u32>;
-fn word(o:u32)->u32 {return data(o)|(data(o+1)<<8)|(data(o+2)<<16)|(data(o+3)<<24);}
+fn word(o:u32)->u32 {return le32(target_view.w+o);}
 fn h(i:u32)->u32 {return word(i*4);}
 fn si(i:u32)->i32 {return bitcast<i32>(h(i));}
 fn root(n:i32)->i32 {var l=0;var r=2049;loop {if r-l<=1 {break;}let m=(l+r)/2;if m*m<=n {l=m;}else {r=m;}}return l;}
