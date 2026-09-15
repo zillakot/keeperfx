@@ -26,7 +26,7 @@ PROFILE = module("profile_game", "profile-game.py")
 
 GATE_COUNTERS = ("failures", "invalid_frames", "frame_flagged_invalid", "verification_flagged_shades",
                  "rejected_commands", "rejected_spans", "rejected_triangles", "frame_rejected_checkpoints",
-                 "missing_cpu_barriers")
+                 "missing_cpu_barriers", "resource_purge_failures")
 REPORTED_COUNTERS = ("frames", "gpu_batches", "verified_batches", "verified_triangles", "cpu_barriers",
                      "target_alias_barriers", "bridge_solo_batches", "arena_overflows", "arena_evictions",
                      "shadow_prior_divergence")

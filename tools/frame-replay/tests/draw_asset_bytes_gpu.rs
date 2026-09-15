@@ -230,3 +230,58 @@ fn sprite_pairs_and_triangle_vertices_at_every_batch_lane() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn keyed_and_per_call_resources_raster_the_same_bytes() {
+    use keeperfx_frame_replay::draw::{Command, DrawRenderer, IMAGE};
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits {
+            max_storage_buffer_binding_size: 32 << 20,
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
+    .unwrap();
+    let renderer = keeperfx_frame_replay::gpu::Renderer::new(device, queue).unwrap();
+    let mut draw = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let target = draw.create_target(32, 32).unwrap();
+    let bytes: Vec<u8> = (0..32 * 32).map(|i| (i * 7 + 5) as u8).collect();
+    let image = |source| Command {
+        kind: IMAGE,
+        source,
+        width: 32,
+        height: 32,
+        source_width: 32,
+        source_height: 32,
+        ..Default::default()
+    };
+    let source = draw.create_resource(&bytes, 32, 32, 32).unwrap();
+    draw.submit(target, &[image(source)]).unwrap();
+    let expected = draw.readback(target).unwrap();
+    draw.release_resource(source).unwrap();
+
+    let (keyed, _) = draw
+        .create_resource_keyed((0, 9, 9), 4, &bytes, 32, 32, 32)
+        .unwrap();
+    for _ in 0..3 {
+        draw.submit(target, &[image(keyed)]).unwrap();
+        assert_eq!(draw.readback(target).unwrap(), expected);
+    }
+    // A generation bump replaces the bytes the key names, and nothing else.
+    let bumped: Vec<u8> = bytes.iter().map(|b| b ^ 0x5a).collect();
+    let (next, superseded) = draw
+        .create_resource_keyed((0, 9, 9), 5, &bumped, 32, 32, 32)
+        .unwrap();
+    draw.submit(target, &[image(next)]).unwrap();
+    let after = draw.readback(target).unwrap();
+    assert_eq!(
+        after,
+        expected.iter().map(|b| b ^ 0x5a).collect::<Vec<_>>(),
+        "keyed bytes must reach the kernel unchanged in both formats"
+    );
+    draw.submit(target, &[image(superseded)]).unwrap();
+    assert_eq!(draw.readback(target).unwrap(), expected);
+}

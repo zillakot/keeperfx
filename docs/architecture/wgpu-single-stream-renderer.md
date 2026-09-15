@@ -140,15 +140,21 @@ drawing context, with:
   `create_resource` writes into the arena with `queue.write_buffer` and keeps CPU bytes only for
   `KFX_WGPU_VERIFY` or a CPU oracle. Power-of-two size classes with free lists, assets aligned to 4 words
   so byte packing later does not re-lay out the arena.
-- **Generations.** A handle is `(id, generation)`; the C side interns by
-  `(pointer, length, width, height, pitch, generation)` instead of the full `memcmp` in
-  `WgpuTerrainBridge::ResourceFor`, which today rescans up to 64 × 8 KiB texture entries and 4 × 16 KiB
-  fade entries per triangle. Generations bump at the existing invalidation points: `FullRedraw`, a
-  `ReadBarrier` hit on the asset range, palette and level changes.
+- **Generations.** A handle is `(id, generation)`. The C side names an asset instead of comparing it:
+  `kfx_wgpu_draw_resource_create_keyed(kind, key_hi, key_lo, generation)` resolves a key to the handle
+  already resident for it, so terrain tiles, terrain fade tables and the lookup tables of
+  `kfx_wgpu_native_draw` hold one arena id across frames instead of the bridge rescanning a 64-entry
+  texture cache and a 16-entry table cache. Bytes the caller cannot name — anything outside a range
+  registered with `kfx_render_asset_range` — take a per-call resource; tables built on a caller's stack
+  still compare content until their emitters carry the table identity. The only bump is
+  `kfx_render_assets_changed()`, from the texture map load, the fade and ghost rebuild, the land view and
+  the torture screen; a key seen with a new generation takes a new handle, because a recorded command
+  must still name the bytes it was issued against. `FullRedraw` and `ReadBarrier` do not bump it;
+  `FullRedraw` releases the keyed resources.
 - **LRU residency** over `last_used_frame`, never evicting anything the frame under construction
   references. Capacity is `min(max_storage_buffer_binding_size, max_buffer_size)` — 128 MiB at wgpu
-  defaults, since every `request_device` passes `&Default::default()` — so 32 MiB of real asset bytes
-  under phase-1 `u32` expansion.
+  defaults, since every `request_device` passes `&Default::default()` — so 128 MiB of real asset bytes
+  now that `packed-arena` is a default feature and `assets::STRIDE` is 1.
 - **A ring for per-frame mutables** (movie frames, the minimap world descriptor, lens overlay maps), the
   only recurring upload, and **snapshot regions**, so `submit_target_images`' per-batch sampling
   allocation and `submit_target_triangles`' two 256 KB copies per shadow become copies into stable regions.
@@ -383,8 +389,9 @@ missing. The shadow source layout in [`WgpuShadow.h`](../../src/kfx/renderer/Wgp
 `malloc`s and the scratch, fade and ghost `memcpy`s in the software adapter.
 
 **Removed by this design** in `WgpuTerrainBridge.cpp`: the per-command `Flush()`/`ExecutePending()` pair
-in `SubmitNative`; `ResourceFor`'s content `memcmp` cache; the 8 KiB zero-initialised `std::array` and
-32 × 32-byte de-pad memcpy per triangle; `m_shadow_scratch`, `shadow_mirror` and the shadow branch of
+in `SubmitNative`; the content `memcmp` cache that keyed creation replaced; the 8 KiB
+zero-initialised `std::array` and 32 × 32-byte de-pad memcpy, now paid once per page instead of
+once per span; `m_shadow_scratch`, `shadow_mirror` and the shadow branch of
 `ExecutePending`; the per-command `kfx_wgpu_draw_resource_create`/`_release` pair.
 
 **Deleted when C/C++ drawing is retired:** `Materialize`, `m_readback` and the readback counters;
@@ -460,7 +467,7 @@ Each step is one PR and keeps every existing fixture green.
 | PR | Change | Acceptance counter it must move |
 | ---: | --- | --- |
 | 1 | **Instrumentation** (`TIMESTAMP_QUERY` delivered in PR 8). Route every `queue.submit` through one helper and every `create_buffer`/`create_buffer_init`/`create_bind_group` through helpers; add the new counters including `wait_ns` and `ordered_sprites`; time the three `device.poll(Wait)` sites; add a per-frame ring; expose the counters through [`performance_capture.cpp`](../../src/performance_capture.cpp) with window semantics and **no per-frame file I/O**; make `report_drawing` interval- or shutdown-driven; wire `kfx_wgpu_cursor_counters()` into the sidecar; optional `TIMESTAMP_QUERY`. | none directly; every *derived* row above becomes measured |
-| 2 | **Free CPU wins.** `ResourceFor` → pointer+generation intern; `check_queued_target` → running byte total; `released_resources` → `HashSet`; **and `create_resource`, which runs the identical O(resources) byte sum on every resource creation**; `DrawTriangle`'s 8 KiB array → reused member scratch. | `resource_snapshot_bytes` 1.95 MB → ~0 |
+| 2 | **Free CPU wins.** Terrain and table interning → `kfx_wgpu_draw_resource_create_keyed`; `check_queued_target` → running byte total; `released_resources` → `HashSet`; **and `create_resource`, which runs the identical O(resources) byte sum on every resource creation**; `DrawTriangle`'s 8 KiB array → reused member scratch. | `resource_snapshot_bytes` 1.95 MB → ~0 |
 | 3 | **Bridge batching.** `SubmitNative` accumulates into `m_pending`; flush only at target change, shadow, transition, ordered sprite, snapshot or readback. | `gpu_batches` 139 → 10–20 |
 | 4 | **Persistent asset arena**, `u32` expansion kept, kernels unchanged. Delivered, GPU drawing behind the SDL presenter: asset plus command upload 28.78 MB → 15.14 MB per frame and Rust requested bytes 93.1 MB → 28.4 MB per presentation; the wgpu-presenter pair is outstanding. The ≤ 0.3 MB target needs PR 14 and emitters that stop baking position into the asset. |
 | 5 | **Shadow residency.** Delivered, GPU drawing behind the SDL presenter: persistent GPU scratch and two mask slots; CPU mirror, readback and snapshot dropped; each mask submitted immediately ahead of its `TRIG` pair, not hoisted. Checkpoints 9.4 → 1.0, blocking waits 29.8 → 2.9 and `shadow_scratch_readback_bytes` → 0; the wgpu-presenter pair is outstanding. |
@@ -495,9 +502,35 @@ Each step is one PR and keeps every existing fixture green.
   one or two frames, as above. Presenting a retained previous root would cost one extra full-target copy
   per frame (8.3 MB at 1080p) for a case measured at zero occurrences. The atomic-commit contracts in
   `KfxWgpuFrame.h`, `WgpuDraw.h` and `WgpuTargetResource.h` are rewritten accordingly.
-- **Resource identity.** `ResourceFor` is keyed by pointer plus generation, bumped on every path that
-  mutates a texture or fade table in place. In-place mutation without a bump is a bug to be caught by the
-  verify oracle, not a supported case.
+- **Resource identity.** An asset is named by `(kind, key_hi, key_lo)` — for terrain and lookup tables
+  the registered pointer pair — plus `kfx_render_asset_generation`, which the seven
+  `kfx_render_assets_changed()` call sites bump. A key names one immutable byte range of one extent for
+  one generation. In-place mutation without a bump is a bug to be caught by the verify oracle, not a
+  supported case: the bridge keeps the bytes it passed for the CPU replay, so the oracle compares them
+  against what the GPU read from the arena.
+- **Keyed residency is bounded by the key space, not by a cache size.** The 64-entry texture and 8-entry
+  fade caches are gone and nothing replaces them: keys are pointers into `block_mem` and `pixmap`, both
+  fixed for the process, so the live set grows only toward the number of distinct pages and tables the
+  session ever draws and never with command count. GPU pressure is handled by the arena's own LRU, which
+  drops residency while the key and its handle survive and re-uploads as an eviction miss; host bytes are
+  released by `FullRedraw`'s purge. A resident keyed asset costs its bytes about three times — the arena
+  region, the `Resource` copy the drawing context keeps, and the bridge's replay snapshot for terrain
+  kinds — so the whole texture page space is roughly 3 × 8 KiB per distinct page drawn.
+  `keyed_resources` in the drawing counters reports the live set so the assumption is observable rather
+  than assumed.
+- **A refused purge costs one frame and leaks for the life of the context.** `FullRedraw` invalidates
+  that frame, so the CPU redraws it and play continues; what it cannot do is reach the resources the
+  context refused to release, and no later redraw retries them. `resource_purge_failures` is a gate
+  counter for exactly that reason.
+- **A generation bump reads as `misses_new_id`, not `misses_generation`.** A bump takes a new handle so a
+  command already recorded keeps the bytes it was issued against, which makes the new handle a new arena
+  id. The bump is observed as `arena_explicit_forgets` rising with the superseded handles and
+  `keyed_resources` staying flat; `arena_misses_generation` stays 0 for keyed kinds.
+- **`KFX_RENDER_ASSET_RANGES` is a residency cliff.** Only bytes inside a registered range can be keyed;
+  everything else takes a fresh resource per command. There are four slots
+  ([`GpolyCapture.h`](../../src/kfx/renderer/GpolyCapture.h)), two used by `block_mem` and `pixmap`, and
+  registration silently no-ops when they are full, so a slice that adds a keyed family must check the
+  count before adding a range.
 - **Verification.** `KFX_WGPU_DRAW_VERIFY` keeps the shadow-scratch comparison through the blocking
   `kfx_wgpu_draw_shadow_scratch_read`, used only in verify runs; `KFX_WGPU_VERIFY` is the separate
   presentation-surface check.

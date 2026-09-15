@@ -39,6 +39,7 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget* target,
 #include "kfx/renderer/GpolyCapture.h"
 #include <array>
 #include <cstdint>
+#include <map>
 #include <vector>
 #include "kfx/renderer/WgpuDraw.h"
 
@@ -60,6 +61,7 @@ public:
         uint64_t gpu_triangles = 0, cpu_triangles = 0, replayed_triangles = 0, verified_triangles = 0, rejected_triangles = 0;
         uint64_t bridge_solo_batches = 0, bridge_target_flushes = 0, bridge_target_runs = 0;
         uint64_t rejected_commands = 0, rejected_spans = 0;
+        uint64_t resource_purge_failures = 0;
     };
     WgpuTerrainBridge(uint64_t fail_after, bool fail_init, bool verify = false, bool resident = false);
     ~WgpuTerrainBridge();
@@ -112,9 +114,27 @@ private:
         uint64_t handle;
         std::vector<uint8_t> bytes;
         uint32_t width, height, pitch;
-        const void* key = nullptr;
-        uint64_t generation = 0;
-        const void* tail_key = nullptr;
+    };
+    /* Extent of one asset: a key names one byte range of one extent for one generation,
+       so a memo that matched only the pointers could hand back another shape's handle. */
+    struct Extent {
+        size_t length;
+        uint32_t width, height, pitch;
+        bool operator==(const Extent& other) const
+        {
+            return length == other.length && width == other.width
+                && height == other.height && pitch == other.pitch;
+        }
+    };
+    /* The handle a key resolved to last, so a run of spans over one page does not cross
+       the ABI again. Valid only while that handle lives: a generation bump supersedes the
+       handle and changes the memo's own generation, and a purge clears every memo. */
+    struct KeyMemo {
+        const void* key;
+        const void* tail_key;
+        uint64_t generation;
+        Extent extent;
+        uint64_t handle;
     };
     static int Sink(void* context, const KfxGpolyTarget* target,
         const KfxGpolySpan* span, const uint8_t* texture, const uint8_t* fade);
@@ -125,11 +145,22 @@ private:
     int Draw(const KfxGpolyTarget& target, const KfxGpolySpan& span,
         const uint8_t* texture, const uint8_t* fade);
     static const void* StableKey(const void* bytes, size_t length);
-    uint64_t ResourceFor(std::vector<Resource>& cache, const void* key, uint64_t generation,
-        const uint8_t* bytes, size_t length, uint32_t width, uint32_t height, uint32_t pitch,
-        size_t limit);
+    /* Resolves an asset to a handle the drawing context keeps resident for the key.
+       A null key has no name the context can trust, so it takes a per-call handle. */
+    uint64_t KeyedResource(uint32_t kind, const void* key, const void* tail_key,
+        uint64_t generation, const uint8_t* bytes, const Extent& extent);
+    uint64_t TerrainResource(uint32_t kind, KeyMemo& memo, const void* key,
+        const uint8_t* bytes, const Extent& extent);
+    uint64_t MemoHandle(const KeyMemo& memo, const void* key, const void* tail_key,
+        const Extent& extent) const;
+    uint64_t TextureResource(const uint8_t* texture);
+    uint64_t FadeResource(const uint8_t* fade);
     uint64_t TableResource(const KfxWgpuNativeResource& table, size_t limit);
-    void PurgeResources();
+    // Releases handles no pending command can name any more; false if a release failed.
+    bool CollectSuperseded();
+    const uint8_t* ReplayAsset(uint64_t handle) const;
+    // False when the drawing context refused a release, which leaves residency unproven.
+    bool PurgeResources();
     int Fail(const char* reason);
     // Marks the frame for the full CPU redraw RendererSoftware performs on an invalid frame.
     void Invalidate();
@@ -188,7 +219,21 @@ private:
     KfxGpolyRasterizer m_rasterizer = nullptr;
     bool m_fail_init, m_verify, m_failed = false;
     std::array<char, 1024> m_error = {};
-    std::vector<Resource> m_terrain_textures, m_terrain_fades, m_native_tables;
+    // Lookup tables with no identity to key on; the only cache left that compares content.
+    std::vector<Resource> m_native_tables;
+    std::vector<uint64_t> m_superseded;
+    /* Terrain bytes the CPU replay rasterizes, one entry per live terrain handle. Taken
+       when the handle is created and dropped when it is released, so resolving a resident
+       key copies nothing; identity lives in the key, these are only what a replay needs.
+       They also hold the bytes the caller passed, so a mutation behind an unchanged key
+       shows up as a KFX_WGPU_DRAW_VERIFY comparison failure. */
+    std::map<uint64_t, std::vector<uint8_t>> m_replay_assets;
+    KeyMemo m_texture_memo = {}, m_fade_memo = {};
+    /* One slot per live lookup-table identity: a single slot missed on every alternation
+       between two tables and rebuilt an 80 KiB concatenation the context already held. */
+    static constexpr size_t kTableMemos = 4;
+    std::array<KeyMemo, kTableMemos> m_table_memos = {};
+    size_t m_table_memo_next = 0;
     std::vector<uint8_t> m_readback;
     Counters m_counts;
 };

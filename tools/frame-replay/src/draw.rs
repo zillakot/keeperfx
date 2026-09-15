@@ -189,7 +189,12 @@ struct Resource {
     height: u32,
     pitch: u32,
     bytes: Vec<u8>,
+    key: Option<ResourceKey>,
 }
+
+/// Namespace plus the two words of a caller-held name, as passed to
+/// `kfx_wgpu_draw_resource_create_keyed`.
+pub type ResourceKey = (u32, u64, u64);
 
 #[derive(Clone)]
 pub(super) struct Target {
@@ -303,6 +308,7 @@ pub struct DrawRenderer {
     present_cursor: usize,
     targets: HashMap<u64, Target>,
     resources: HashMap<u64, Resource>,
+    keyed: HashMap<ResourceKey, (u64, u64)>,
     resource_bytes: usize,
     snapshot_pack: Option<wgpu::ComputePipeline>,
     target_snapshots: HashMap<u64, target_resources::TargetSnapshot>,
@@ -448,6 +454,7 @@ impl DrawRenderer {
             present_cursor: 0,
             targets: HashMap::new(),
             resources: HashMap::new(),
+            keyed: HashMap::new(),
             resource_bytes: 0,
             snapshot_pack: None,
             target_snapshots: HashMap::new(),
@@ -810,6 +817,76 @@ impl DrawRenderer {
         height: u32,
         pitch: u32,
     ) -> Result<u64> {
+        self.create_resource_inner(bytes, width, height, pitch, None)
+    }
+
+    /// Resolves `key` to the handle already resident for it, so the arena keeps the
+    /// asset under one id instead of a fresh id per command. A generation the key has
+    /// not been seen with takes a new handle: the bytes behind a live handle never
+    /// change, which is what lets a recorded command still name the older asset.
+    /// Returns the handle and the one the key resolved to before the call; when they
+    /// differ the caller releases the older one once its commands are submitted.
+    pub fn create_resource_keyed(
+        &mut self,
+        key: ResourceKey,
+        generation: u64,
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        pitch: u32,
+    ) -> Result<(u64, u64)> {
+        let previous = match self.keyed.get(&key) {
+            Some(&(handle, resident)) if resident == generation => {
+                let resource = self.resources.get(&handle).context("keyed resource lost")?;
+                ensure!(
+                    resource.width == width
+                        && resource.height == height
+                        && resource.pitch == pitch
+                        && resource.bytes.len() == bytes.len(),
+                    "keyed resource changed shape without a generation bump"
+                );
+                return Ok((handle, handle));
+            }
+            Some(&(handle, _)) => handle,
+            None => 0,
+        };
+        let id = self.create_resource_inner(bytes, width, height, pitch, Some(key))?;
+        self.keyed.insert(key, (id, generation));
+        Ok((id, previous))
+    }
+
+    /// Resources held under a key. Keys are caller-held names of immutable ranges, so
+    /// this grows with the number of distinct named assets drawn, not with commands.
+    pub fn keyed_resources(&self) -> u64 {
+        self.keyed.len() as u64
+    }
+
+    /// Releases every keyed resource and forgets the keys, for a caller whose frame was
+    /// discarded before the residency behind those handles was proven. Every handle is
+    /// released even when one refuses, so none is left resident with its key forgotten.
+    pub fn purge_keyed_resources(&mut self) -> Result<()> {
+        let mut failure = None;
+        for (handle, _) in std::mem::take(&mut self.keyed).into_values() {
+            if let Err(error) = self.release_resource(handle)
+                && failure.is_none()
+            {
+                failure = Some(error);
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn create_resource_inner(
+        &mut self,
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        pitch: u32,
+        key: Option<ResourceKey>,
+    ) -> Result<u64> {
         self.check_status()?;
         validate_resource(bytes.len(), width, height, pitch)?;
         ensure!(
@@ -834,6 +911,7 @@ impl DrawRenderer {
                 height,
                 pitch,
                 bytes: bytes.to_vec(),
+                key,
             },
         );
         Ok(id)
@@ -846,6 +924,14 @@ impl DrawRenderer {
     }
 
     pub fn release_resource(&mut self, id: u64) -> Result<()> {
+        if let Some(key) = self.resources.get(&id).and_then(|resource| resource.key)
+            && self
+                .keyed
+                .get(&key)
+                .is_some_and(|(handle, _)| *handle == id)
+        {
+            self.keyed.remove(&key);
+        }
         if self.defer_resource_release(id)? {
             return Ok(());
         }

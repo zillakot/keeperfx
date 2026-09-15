@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <tuple>
 #include <stdexcept>
 #include <vector>
 
@@ -17,7 +18,10 @@ struct FakeContext {
     std::map<uint64_t, FakeResource> resources, targets;
     struct View { uint64_t root; uint32_t x, y, width, height; };
     std::map<uint64_t, View> views;
+    // The keyed half of the resource ABI: one resident handle per key and generation.
+    std::map<std::tuple<uint32_t, uint64_t, uint64_t>, std::pair<uint64_t, uint64_t>> keyed;
 };
+static uint64_t keyed_creates = 0, live_resources = 0;
 extern "C" int32_t kfx_wgpu_draw_frame_begin(void*, uint64_t, char*, size_t) { return 1; }
 extern "C" int32_t kfx_wgpu_draw_frame_flush(void*, char*, size_t) { return 1; }
 extern "C" int32_t kfx_wgpu_draw_frame_end(void*, char*, size_t) { return 1; }
@@ -69,7 +73,12 @@ static int triangle_oracle(const KfxGpolyTarget* target, const KfxWgpuTriangle*,
 extern "C" int32_t kfx_wgpu_draw_counters(void*, KfxWgpuDrawCounters* counters, char*, size_t)
 { *counters = {}; return 1; }
 extern "C" void* kfx_wgpu_draw_create(char*, size_t) { return new FakeContext; }
-extern "C" void kfx_wgpu_draw_destroy(void* handle) { delete static_cast<FakeContext*>(handle); }
+extern "C" void kfx_wgpu_draw_destroy(void* handle)
+{
+    auto* context = static_cast<FakeContext*>(handle);
+    live_resources -= context->resources.size();
+    delete context;
+}
 static bool fail_target_create = false, throw_target_create = false, fail_resource_create = false;
 extern "C" uint64_t kfx_wgpu_draw_target_create(void* handle, uint32_t width, uint32_t height, char* error, size_t capacity)
 {
@@ -96,10 +105,57 @@ extern "C" uint64_t kfx_wgpu_draw_resource_create(void* handle, const uint8_t* b
     auto& context = *static_cast<FakeContext*>(handle);
     const auto id = context.next++;
     context.resources[id] = {std::vector<uint8_t>(bytes, bytes + length), width, height, pitch};
+    ++live_resources;
     return id;
 }
+extern "C" uint64_t kfx_wgpu_draw_resource_create_keyed(void* handle, uint32_t kind,
+    uint64_t key_hi, uint64_t key_lo, uint64_t generation, const uint8_t* bytes, size_t length,
+    uint32_t width, uint32_t height, uint32_t pitch, uint64_t* previous, char* error,
+    size_t capacity)
+{
+    auto& context = *static_cast<FakeContext*>(handle);
+    const auto key = std::make_tuple(kind, key_hi, key_lo);
+    const auto resident = context.keyed.find(key);
+    *previous = resident == context.keyed.end() ? 0 : resident->second.first;
+    if (resident != context.keyed.end() && resident->second.second == generation) {
+        // A key names one extent per generation; another extent is refused, not served.
+        const auto& kept = context.resources.at(resident->second.first);
+        if (kept.bytes.size() != length || kept.width != width || kept.height != height ||
+            kept.pitch != pitch) {
+            std::snprintf(error, capacity, "keyed resource changed shape without a generation bump");
+            *previous = 0;
+            return 0;
+        }
+        return resident->second.first;
+    }
+    ++keyed_creates;
+    const uint64_t id = kfx_wgpu_draw_resource_create(handle, bytes, length, width, height,
+        pitch, error, capacity);
+    if (id == 0) return 0;
+    context.keyed[key] = {id, generation};
+    return id;
+}
+static bool fail_keyed_purge = false;
+extern "C" int32_t kfx_wgpu_draw_resources_purge_keyed(void* handle, char* error, size_t capacity)
+{
+    auto& context = *static_cast<FakeContext*>(handle);
+    int32_t result = 1;
+    // Releases every handle even when one refuses, so none is left resident unnamed.
+    for (const auto& entry : context.keyed)
+        if (fail_keyed_purge ||
+            kfx_wgpu_draw_resource_release(handle, entry.second.first, error, capacity) != 1) {
+            std::snprintf(error, capacity, "injected keyed purge failure");
+            result = -1;
+        }
+    context.keyed.clear();
+    return result;
+}
 extern "C" int32_t kfx_wgpu_draw_resource_release(void* handle, uint64_t id, char*, size_t)
-{ return static_cast<FakeContext*>(handle)->resources.erase(id) == 1 ? 1 : -1; }
+{
+    if (static_cast<FakeContext*>(handle)->resources.erase(id) != 1) return -1;
+    --live_resources;
+    return 1;
+}
 extern "C" int32_t kfx_wgpu_draw_submit(void* handle, uint64_t id, const KfxWgpuDrawCommand* commands,
     size_t count, char*, size_t)
 {
@@ -215,6 +271,10 @@ int main()
     std::vector<uint8_t> texture(7968), fade(16384);
     for (size_t i = 0; i < texture.size(); ++i) texture[i] = (i * 17 + 3) & 255;
     for (size_t i = 0; i < fade.size(); ++i) fade[i] = ((i >> 8) * 7 + i) & 255;
+    // Terrain assets are interned by the pointer they are registered under, so the
+    // fixture registers its own pages the way the engine registers block_mem and pixmap.
+    kfx_render_asset_range(texture.data(), texture.size());
+    kfx_render_asset_range(fade.data(), fade.size());
     std::vector<uint8_t> pixels(24 * 10, 0x6a), expected = pixels;
     KfxGpolyTarget target = {pixels.data(), 20, 10, 24};
     const KfxGpolySpan a = {2, 3, 12, 0x3010, 0x03000801, 0x22, 0x01000100};
@@ -246,15 +306,19 @@ int main()
         assert(bridge.GetCounters().gpu_batches == 2 && bridge.GetCounters().failures == 0);
     }
     {
-        // Recovery purges the interned caches: m_frame_invalid clears only in FullRedraw, which
-        // releases every cached handle first, so arena residency never outlives a discarded frame.
+        // Recovery purges the keyed resources: m_frame_invalid clears only in FullRedraw, which
+        // releases every keyed handle first, so arena residency never outlives a discarded frame.
         WgpuTerrainBridge bridge(0, false, true);
         kfx_wgpu_terrain_boundary(1);
+        const uint64_t created = keyed_creates;
         assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &a, texture.data(), fade.data()) == 1);
         const uint64_t first = bridge.GetCounters().resource_snapshot_bytes;
         assert(first > fade.size());
+        assert(keyed_creates == created + 2);
         assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &b, texture.data(), fade.data()) == 1);
+        // A second span over the same page and fade table snapshots and creates nothing.
         assert(bridge.GetCounters().resource_snapshot_bytes == first);
+        assert(keyed_creates == created + 2);
         kfx_wgpu_terrain_boundary(0);
         bridge.FullRedraw();
         assert(bridge.FrameValid());
@@ -267,12 +331,16 @@ int main()
     {
         WgpuTerrainBridge bridge(0, false, true);
         kfx_wgpu_terrain_boundary(1);
+        const uint64_t live = live_resources;
         for (unsigned i = 0; i < 70; ++i) {
             texture[0] = static_cast<uint8_t>(i);
             kfx_render_assets_changed();
             assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &target, &a, texture.data(), fade.data()) == 1);
             oracle(expected, target.pitch, a, texture, fade);
         }
+        // Every bump takes a new handle so the recorded spans keep the bytes they named;
+        // the superseded ones are released once the run they belong to is submitted.
+        assert(live_resources == live + 140);
         std::vector<uint8_t> resized(32 * 12, 71), resized_expected = resized;
         KfxGpolyTarget other = {resized.data(), 25, 12, 32};
         assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &other, &a, texture.data(), fade.data()) == 1);
@@ -280,6 +348,7 @@ int main()
         oracle(resized_expected, other.pitch, a, texture, fade);
         kfx_wgpu_terrain_boundary(0);
         assert(resized == resized_expected);
+        assert(live_resources == live + 2);
         assert(bridge.GetCounters().target_creations == 2 && bridge.GetCounters().failures == 0);
     }
     {
@@ -602,6 +671,13 @@ int main()
         assert(bridge.BeginFrame(run_target));
         bridge.Boundary(true);
         for (unsigned i = 0; i < 3; ++i) {
+            if (i == 2) {
+                // A bump mid-run supersedes the page handle; the run must still replay from
+                // the bytes each span was issued against, so the superseded snapshot lives
+                // until the run it belongs to is submitted or discarded.
+                for (auto& value : texture) value ^= 0x35;
+                kfx_render_assets_changed();
+            }
             assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &run_target, &a, texture.data(), fade.data()) == 1);
             oracle(run_expected, run_target.pitch, a, texture, fade);
         }
@@ -835,10 +911,17 @@ int main()
         {
             WgpuTerrainBridge bridge(0, false, false);
             kfx_wgpu_terrain_boundary(1);
+            const uint64_t created = keyed_creates;
             assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &top, first.data(), fade.data()) == 1);
             oracle(keyed_expected, keyed_target.pitch, top, first, fade);
             assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &bottom, second.data(), fade.data()) == 1);
             oracle(keyed_expected, keyed_target.pitch, bottom, second, fade);
+            // Two pages and one fade table: alternating pages resolve through the key, not
+            // the one-slot memo, so the run creates three resources and no more.
+            assert(keyed_creates == created + 3);
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &top, first.data(), fade.data()) == 1);
+            oracle(keyed_expected, keyed_target.pitch, top, first, fade);
+            assert(keyed_creates == created + 3);
             kfx_wgpu_terrain_boundary(0);
             assert(keyed == keyed_expected);
             bool differ = false;
@@ -860,9 +943,91 @@ int main()
             kfx_wgpu_terrain_boundary(0);
             assert(keyed == keyed_expected);
         }
-        // An unregistered pointer must fall back to content comparison.
+        {
+            // Lookup tables with a registered pointer take one keyed handle across commands;
+            // a table with the same bytes and no registration stays on the content path and
+            // the two never cross.
+            std::vector<uint8_t> run(24 * 10, 0x6a);
+            KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+            WgpuTerrainBridge bridge(0, false, false);
+            KfxWgpuDrawCommand rect = {};
+            rect.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+            rect.kind = KFX_WGPU_DRAW_RECT;
+            rect.blend = KFX_WGPU_DRAW_SOURCE_DESTINATION;
+            rect.colour = 7;
+            rect.width = rect.clip_width = 4;
+            rect.height = rect.clip_height = 2;
+            KfxWgpuNativeResource keyed_table = {fade.data(), fade.size(), 256, 64, 256, nullptr, 0, 0};
+            // A second identity: the memo must hold both, or alternating commands would
+            // rebuild the concatenation the context already holds.
+            KfxWgpuNativeResource paired = {first.data(), first.size(), 256, 64, 256,
+                second.data(), second.size(), 0};
+            const uint64_t created = keyed_creates, live = live_resources;
+            for (unsigned i = 0; i < 4; ++i) {
+                assert(bridge.SubmitNative(run_target, rect, nullptr, &keyed_table, nullptr, nullptr) == 1);
+                assert(bridge.SubmitNative(run_target, rect, nullptr, &paired, nullptr, nullptr) == 1);
+            }
+            assert(keyed_creates == created + 2 && live_resources == live + 2);
+            std::vector<uint8_t> unnamed = fade;
+            KfxWgpuNativeResource content_table = {unnamed.data(), unnamed.size(), 256, 64, 256, nullptr, 0, 0};
+            for (unsigned i = 0; i < 2; ++i)
+                assert(bridge.SubmitNative(run_target, rect, nullptr, &content_table, nullptr, nullptr) == 1);
+            assert(keyed_creates == created + 2 && live_resources == live + 3);
+            assert(bridge.GetCounters().failures == 0);
+        }
+        {
+            // A key names one extent: the same pointer with another shape is refused, not
+            // served with the first shape's resource.
+            std::vector<uint8_t> run(24 * 10, 0x6a);
+            KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+            WgpuTerrainBridge bridge(0, false, false);
+            KfxWgpuDrawCommand rect = {};
+            rect.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+            rect.kind = KFX_WGPU_DRAW_RECT;
+            rect.blend = KFX_WGPU_DRAW_SOURCE_DESTINATION;
+            rect.width = rect.clip_width = 4;
+            rect.height = rect.clip_height = 2;
+            KfxWgpuNativeResource whole = {fade.data(), fade.size(), 256, 64, 256, nullptr, 0, 0};
+            KfxWgpuNativeResource half = {fade.data(), fade.size() / 2, 256, 32, 256, nullptr, 0, 0};
+            assert(bridge.SubmitNative(run_target, rect, nullptr, &whole, nullptr, nullptr) == 1);
+            assert(bridge.SubmitNative(run_target, rect, nullptr, &half, nullptr, nullptr) == 0);
+            assert(bridge.Failed() && std::strstr(bridge.GetError(), "shape") != nullptr);
+        }
+        {
+            // A refused purge leaves residency the caller was told is gone, so the frame
+            // stays invalid and the CPU keeps the target until a redraw that can release it.
+            WgpuTerrainBridge bridge(0, false, false);
+            kfx_wgpu_terrain_boundary(1);
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &top, first.data(), fade.data()) == 1);
+            kfx_wgpu_terrain_boundary(0);
+            const uint64_t invalid = bridge.GetCounters().invalid_frames;
+            fail_keyed_purge = true;
+            bridge.FullRedraw();
+            fail_keyed_purge = false;
+            // The redraw that failed is one invalid frame like any other; what it leaves
+            // behind is the residency, which no later redraw can reach.
+            assert(!bridge.FrameValid() && bridge.GetCounters().resource_purge_failures == 1);
+            assert(bridge.GetCounters().invalid_frames == invalid + 1);
+            bridge.FullRedraw();
+            assert(bridge.FrameValid() && bridge.GetCounters().resource_purge_failures == 1);
+            assert(bridge.GetCounters().invalid_frames == invalid + 1);
+        }
+        // An unregistered pointer carries no name, so its bytes take a per-call resource.
         assert(kfx_render_asset_stable(first.data(), first.size()));
-        assert(!kfx_render_asset_stable(texture.data(), texture.size()));
+        std::vector<uint8_t> unregistered(KFX_GPOLY_TEXTURE_BYTES, 0x21);
+        assert(!kfx_render_asset_stable(unregistered.data(), unregistered.size()));
+        {
+            WgpuTerrainBridge bridge(0, false, false);
+            kfx_wgpu_terrain_boundary(1);
+            const uint64_t created = keyed_creates, live = live_resources;
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &top, unregistered.data(), fade.data()) == 1);
+            assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &keyed_target, &bottom, unregistered.data(), fade.data()) == 1);
+            // One keyed fade table, one per-call page per span, all released with the run.
+            assert(keyed_creates == created + 1 && live_resources == live + 3);
+            kfx_wgpu_terrain_boundary(0);
+            assert(live_resources == live + 1);
+            assert(bridge.GetCounters().failures == 0);
+        }
     }
 #endif
     std::puts("Terrain bridge ordering, batching, resource ownership, CPU interleave and failure reconstruction passed");

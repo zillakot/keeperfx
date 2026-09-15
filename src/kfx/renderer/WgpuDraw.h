@@ -144,6 +144,10 @@ struct KfxWgpuDrawCounters {
     KFX_UPLOAD_ALL_FIELDS
 #undef KFX_UPLOAD_FIELD
 
+    /* Resources the drawing context holds under a key, a gauge. Keys are never reused
+     * for other bytes, so this is the number of distinct named assets kept resident. */
+    uint64_t keyed_resources;
+
 
 };
 #pragma pack(pop)
@@ -163,6 +167,30 @@ int32_t kfx_wgpu_draw_target_release(void *drawing, uint64_t target,
 void kfx_wgpu_draw_resource_mark_cursor(void *drawing, uint64_t resource);
 uint64_t kfx_wgpu_draw_resource_create(void *drawing, const uint8_t *bytes, size_t length,
     uint32_t width, uint32_t height, uint32_t pitch, char *error, size_t capacity);
+/* Key namespaces for kfx_wgpu_draw_resource_create_keyed; a key is only ever compared
+ * inside its own namespace. */
+#define KFX_WGPU_DRAW_KEY_TERRAIN_TILE 0u
+#define KFX_WGPU_DRAW_KEY_TERRAIN_FADE 1u
+#define KFX_WGPU_DRAW_KEY_NATIVE_TABLE 2u
+/* Creates or resolves the resource resident for (kind, key_hi, key_lo), so repeated
+ * uses of one asset keep a single handle instead of a fresh handle per command.
+ * A generation the key has not been seen with takes a new handle, because the bytes
+ * behind a live handle never change and a recorded command must still name the older
+ * asset. *previous receives the handle the key resolved to before the call: equal to
+ * the returned handle when the bytes were already resident, 0 when the key was new,
+ * and otherwise a superseded handle the caller releases once every command naming it
+ * has been submitted.
+ * A key names one immutable byte range of one extent for one generation: the bytes behind
+ * it may only change with the generation, and length, width, height and pitch must be the
+ * same on every call that resolves it. Reusing a key for another extent under the same
+ * generation is refused, not served. */
+uint64_t kfx_wgpu_draw_resource_create_keyed(void *drawing, uint32_t kind, uint64_t key_hi,
+    uint64_t key_lo, uint64_t generation, const uint8_t *bytes, size_t length,
+    uint32_t width, uint32_t height, uint32_t pitch, uint64_t *previous,
+    char *error, size_t capacity);
+/* Releases every keyed resource and forgets the keys; for a caller whose frame was
+ * discarded before the residency behind those handles was proven. */
+int32_t kfx_wgpu_draw_resources_purge_keyed(void *drawing, char *error, size_t capacity);
 int32_t kfx_wgpu_draw_resource_release(void *drawing, uint64_t resource,
     char *error, size_t capacity);
 int32_t kfx_wgpu_draw_submit(void *drawing, uint64_t target,

@@ -84,6 +84,7 @@ impl DrawRenderer {
                     height: 1,
                     pitch: 1,
                     bytes: geometry.bytes.clone(),
+                    key: None,
                 };
                 validation.bytes.resize(60 + 65536, 0);
                 let box_of = trig::validate(c, &validation, width, height)?;

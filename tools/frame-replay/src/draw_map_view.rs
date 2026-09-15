@@ -149,6 +149,7 @@ mod tests {
             height: 1,
             pitch: 1282,
             bytes: vec![0; 1282],
+            key: None,
         };
         let mut command = Command {
             kind: super::super::MAP_VIEW,
