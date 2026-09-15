@@ -1,4 +1,4 @@
-struct MinimapView { viewport: vec4<u32>, colours: array<vec4<u32>, 8>, }
+struct MinimapView { viewport: vec4<u32>, colours: array<vec4<u32>, 8>, bounds: vec4<u32>, }
 @group(0) @binding(3) var<uniform> view: MinimapView;
 fn address(i: u32) -> u32 { return view.viewport.z + (i / view.viewport.x) * view.viewport.y + i % view.viewport.x; }
 @group(0) @binding(0) var<storage, read_write> pixels: array<u32>;
@@ -16,18 +16,18 @@ fn pattern(p:vec2<i32>,center:vec2<i32>,spread:i32)->bool {
 fn octant(p:vec2<i32>,x:i32,y:i32)->bool {return (abs(p.x)==x&&abs(p.y)==y)||(abs(p.x)==y&&abs(p.y)==x);}
 @compute @workgroup_size(8,8)
 fn minimap(@builtin(global_invocation_id) id:vec3<u32>) {
- let d=h(5);if id.x>=d||id.y>=d {return;}let p=vec2<i32>(id.xy);let radius=i32(d/2);let n=radius*radius-(radius-p.y-1)*(radius-p.y-1);let s=root(n);if p.x<radius-s||p.x>=radius+s{return;}
- let dst=(h(4)+id.y)*h(1)+h(3)+id.x;let mode=h(0);var col=h(20);var write=false;
+ let d=h(5);let p=vec2<i32>(id.xy+view.bounds.xy);if u32(p.x)>=view.bounds.z||u32(p.y)>=view.bounds.w {return;}let radius=i32(d/2);let n=radius*radius-(radius-p.y-1)*(radius-p.y-1);let s=root(n);if p.x<radius-s||p.x>=radius+s{return;}
+ let dst=(h(4)+u32(p.y))*h(1)+h(3)+u32(p.x);let mode=h(0);var col=h(20);var write=false;
  if mode==0u {
   let wx=si(8)+p.y*si(6)+p.x*si(7);let wy=si(9)+p.y*si(7)-p.x*si(6);
   if wx<0||wy<0||wx>=i32(h(10)<<16)||wy>=i32(h(11)<<16){return;}
-  let o=h(13)+2*(u32(wx>>16)+u32(wy>>16)*(h(10)+1));let cell=le16(view.viewport.w+o);let bk=background[id.y*d+id.x];
+  let o=h(13)+2*(u32(wx>>16)+u32(wy>>16)*(h(10)+1));let cell=le16(view.viewport.w+o);let bk=background[u32(p.y)*d+u32(p.x)];
   let colours=view.colours[bk>>5u][(bk>>3u)&3u];let colour=(colours>>((bk&7u)*4u))&15u;
   col=data(h(14)+colour*38569u+cell);write=true;
  } else if mode==1u {write=pattern(p,vec2<i32>(si(16),si(17)),si(19));}
  else if mode==2u {
-  let q=p-vec2<i32>(si(16),si(17));var y=si(18);var x=0;var decision=3-2*y;
-  if y>1 {loop {if x>=y {break;}if octant(q,x,y){write=true;break;}if decision>=0{decision+=4*(x-y)+si(21);y-=1;}else{decision+=4*(x-1)+si(21);}x+=1;}
+  let q=p-vec2<i32>(si(16),si(17));let hi=max(abs(q.x),abs(q.y));let lo=min(abs(q.x),abs(q.y));var y=si(18);var x=0;var decision=3-2*y;
+  if y>1 {loop {if x>=y {break;}if x>lo||y<hi {break;}if octant(q,x,y){write=true;break;}if decision>=0{decision+=4*(x-y)+si(21);y-=1;}else{decision+=4*(x-1)+si(21);}x+=1;}
    if x==y&&octant(q,x,y){write=true;}}
  } else if mode==3u {
   var pos=vec2<i32>(si(16),si(17));var remaining=si(21)-4;
