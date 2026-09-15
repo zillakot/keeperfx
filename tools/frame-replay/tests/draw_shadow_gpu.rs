@@ -275,6 +275,11 @@ fn interleaved_frame_shadow_chain() {
         );
         assert_eq!(draw.frame_counters().checkpoints, checkpoints);
         draw.frame_end().unwrap();
+        assert_eq!(
+            draw.counters().replay.upload_ring_overflows - before.replay.upload_ring_overflows,
+            0
+        );
+        assert!(draw.counters().replay.upload_queue_writes > before.replay.upload_queue_writes);
         checkpoints = draw.frame_counters().checkpoints;
         assert_eq!(checkpoints, 0, "a flush is no longer a submission boundary");
         assert!(frames > 0);

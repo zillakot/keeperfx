@@ -28,7 +28,11 @@ PRESENTER_COUNTERS = ("acquire_ns", "acquire_block_ns", "reconfigure_count", "pr
 REPLAY_PHASES = ("replay_pack_ns", "replay_upload_ns", "replay_bind_ns", "replay_encode_ns",
                  "replay_tile_index_ns", "replay_other_ns", "replay_submit_wait_ns")
 REPLAY_COUNTS = ("replay_bind_groups", "replay_buffers", "replay_passes", "replay_staged_bytes")
-REPLAY_COUNTERS = REPLAY_PHASES + REPLAY_COUNTS
+UPLOAD_FIELDS = ('upload_queue_writes', 'upload_queue_bytes', 'upload_queued_bytes', 'upload_ring_overflows', 'upload_overflow_bytes', 'upload_oversized_frames', 'upload_padding_bytes', 'upload_records_capacity', 'upload_records_used', 'upload_records_high_water', 'upload_indices_capacity', 'upload_indices_used', 'upload_indices_high_water', 'upload_uniforms_capacity', 'upload_uniforms_used', 'upload_uniforms_high_water', 'upload_arena_dirty_bytes')
+UPLOAD_LABELS = ('record_ring', 'index_ring', 'uniform_ring', 'immutable_ordered_commands', 'ordered_tile_lists', 'drawing_dimensions', 'ordered_sprite_commands', 'sprite_target_dimensions', 'ordered_sprite_layer', 'minimap_target_view', 'shadow_arena_region', 'snapshot_triangle_commands', 'snapshot_triangle_tiles', 'snapshot_image_commands', 'snapshot_image_tile_lists', 'immutable_gpoly_vertices', 'gpoly_viewport', 'gpoly_row_layout', 'arena_assets', 'snapshot_tables', 'arena_flush', 'immutable_asset_versions', 'triangle_immutable_assets', 'snapshot_triangle_fallback_assets', 'immutable_lens_sources_and_maps', 'gpu_snapshot_sampling_arena', 'ordered_sprite_identity_layer', 'sprite_artwork_and_run_boundaries', 'minimap_semantic_cells_and_styles', 'immutable_shadow_artwork', 'persistent_asset_arena', 'effect_target_view', 'compatibility')
+UPLOAD_METRICS = ('creates', 'create_bytes', 'reservations', 'payload_bytes', 'writes', 'write_bytes')
+UPLOAD_COUNTERS = UPLOAD_FIELDS + tuple(f"upload_{label}_{metric}" for label in UPLOAD_LABELS for metric in UPLOAD_METRICS)
+REPLAY_COUNTERS = REPLAY_PHASES + REPLAY_COUNTS + UPLOAD_COUNTERS
 DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 ARENA_RESOURCE_KINDS = ('sprite', 'ordered_sprite', 'cursor', 'trig', 'terrain_tile', 'terrain_fade', 'native_table', 'minimap', 'shadow', 'target_trig_geometry', 'target_trig_table', 'image', 'raw_image', 'tiled_image', 'movie', 'map_view', 'bitmap', 'lens', 'other')
 ARENA_KIND_METRICS = ('bytes', 'misses', 'hits', 'source_bytes', 'distinct_lengths', 'length_overflows')
@@ -78,7 +82,8 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "arena_live_bytes",
                     "arena_retired_bytes",
                     "arena_growth_peak_bytes")
-DRAWING_GAUGES = ("host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
+UPLOAD_GAUGES = ('upload_records_capacity', 'upload_records_used', 'upload_records_high_water', 'upload_indices_capacity', 'upload_indices_used', 'upload_indices_high_water', 'upload_uniforms_capacity', 'upload_uniforms_used', 'upload_uniforms_high_water')
+DRAWING_GAUGES = (*UPLOAD_GAUGES, "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
                   "arena_capacity_bytes",
                   "arena_live_bytes",
                   "arena_retired_bytes",
@@ -482,7 +487,7 @@ def summarize_presenter(presenter, samples, required=False):
 def summarize_replay(replay_data, samples):
     if replay_data is None:
         return None
-    if not isinstance(replay_data, dict) or tuple(replay_data.get("counters", ())) != REPLAY_COUNTERS:
+    if not isinstance(replay_data, dict) or tuple(replay_data.get("counters", ())) not in (REPLAY_COUNTERS, REPLAY_PHASES + REPLAY_COUNTS):
         raise RuntimeError("replay attribution counter names do not match this profiler")
     names = replay_data["counters"]
     rows = replay_data.get("per_frame")
@@ -497,8 +502,8 @@ def summarize_replay(replay_data, samples):
     residual = [outer - total for outer, total in zip(replay, totals)]
     outside = sum(abs(value) > outer * 0.05 for value, outer in zip(residual, replay))
     return {"source": "presenter.replay", "frames": len(rows), "phases_ms": {name: distribution(values) for name, values in phases.items()},
-            "counts": {name: drawing_distribution([row[names.index(name)] for row in rows])
-                       for name in REPLAY_COUNTS},
+            "counts": {name: drawing_distribution([row[names.index(name)] for row in rows], name in UPLOAD_GAUGES)
+                       for name in (*REPLAY_COUNTS, *UPLOAD_COUNTERS) if name in names},
             "total_ms": distribution(totals), "replay_ms": distribution(replay),
             "residual_ms": distribution(residual),
             "residual_fraction": sum(residual) / sum(replay) if sum(replay) else None,
@@ -535,6 +540,7 @@ def summarize_drawing(drawing, presentations):
     arena_additions = set(ARENA_KIND_COUNTERS) | {"arena_trig_texture_source_bytes"}
     schemas += [tuple(name for name in schema if name not in arena_additions) for schema in schemas]
     schemas += [tuple(name for name in schema if name != "replay_submit_wait_ns") for schema in schemas]
+    schemas += [tuple(name for name in schema if name not in UPLOAD_COUNTERS) for schema in schemas]
     schemas += [tuple(name for name in schema if name not in REPLAY_COUNTERS) for schema in schemas]
     if names not in schemas:
         raise RuntimeError("drawing counter names do not match this profiler")

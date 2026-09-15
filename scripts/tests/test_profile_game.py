@@ -122,6 +122,24 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(report["resources"]["rust_allocations"]["calls_per_presentation"], 0.5)
             self.assertTrue(any("HEADLESS" in item for item in report["limitations"]))
 
+    def test_upload_routes_gauges_and_matched_legacy_control(self):
+        names = list(profile.REPLAY_COUNTERS)
+        row = [0] * len(names)
+        values = {"replay_upload_ns": 1000, "upload_queue_writes": 3,
+                  "upload_records_capacity": 2 << 20,
+                  "upload_drawing_dimensions_reservations": 7,
+                  "upload_drawing_dimensions_payload_bytes": 336,
+                  "upload_uniform_ring_writes": 1}
+        for name, value in values.items():
+            row[names.index(name)] = value
+        result = profile.summarize_replay({"counters": names, "per_frame": [row]}, {"replay": [1000]})
+        self.assertEqual(result["counts"]["upload_queue_writes"]["mean"], 3)
+        self.assertIsNone(result["counts"]["upload_records_capacity"]["total"])
+        self.assertEqual(result["counts"]["upload_drawing_dimensions_payload_bytes"]["total"], 336)
+        old = profile.summarize_replay({"counters": list(profile.REPLAY_PHASES + profile.REPLAY_COUNTS),
+                                        "per_frame": [row[:11]]}, {"replay": [1000]})
+        self.assertNotIn("upload_queue_writes", old["counts"])
+
     def test_replay_host_partition_alignment_and_report(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -131,7 +149,7 @@ class ProfileTests(unittest.TestCase):
             metadata["replay_scope"] = True
             metadata["presenter"] = {"per_frame": [[0] * 8 for _ in replay],
                                      "replay": {"counters": list(profile.REPLAY_COUNTERS),
-                                                "per_frame": [[1_000_000] * 7 + [1, 2, 3, 4] for _ in replay]}}
+                                                "per_frame": [[1_000_000] * 7 + [1, 2, 3, 4] + [0] * len(profile.UPLOAD_COUNTERS) for _ in replay]}}
             with (output / "raw.csv").open("a") as stream:
                 for turn, duration in zip(range(40, 60), replay):
                     stream.write(f"replay,{turn},{duration}\n")
@@ -166,7 +184,7 @@ class ProfileTests(unittest.TestCase):
                 row[profile.DRAWING_COUNTERS.index("replay_pack_ns")] = replay[index] + 50_000_000
             metadata["presenter"] = {"per_frame": [[0] * 8 for _ in replay],
                                      "replay": {"counters": list(profile.REPLAY_COUNTERS),
-                                                "per_frame": [[duration] + [0] * 10 for duration in replay]}}
+                                                "per_frame": [[duration] + [0] * (len(profile.REPLAY_COUNTERS)-1) for duration in replay]}}
             with (output / "raw.csv").open("a") as stream:
                 for turn, duration in zip(range(40, 60), replay):
                     stream.write(f"replay,{turn},{duration}\n")
@@ -184,7 +202,7 @@ class ProfileTests(unittest.TestCase):
 
     def test_replay_residual_signed_outliers_zero_and_legacy(self):
         data = {"counters": list(profile.REPLAY_COUNTERS),
-                "per_frame": [[100] * 7 + [1, 2, 3, 4], [200] * 7 + [2, 3, 4, 5]]}
+                "per_frame": [[100] * 7 + [1, 2, 3, 4] + [0] * len(profile.UPLOAD_COUNTERS), [200] * 7 + [2, 3, 4, 5] + [0] * len(profile.UPLOAD_COUNTERS)]}
         result = profile.summarize_replay(data, {"replay": [700, 1200]})
         self.assertAlmostEqual(result["residual_ms"]["mean"], -0.0001)
         self.assertEqual(result["frames_outside_5_percent"], 1)
@@ -216,6 +234,7 @@ class ProfileTests(unittest.TestCase):
                 old["counters"].pop(index)
                 for row in old["per_frame"]:
                     row.pop(index)
+            old["gauges"] = [name for name in old["gauges"] if name in old["counters"]]
             self.assertNotIn("replay_pack_ns", profile.summarize_drawing(old, 20)["per_frame"])
             old["counters"].append("replay_pack_ns")
             with self.assertRaisesRegex(RuntimeError, "names do not match"):

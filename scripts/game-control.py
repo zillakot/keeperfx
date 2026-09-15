@@ -184,6 +184,7 @@ def supervise(path):
         env["KFX_DRAW_BACKEND"] = data["draw_backend"]
     if data.get("draw_verify"):
         env["KFX_WGPU_DRAW_VERIFY"] = "1"
+        env["KFX_WGPU_DRAW_STATS"] = str(work / "drawing.json")
     with (work / "stdout.log").open("w") as stdout, (work / "stderr.log").open("w") as stderr:
         process = subprocess.Popen([data["engine"], *data["args"]], cwd=work, env=env,
                                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)

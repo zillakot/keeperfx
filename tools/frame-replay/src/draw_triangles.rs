@@ -1,3 +1,4 @@
+use super::upload;
 use super::*;
 use crate::gpoly::{GpolyPreparer, Triangle, Vertex, row_layout};
 
@@ -90,14 +91,16 @@ impl DrawRenderer {
             (target.width, target.height),
             limit,
         )?;
-        let tile_buffer = buffer(
+        let tile_buffer = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "ordered tile lists",
             self.tile_index.data(),
             wgpu::BufferUsages::STORAGE,
         );
-        let command_buffer = buffer(
+        let command_buffer = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "immutable ordered commands",
@@ -130,11 +133,7 @@ impl DrawRenderer {
         let pass = self.tile_index.passes()[0];
         self.raster_segment(
             &target,
-            &(
-                Region::whole(command_buffer),
-                Region::whole(tile_buffer),
-                asset_buffer,
-            ),
+            &(command_buffer, tile_buffer, asset_buffer),
             &pass,
             commands.len(),
             &mut prepare,

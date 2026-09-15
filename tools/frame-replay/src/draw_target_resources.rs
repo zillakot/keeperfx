@@ -1,3 +1,4 @@
+use super::upload;
 use super::*;
 
 pub(super) struct TargetSnapshot {
@@ -196,14 +197,16 @@ impl DrawRenderer {
         for &index in &batch.offsets {
             batch.words[index] += base;
         }
-        let command_buffer = buffer(
+        let command_buffer = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "snapshot image commands",
             &batch.words,
             wgpu::BufferUsages::STORAGE,
         );
-        let tile_buffer = buffer(
+        let tile_buffer = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "snapshot image tile lists",
@@ -233,15 +236,10 @@ impl DrawRenderer {
         if self.arena.enabled() {
             let _scope = Scope::new(Phase::Upload);
             for (&id, &offset) in &batch.tables {
-                let bytes: Vec<_> = self.resources[&id]
-                    .bytes
-                    .iter()
-                    .flat_map(|&b| u32::from(b).to_le_bytes())
-                    .collect();
-                host::staged_bytes(bytes.len());
-                self.queue
-                    .write_buffer(&assets, u64::from(base + offset) * 4, &bytes);
-                uploaded += bytes.len() as u64;
+                let bytes = &self.resources[&id].bytes;
+                self.arena
+                    .stage_expanded(&self.queue, base + offset, bytes, "snapshot tables");
+                uploaded += bytes.len() as u64 * 4;
             }
         } else {
             uploaded = batch
@@ -255,10 +253,10 @@ impl DrawRenderer {
             layout: &self.compute.get_bind_group_layout(0),
             entries: &[
                 entry(0, &self.targets[&target].indices),
-                entry(1, &command_buffer),
+                command_buffer.entry(1),
                 entry(2, &assets),
-                entry(3, &parameters),
-                entry(4, &tile_buffer),
+                parameters.entry(3),
+                tile_buffer.entry(4),
                 entry(5, self.terrain_rows_binding()),
                 entry(6, self.shadow_slot_binding()),
                 entry(7, self.status_binding()),

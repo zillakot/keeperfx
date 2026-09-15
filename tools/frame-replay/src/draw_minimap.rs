@@ -1,3 +1,4 @@
+use super::upload;
 use super::*;
 pub const MINIMAP: u32 = 12;
 const HEADER: usize = 96;
@@ -170,13 +171,7 @@ impl DrawRenderer {
                 .arena
                 .binding(&self.device, &self.queue, &mut self.counters),
         };
-        let dummy = buffer(
-            &self.device,
-            &mut self.counters,
-            "unused minimap background",
-            &[0],
-            wgpu::BufferUsages::STORAGE,
-        );
+        let dummy = self.shadow_placeholder.clone();
         let state = self.minimap.as_ref().unwrap();
         let pipeline = state.pipeline.clone();
         let background = if h[0] == 0 {
@@ -185,10 +180,11 @@ impl DrawRenderer {
             &dummy
         };
         let target = &self.targets[&target_id];
-        let view = buffer(
+        let view = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
-            "target view",
+            "minimap target view",
             &[target.width, target.pitch, target.offset, base],
             wgpu::BufferUsages::UNIFORM,
         );
@@ -199,7 +195,7 @@ impl DrawRenderer {
                 entry(0, &self.targets[&target_id].indices),
                 entry(1, &assets),
                 entry(2, background),
-                entry(3, &view),
+                view.entry(3),
             ],
         });
         let stamp = self.stamp(PASS_MINIMAP);

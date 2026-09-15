@@ -1434,6 +1434,24 @@ pub struct DrawCounters {
     replay_buffers: u64,
     replay_passes: u64,
     replay_staged_bytes: u64,
+    upload_queue_writes: u64,
+    upload_queue_bytes: u64,
+    upload_queued_bytes: u64,
+    upload_ring_overflows: u64,
+    upload_overflow_bytes: u64,
+    upload_oversized_frames: u64,
+    upload_padding_bytes: u64,
+    upload_records_capacity: u64,
+    upload_records_used: u64,
+    upload_records_high_water: u64,
+    upload_indices_capacity: u64,
+    upload_indices_used: u64,
+    upload_indices_high_water: u64,
+    upload_uniforms_capacity: u64,
+    upload_uniforms_used: u64,
+    upload_uniforms_high_water: u64,
+    upload_arena_dirty_bytes: u64,
+    upload_routes: [[u64; 6]; 33],
 }
 
 #[unsafe(no_mangle)]
@@ -1521,6 +1539,24 @@ pub unsafe extern "C" fn kfx_wgpu_draw_counters(
                 replay_buffers: counters.replay.replay_buffers,
                 replay_passes: counters.replay.replay_passes,
                 replay_staged_bytes: counters.replay.replay_staged_bytes,
+                upload_queue_writes: counters.replay.upload_queue_writes,
+                upload_queue_bytes: counters.replay.upload_queue_bytes,
+                upload_queued_bytes: counters.replay.upload_queued_bytes,
+                upload_ring_overflows: counters.replay.upload_ring_overflows,
+                upload_overflow_bytes: counters.replay.upload_overflow_bytes,
+                upload_oversized_frames: counters.replay.upload_oversized_frames,
+                upload_padding_bytes: counters.replay.upload_padding_bytes,
+                upload_records_capacity: counters.replay.upload_records_capacity,
+                upload_records_used: counters.replay.upload_records_used,
+                upload_records_high_water: counters.replay.upload_records_high_water,
+                upload_indices_capacity: counters.replay.upload_indices_capacity,
+                upload_indices_used: counters.replay.upload_indices_used,
+                upload_indices_high_water: counters.replay.upload_indices_high_water,
+                upload_uniforms_capacity: counters.replay.upload_uniforms_capacity,
+                upload_uniforms_used: counters.replay.upload_uniforms_used,
+                upload_uniforms_high_water: counters.replay.upload_uniforms_high_water,
+                upload_arena_dirty_bytes: counters.replay.upload_arena_dirty_bytes,
+                upload_routes: counters.replay.upload_routes,
             });
             Ok(Some(1))
         });
@@ -1570,7 +1606,7 @@ mod draw_abi_tests {
         );
         assert_eq!(
             std::mem::size_of::<DrawCounters>(),
-            (77 + 19 * 6 + 1 + 11) * 8
+            (77 + 19 * 6 + 1 + 11 + 215) * 8
         );
     }
 

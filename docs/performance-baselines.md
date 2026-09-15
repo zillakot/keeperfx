@@ -260,6 +260,41 @@ no replay attribution table. These are host wall times, including scheduling and
 and are distinct from GPU timestamps. No frame-time file I/O is added. Offscreen cells
 work on a locked console and must be identified as offscreen when reporting results.
 
+### Replay upload staging counters
+
+Replay inputs use record, index and uniform rings, initially 2/8/1 MiB and capped
+at 8/16/2 MiB. Reservations retain device-aligned bindings through their readers;
+submit flushes pending writes before retiring the encoder. Overflow uses immutable
+inputs, with a 32 MiB optimized overflow allowance before the compatibility path.
+That inherited path has no new aggregate memory bound.
+
+`presenter.replay` and `replay_host.counts` include:
+
+- `upload_queue_writes`, `upload_queue_bytes`: actual flushed queue calls and bytes.
+- `upload_queued_bytes`: logical payload reserved for staging, excluding padding;
+  `upload_arena_dirty_bytes`: dirty interval bytes presented to arena coalescing.
+- `upload_{records,indices,uniforms}_{capacity,used,high_water}`: byte gauges;
+  `upload_padding_bytes`, `upload_ring_overflows`, `upload_overflow_bytes` and
+  `upload_oversized_frames`: padding and fallback counters.
+- `upload_<label>_{creates,create_bytes,reservations,payload_bytes,writes,write_bytes}`:
+  label-level allocation and staging attribution. A reservation belongs to its
+  input label; the resulting queue call belongs to its ring or `arena_flush`.
+  `compatibility` collects other buffer labels. Field names are declared in
+  [UploadCounters.h](../src/kfx/renderer/UploadCounters.h).
+
+The arena retains a CPU image, validity bits and generation-tagged dirty intervals.
+Coalescing never crosses GPU-owned scratch and spends at most 10% of dirty payload
+on valid gaps. The retained CPU image is capped at 32 MiB. Larger inherited arenas use direct
+compatibility writes; their GPU capacity is outside the normal-cell bound. The
+normal path uses at most 32 MiB image, 1 MiB validity
+bits and 6 MiB dirty metadata. Old upload ledgers still count requested resource
+payload; `replay_staged_bytes` counts actual API payload, including alignment and
+merged gaps, only when issued. Discard removes unflushed residency promises.
+Upload staging and flushing remain inside `replay_upload_ns`; exceptional submits
+retain the separate submit/wait phase. The profiler also accepts the previous
+capture schema for a matched baseline. Performance and host parity numbers remain
+pending; fixtures alone do not establish a speedup.
+
 ### Replay floor, measured 2026-09-15
 
 [PR #44](https://github.com/zillakot/keeperfx/pull/44), source `15f8266ef`, binary

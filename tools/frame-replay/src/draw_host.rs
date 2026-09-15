@@ -4,8 +4,43 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::time::Instant;
 
+pub const UPLOAD_LABELS: [&str; 33] = [
+    "record ring",
+    "index ring",
+    "uniform ring",
+    "immutable ordered commands",
+    "ordered tile lists",
+    "drawing dimensions",
+    "ordered sprite commands",
+    "sprite target dimensions",
+    "ordered sprite layer",
+    "minimap target view",
+    "shadow arena region",
+    "snapshot triangle commands",
+    "snapshot triangle tiles",
+    "snapshot image commands",
+    "snapshot image tile lists",
+    "immutable gpoly vertices",
+    "gpoly viewport",
+    "gpoly row layout",
+    "arena assets",
+    "snapshot tables",
+    "arena flush",
+    "immutable asset versions",
+    "triangle immutable assets",
+    "snapshot triangle fallback assets",
+    "immutable lens sources and maps",
+    "GPU snapshot sampling arena",
+    "ordered sprite identity layer",
+    "sprite artwork and run boundaries",
+    "minimap semantic cells and styles",
+    "immutable shadow artwork",
+    "persistent asset arena",
+    "effect target view",
+    "compatibility",
+];
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct ReplayCounters {
     pub replay_pack_ns: u64,
     pub replay_upload_ns: u64,
@@ -18,6 +53,60 @@ pub struct ReplayCounters {
     pub replay_buffers: u64,
     pub replay_passes: u64,
     pub replay_staged_bytes: u64,
+    pub upload_queue_writes: u64,
+    pub upload_queue_bytes: u64,
+    pub upload_queued_bytes: u64,
+    pub upload_ring_overflows: u64,
+    pub upload_overflow_bytes: u64,
+    pub upload_oversized_frames: u64,
+    pub upload_padding_bytes: u64,
+    pub upload_records_capacity: u64,
+    pub upload_records_used: u64,
+    pub upload_records_high_water: u64,
+    pub upload_indices_capacity: u64,
+    pub upload_indices_used: u64,
+    pub upload_indices_high_water: u64,
+    pub upload_uniforms_capacity: u64,
+    pub upload_uniforms_used: u64,
+    pub upload_uniforms_high_water: u64,
+    pub upload_arena_dirty_bytes: u64,
+    pub upload_routes: [[u64; 6]; 33],
+}
+
+impl Default for ReplayCounters {
+    fn default() -> Self {
+        Self {
+            replay_pack_ns: 0,
+            replay_upload_ns: 0,
+            replay_bind_ns: 0,
+            replay_encode_ns: 0,
+            replay_tile_index_ns: 0,
+            replay_other_ns: 0,
+            replay_submit_wait_ns: 0,
+            replay_bind_groups: 0,
+            replay_buffers: 0,
+            replay_passes: 0,
+            replay_staged_bytes: 0,
+            upload_queue_writes: 0,
+            upload_queue_bytes: 0,
+            upload_queued_bytes: 0,
+            upload_ring_overflows: 0,
+            upload_overflow_bytes: 0,
+            upload_oversized_frames: 0,
+            upload_padding_bytes: 0,
+            upload_records_capacity: 0,
+            upload_records_used: 0,
+            upload_records_high_water: 0,
+            upload_indices_capacity: 0,
+            upload_indices_used: 0,
+            upload_indices_high_water: 0,
+            upload_uniforms_capacity: 0,
+            upload_uniforms_used: 0,
+            upload_uniforms_high_water: 0,
+            upload_arena_dirty_bytes: 0,
+            upload_routes: [[0; 6]; 33],
+        }
+    }
 }
 
 impl ReplayCounters {
@@ -43,6 +132,28 @@ impl ReplayCounters {
         self.replay_buffers += other.replay_buffers;
         self.replay_passes += other.replay_passes;
         self.replay_staged_bytes += other.replay_staged_bytes;
+        self.upload_queue_writes += other.upload_queue_writes;
+        self.upload_queue_bytes += other.upload_queue_bytes;
+        self.upload_queued_bytes += other.upload_queued_bytes;
+        self.upload_ring_overflows += other.upload_ring_overflows;
+        self.upload_overflow_bytes += other.upload_overflow_bytes;
+        self.upload_oversized_frames += other.upload_oversized_frames;
+        self.upload_padding_bytes += other.upload_padding_bytes;
+        self.upload_records_capacity = other.upload_records_capacity;
+        self.upload_records_used = other.upload_records_used;
+        self.upload_records_high_water = other.upload_records_high_water;
+        self.upload_indices_capacity = other.upload_indices_capacity;
+        self.upload_indices_used = other.upload_indices_used;
+        self.upload_indices_high_water = other.upload_indices_high_water;
+        self.upload_uniforms_capacity = other.upload_uniforms_capacity;
+        self.upload_uniforms_used = other.upload_uniforms_used;
+        self.upload_uniforms_high_water = other.upload_uniforms_high_water;
+        self.upload_arena_dirty_bytes += other.upload_arena_dirty_bytes;
+        for (dst, src) in self.upload_routes.iter_mut().zip(other.upload_routes) {
+            for (dst, src) in dst.iter_mut().zip(src) {
+                *dst += src;
+            }
+        }
     }
 }
 
@@ -172,6 +283,12 @@ impl Device {
     pub(super) fn create_buffer(&self, descriptor: &wgpu::BufferDescriptor<'_>) -> wgpu::Buffer {
         let _scope = Scope::new(Phase::Upload);
         created_buffer();
+        upload_event(descriptor.label.unwrap_or("compatibility"), 0, 1);
+        upload_event(
+            descriptor.label.unwrap_or("compatibility"),
+            1,
+            descriptor.size,
+        );
         self.0.create_buffer(descriptor)
     }
     pub(super) fn create_bind_group(
@@ -241,6 +358,49 @@ impl DerefMut for ComputePass<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.pass
     }
+}
+
+pub(crate) fn upload_event(label: &str, metric: usize, value: u64) {
+    count(|c| {
+        let index = UPLOAD_LABELS
+            .iter()
+            .position(|&l| l == label)
+            .unwrap_or(UPLOAD_LABELS.len() - 1);
+        c.upload_routes[index][metric] += value;
+        match metric {
+            3 => c.upload_queued_bytes += value,
+            4 => c.upload_queue_writes += value,
+            5 => c.upload_queue_bytes += value,
+            _ => (),
+        }
+    });
+}
+pub(crate) fn upload_padding(bytes: u64) {
+    count(|c| c.upload_padding_bytes += bytes);
+}
+pub(crate) fn upload_overflow(bytes: u64, oversized: bool) {
+    count(|c| {
+        c.upload_ring_overflows += 1;
+        c.upload_overflow_bytes += bytes;
+        c.upload_oversized_frames += u64::from(oversized);
+    });
+}
+pub(crate) fn upload_gauges(capacity: [u64; 3], used: [u64; 3], high_water: [u64; 3]) {
+    count(|c| {
+        c.upload_records_capacity = capacity[0];
+        c.upload_records_used = used[0];
+        c.upload_records_high_water = high_water[0];
+        c.upload_indices_capacity = capacity[1];
+        c.upload_indices_used = used[1];
+        c.upload_indices_high_water = high_water[1];
+        c.upload_uniforms_capacity = capacity[2];
+        c.upload_uniforms_used = used[2];
+        c.upload_uniforms_high_water = high_water[2];
+    });
+}
+
+pub(crate) fn arena_dirty(bytes: u64) {
+    count(|c| c.upload_arena_dirty_bytes += bytes);
 }
 
 #[cfg(test)]

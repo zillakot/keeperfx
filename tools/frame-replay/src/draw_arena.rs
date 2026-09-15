@@ -69,7 +69,9 @@ pub(crate) struct Arena {
     /// Regions released while a hold is open. A recorded pass may still read them, and
     /// a reuse would stage its upload at the head of that same submission.
     retired: Vec<(usize, u32)>,
-    staging: Vec<u8>,
+    image: HostImage,
+    generation: u64,
+    pub(super) coalesced: bool,
     clock: u64,
     holds: u32,
     /// Set while an encoder is open: growth would change the buffer identity under the
@@ -111,7 +113,9 @@ impl Arena {
             scratch: Vec::new(),
             scratch_words: 0,
             retired: Vec::new(),
-            staging: Vec::new(),
+            image: HostImage::default(),
+            generation: 0,
+            coalesced: true,
             clock: 0,
             holds: 0,
             locked: false,
@@ -341,6 +345,8 @@ impl Arena {
     ) -> Result<u32> {
         let class = size_class(words.max(ALIGN_WORDS));
         let offset = self.allocate(device, queue, counters, class)?;
+        self.image
+            .invalidate(offset as usize * 4, class_words(class) as usize * 4);
         self.scratch.push((class, offset));
         self.scratch_words = self.scratch_words.saturating_add(class_words(class));
         self.counters.scratch_bytes_peak = self
@@ -369,21 +375,100 @@ impl Arena {
         bytes: &[u8],
     ) {
         let _scope = Scope::new(Phase::Upload);
-        self.staging.clear();
-        self.staging
-            .extend(bytes.iter().flat_map(|&b| u32::from(b).to_le_bytes()));
-        if self.staging.is_empty() {
+        if bytes.is_empty() {
             return;
         }
-        host::staged_bytes(self.staging.len());
-        queue.write_buffer(
-            self.buffer.as_ref().unwrap(),
-            u64::from(offset) * 4,
-            &self.staging,
-        );
-        let uploaded = self.staging.len() as u64;
+        self.stage_expanded(queue, offset, bytes, "arena assets");
+        let uploaded = bytes.len() as u64 * 4;
         self.counters.bytes_uploaded += uploaded;
         counters.asset_upload_bytes += uploaded;
+    }
+
+    pub(super) fn stage_expanded(
+        &mut self,
+        queue: &wgpu::Queue,
+        offset: u32,
+        bytes: &[u8],
+        label: &str,
+    ) {
+        let _scope = Scope::new(Phase::Upload);
+        if self.capacity as u64 * 4 > 32 << 20 {
+            self.flush(queue);
+            let expanded: Vec<_> = bytes
+                .iter()
+                .flat_map(|&b| u32::from(b).to_le_bytes())
+                .collect();
+            if !expanded.is_empty() {
+                queue.write_buffer(
+                    self.buffer.as_ref().unwrap(),
+                    u64::from(offset) * 4,
+                    &expanded,
+                );
+                host::staged_bytes(expanded.len());
+                host::upload_event(label, 2, 1);
+                host::upload_event(label, 3, expanded.len() as u64);
+                host::upload_event(label, 4, 1);
+                host::upload_event(label, 5, expanded.len() as u64);
+            }
+            return;
+        }
+        if self.image.dirty.len() == super::MAX_COMMANDS {
+            self.flush(queue);
+        }
+        let start = offset as usize * 4;
+        for (dst, &byte) in self.image.bytes[start..start + bytes.len() * 4]
+            .chunks_exact_mut(4)
+            .zip(bytes)
+        {
+            dst.copy_from_slice(&u32::from(byte).to_le_bytes());
+        }
+        self.image.mark(start, bytes.len() * 4, self.generation);
+        host::upload_event(label, 2, 1);
+        host::upload_event(label, 3, bytes.len() as u64 * 4);
+        if !self.coalesced {
+            self.flush(queue);
+        }
+    }
+
+    pub(super) fn flush(&mut self, queue: &wgpu::Queue) {
+        let _scope = Scope::new(Phase::Upload);
+        host::arena_dirty(
+            self.image
+                .dirty
+                .iter()
+                .map(|r| (r.end - r.start) as u64)
+                .sum(),
+        );
+        self.image.merge(self.generation);
+        for dirty in self.image.dirty.drain(..) {
+            let bytes = &self.image.bytes[dirty.start..dirty.end];
+            queue.write_buffer(self.buffer.as_ref().unwrap(), dirty.start as u64, bytes);
+            host::upload_event("arena flush", 4, 1);
+            host::upload_event("arena flush", 5, bytes.len() as u64);
+            host::staged_bytes(bytes.len());
+        }
+    }
+
+    pub(super) fn discard(&mut self) {
+        let ids: Vec<_> = self
+            .residency
+            .iter()
+            .filter_map(|(&id, entry)| {
+                let start = entry.offset as usize * 4;
+                let end = start + class_words(entry.class) as usize * 4;
+                self.image
+                    .dirty
+                    .iter()
+                    .any(|r| r.start < end && r.end > start)
+                    .then_some(id)
+            })
+            .collect();
+        for id in ids {
+            self.forget(id, false);
+        }
+        for dirty in std::mem::take(&mut self.image.dirty) {
+            self.image.invalidate(dirty.start, dirty.end - dirty.start);
+        }
     }
 
     fn allocate(
@@ -458,6 +543,8 @@ impl Arena {
             .max((u64::from(self.capacity) + u64::from(capacity)) * 4);
         let _scope = Scope::new(Phase::Upload);
         host::created_buffer();
+        host::upload_event("persistent asset arena", 0, 1);
+        host::upload_event("persistent asset arena", 1, u64::from(capacity) * 4);
         let grown = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("persistent asset arena"),
             size: u64::from(capacity) * 4,
@@ -468,6 +555,7 @@ impl Arena {
         });
         counters.buffers += 1;
         counters.buffer_bytes += u64::from(capacity) * 4;
+        self.flush(queue);
         if let Some(previous) = self.buffer.take() {
             let mut encoder = device.create_command_encoder(&Default::default());
             encoder.copy_buffer_to_buffer(&previous, 0, &grown, 0, u64::from(self.capacity) * 4);
@@ -476,6 +564,8 @@ impl Arena {
             queue.submit([encoder.finish()]);
         }
         self.buffer = Some(grown);
+        self.generation += 1;
+        self.image.resize((capacity as usize * 4).min(32 << 20));
         self.capacity = capacity;
         true
     }
@@ -513,9 +603,157 @@ impl Arena {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Dirty {
+    start: usize,
+    end: usize,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct HostImage {
+    bytes: Vec<u8>,
+    valid: Vec<u64>,
+    dirty: Vec<Dirty>,
+}
+
+impl HostImage {
+    fn resize(&mut self, size: usize) {
+        let old = self.bytes.len();
+        self.bytes.resize(size, 0);
+        self.valid.resize((size / 4).div_ceil(64), 0);
+        self.set_valid(old, size - old, true);
+    }
+
+    fn set_valid(&mut self, start: usize, size: usize, valid: bool) {
+        let mut word = start / 4;
+        let end = (start + size) / 4;
+        while word < end {
+            let bits = (end - word).min(64 - word % 64);
+            let mask = (u64::MAX >> (64 - bits)) << (word % 64);
+            if valid {
+                self.valid[word / 64] |= mask;
+            } else {
+                self.valid[word / 64] &= !mask;
+            }
+            word += bits;
+        }
+    }
+
+    fn invalidate(&mut self, start: usize, size: usize) {
+        let end = start.saturating_add(size).min(self.bytes.len());
+        let start = start.min(end);
+        self.set_valid(start, end - start, false);
+    }
+
+    fn mark(&mut self, start: usize, size: usize, generation: u64) {
+        if size == 0 {
+            return;
+        }
+        self.set_valid(start, size, true);
+        self.dirty.push(Dirty {
+            start,
+            end: start + size,
+            generation,
+        });
+    }
+
+    fn merge(&mut self, generation: u64) {
+        self.dirty.retain(|r| r.generation == generation);
+        self.dirty.sort_unstable_by_key(|r| r.start);
+        let mut budget = self.dirty.iter().map(|r| r.end - r.start).sum::<usize>() / 10;
+        let mut used = 0;
+        for read in 0..self.dirty.len() {
+            let next = self.dirty[read];
+            if used > 0 {
+                let prior = &mut self.dirty[used - 1];
+                let gap = next.start.saturating_sub(prior.end);
+                let valid = gap <= budget
+                    && (prior.end / 4..next.start / 4)
+                        .all(|w| self.valid[w / 64] & (1 << (w % 64)) != 0);
+                if next.start <= prior.end || valid {
+                    prior.end = prior.end.max(next.end);
+                    budget -= gap;
+                    continue;
+                }
+            }
+            self.dirty[used] = next;
+            used += 1;
+        }
+        self.dirty.truncate(used);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coalescing_preserves_gpu_holes_and_generation() {
+        let mut image = HostImage::default();
+        image.resize(4096);
+        image.mark(0, 400, 1);
+        image.mark(404, 400, 1);
+        image.mark(808, 400, 1);
+        image.invalidate(804, 4);
+        image.mark(2048, 4, 0);
+        image.merge(1);
+        assert_eq!(
+            image
+                .dirty
+                .iter()
+                .map(|r| (r.start, r.end))
+                .collect::<Vec<_>>(),
+            [(0, 804), (808, 1208)]
+        );
+        image.resize(8192);
+        assert_eq!(image.valid[804 / 4 / 64] & (1 << (804 / 4 % 64)), 0);
+        assert!(image.bytes[4096..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn adjacent_intervals_merge_without_unbounded_gap_amplification() {
+        let mut image = HostImage::default();
+        image.resize(4096);
+        for (start, size) in [(256, 4), (0, 8), (4, 8), (12, 4)] {
+            image.mark(start, size, 7);
+        }
+        image.merge(7);
+        assert_eq!(
+            image
+                .dirty
+                .iter()
+                .map(|r| (r.start, r.end))
+                .collect::<Vec<_>>(),
+            [(0, 16), (256, 260)]
+        );
+    }
+
+    #[test]
+    fn discarded_promises_are_not_resident() {
+        let mut arena = Arena::new(32 << 20);
+        arena.image.resize(4096);
+        arena.residency.insert(
+            7,
+            Residency {
+                offset: 4,
+                class: 0,
+                generation: 1,
+                last_used: 0,
+            },
+        );
+        arena.counters.live_bytes = 1024;
+        arena.lru.insert((0, 7));
+        arena.pinned.insert(7);
+        arena.hold();
+        arena.image.mark(16, 240, 0);
+        arena.discard();
+        assert!(arena.residency.is_empty());
+        assert!(arena.image.dirty.is_empty());
+        assert_eq!(arena.counters.retired_bytes, 1024);
+        arena.release_hold();
+        assert_eq!(arena.free[0], [4]);
+    }
 
     #[test]
     fn allocation_demand_uses_classes_and_existing_residency() {

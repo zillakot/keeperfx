@@ -1,3 +1,4 @@
+#include "UploadCounters.h"
 #pragma once
 #include "kfx/renderer/ArenaKindCounters.h"
 
@@ -139,6 +140,9 @@ struct KfxWgpuDrawCounters {
     uint64_t replay_buffers;
     uint64_t replay_passes;
     uint64_t replay_staged_bytes;
+#define KFX_UPLOAD_FIELD(field) uint64_t field;
+    KFX_UPLOAD_ALL_FIELDS
+#undef KFX_UPLOAD_FIELD
 
 
 };

@@ -1,3 +1,4 @@
+use super::upload;
 use super::*;
 
 fn header(bytes: &[u8]) -> Result<[u32; 16]> {
@@ -156,10 +157,11 @@ impl DrawRenderer {
                 .binding(&self.device, &self.queue, &mut self.counters),
         };
         let target = &self.targets[&target_id];
-        let view = buffer(
+        let view = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
-            "target view",
+            "effect target view",
             &[target.width, target.pitch, target.offset, base],
             wgpu::BufferUsages::UNIFORM,
         );
@@ -167,11 +169,7 @@ impl DrawRenderer {
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native lens"),
             layout: &pipeline.get_bind_group_layout(0),
-            entries: &[
-                entry(0, &target.indices),
-                entry(1, &assets),
-                entry(2, &view),
-            ],
+            entries: &[entry(0, &target.indices), entry(1, &assets), view.entry(2)],
         });
         let stamp = self.stamp(PASS_LENS);
         {

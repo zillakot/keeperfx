@@ -253,6 +253,11 @@ fn queued_ordered_sprites_coalesce_into_the_same_layers() {
         drawing.submit(root, std::slice::from_ref(command)).unwrap();
     }
     drawing.frame_end().unwrap();
+    assert_eq!(
+        drawing.counters().replay.upload_ring_overflows - before.replay.upload_ring_overflows,
+        0
+    );
+    assert!(drawing.counters().replay.upload_queue_writes > before.replay.upload_queue_writes);
     let layers = drawing.counters().ordered_sprite_layers - before.ordered_sprite_layers;
     assert_eq!(layers, 1, "the frame's serial routes merged into one run");
     assert_eq!(expected, drawing.readback(root).unwrap());

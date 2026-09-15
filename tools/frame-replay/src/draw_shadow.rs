@@ -1,3 +1,4 @@
+use super::upload;
 use super::*;
 
 pub const SHADOW: u32 = 11;
@@ -170,7 +171,8 @@ impl DrawRenderer {
                 .arena
                 .binding(&self.device, &self.queue, &mut self.counters),
         };
-        let region = buffer(
+        let region = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "shadow arena region",
@@ -184,7 +186,7 @@ impl DrawRenderer {
             entries: &[
                 entry(0, self.shadow_scratch.as_ref().unwrap()),
                 entry(1, &input),
-                entry(2, &region),
+                region.entry(2),
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {

@@ -1,3 +1,4 @@
+use super::upload;
 use super::*;
 
 impl DrawRenderer {
@@ -143,14 +144,16 @@ impl DrawRenderer {
             (width, height),
             limit,
         )?;
-        let cb = buffer(
+        let cb = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "snapshot triangle commands",
             &words,
             wgpu::BufferUsages::STORAGE,
         );
-        let tb = buffer(
+        let tb = upload::stage(
+            &self.uploads,
             &self.device,
             &mut self.counters,
             "snapshot triangle tiles",
@@ -197,10 +200,10 @@ impl DrawRenderer {
                     layout: &self.compute.get_bind_group_layout(0),
                     entries: &[
                         entry(0, &self.targets[&target].indices),
-                        entry(1, &cb),
+                        cb.entry(1),
                         entry(2, &assets),
-                        entry(3, &params),
-                        entry(4, &tb),
+                        params.entry(3),
+                        tb.entry(4),
                         entry(5, self.terrain_rows_binding()),
                         entry(6, self.shadow_slot_binding()),
                         entry(7, self.status_binding()),

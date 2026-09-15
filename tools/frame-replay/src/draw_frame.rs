@@ -162,6 +162,7 @@ impl DrawRenderer {
     }
 
     pub fn frame_begin(&mut self, root: u64) -> Result<()> {
+        self.uploads.borrow_mut().begin_frame();
         self.check_status()?;
         // A presenter that never reached its present call still owes the queue what it
         // recorded; nothing may straddle two frames' worth of staged writes.
@@ -460,6 +461,12 @@ impl DrawRenderer {
     pub fn frame_flush(&mut self) -> Result<()> {
         let replay = host::Replay::begin();
         let result = self.frame_flush_inner();
+        if result.is_ok() {
+            self.flush_uploads();
+        } else {
+            self.uploads.borrow_mut().discard();
+            self.arena.discard();
+        }
         self.counters.replay.accumulate(replay.finish());
         result
     }
@@ -602,19 +609,17 @@ impl DrawRenderer {
                 (target.width, target.height),
                 limit,
             )?;
-            let commands = persist(
-                &mut self.stream_commands,
+            let commands = upload::stage(
+                &self.uploads,
                 &self.device,
-                &self.queue,
                 &mut self.counters,
                 "immutable ordered commands",
                 &words,
                 wgpu::BufferUsages::STORAGE,
             );
-            let tiles = persist(
-                &mut self.stream_tiles,
+            let tiles = upload::stage(
+                &self.uploads,
                 &self.device,
-                &self.queue,
                 &mut self.counters,
                 "ordered tile lists",
                 self.tile_index.data(),
