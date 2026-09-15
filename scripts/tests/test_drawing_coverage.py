@@ -101,7 +101,7 @@ class MatrixTests(unittest.TestCase):
                                 binary=dict(sha256="abc123", binary="/tmp/keeperfx", size_bytes=1))}
         text = COVERAGE.markdown(COVERAGE.summarize(scenes, results))
         self.assertIn("`abc123`", text)
-        self.assertIn("| busy | complete | 5 | 10 | 0 | pass |", text)
+        self.assertIn("| busy | complete | 5 | 10 | 0 | 0 | 0 | pass |", text)
         self.assertIn("**1,234**", text)
         self.assertIn("`arena_minimap_misses`", text)
 

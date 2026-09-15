@@ -286,13 +286,14 @@ def markdown(summary):
     lines = ["# Drawing-family scene matrix", "",
              f"Generated {summary['generated_utc']}.{identity}", "",
              "## Scenes", "",
-             "| Scene | Status | Frames | Verified batches | Failures | Gate |",
-             "| --- | --- | --- | --- | --- | --- |"]
+             "| Scene | Status | Frames | Verified batches | Failures | CPU barriers | Target-alias barriers | Gate |",
+             "| --- | --- | --- | --- | --- | --- | --- | --- |"]
     for scene in summary["scenes"]:
         gate = scene["gate"] or {}
         failures = gate.get("failed") or {}
         lines.append(f"| {scene['scene']} | {scene['status']} | {gate.get('frames', '-')} | "
                      f"{gate.get('verified_batches', '-')} | {failures.get('failures', 0)} | "
+                     f"{gate.get('cpu_barriers', '-')} | {gate.get('target_alias_barriers', '-')} | "
                      f"{'pass' if gate.get('passed') else 'fail'} |")
     lines += ["", "## Families", "",
               "| Family | Counter | " + " | ".join(order) + " | Status |",
