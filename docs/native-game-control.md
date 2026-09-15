@@ -92,6 +92,10 @@ python3 scripts/game-control.py cycle-mode --until fullscreen=false --until widt
 python3 scripts/game-control.py resize 937 613 --until width=937 --until height=613 --session out/control-example/session.json
 ```
 
+`cycle-mode` currently leaves the control API unresponsive after the switch: the game
+stays alive in fullscreen desktop mode and later commands time out, so drawing-oracle
+sessions exclude the mode round trip until that is fixed.
+
 Only the isolated control session ignores physical keyboard/mouse events received
 by its window and avoids grabbing/warping the host cursor. Native close, focus and
 window lifecycle events remain active. Control requests run on the main thread;
@@ -138,7 +142,8 @@ python3 scripts/game-control.py quit --session out/control-reconnect/session.jso
 ```
 
 Every command must succeed; `quit` must report `exit.returncode: 0` and
-`exit.timed_out: false`. The C socket fixture covers closed-peer writes with the
+`exit.timed_out: false`. This regression currently fails at the first `state` after the
+switch, which is the unresponsive-API fault above. The C socket fixture covers closed-peer writes with the
 default SIGPIPE disposition and replacement cleanup without launching the game.
 
 Screenshots plus state predicates establish UI outcomes. For rendering experiments,

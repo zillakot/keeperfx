@@ -217,11 +217,12 @@ Parity: 1,857,396 verified batches and 1,018,767 verified triangles over 2,117
 frames of an isolated control session against the CPU oracle, at 0 comparison
 failures, 0 invalid frames and 0 flagged shades, with 1 `shadow_prior_divergence`
 event in 106 creature shadows; a separate run verified 718 of 718 surfaces. That
-volume is concentrated in terrain, sprites, primitives and the minimap: general
-triangles (modes 0–26), movies, transitions, built-in lenses, Lua lenses, DBC text
-and huge bitmaps have zero arena/command counters in the oracle samples so far, so
-this is parity evidence for the families the control sessions reach, not for all of
-them.
+volume is concentrated in terrain, sprites, primitives and the minimap. In the same
+samples `arena_trig_*` (generic triangle textures), the movie, built-in lens and
+huge-bitmap arena kinds and `transition_commands` are zero, and DBC text and Lua
+lenses have no dedicated counter at all, so their coverage is unmeasured rather than
+zero. This is parity evidence for the families the control sessions reach, not for
+all of them.
 
 **Presentation now bounds the ceiling, not GPU execution.** Serialized timing puts
 exclusive GPU work at 1.60 ms busy at 640x480 and 3.68 ms busy at 1080p, well
@@ -264,10 +265,15 @@ operations despite separate control-tooling failures. No windowed ceiling or
 whole-process/GPU peak-memory gain is established.
 
 **Replay upload rings ([PR #45](https://github.com/zillakot/keeperfx/pull/45)) and the
-byte-packed arena ([PR #47](https://github.com/zillakot/keeperfx/pull/47)) are delivered.**
-Offscreen replay falls 0.58–0.73 ms in every measured cell, uncapped busy 1080p reaches
-253/268 FPS, and the serialized exclusive GPU union rises 7% to 4.30 ms/frame, of which the
-minimap pass is 1.01 ms.
+byte-packed arena ([PR #47](https://github.com/zillakot/keeperfx/pull/47)) are delivered
+([measurements](../performance-baselines.md#byte-packed-arena-format)).** Word-once source
+`b94fa46c7` against the PR #45 baseline `416a46d59`, matched offscreen pairs, binary
+identities recorded with the measurements. Replay falls 0.58–0.73 ms in every cell, offscreen
+uncapped busy 1080p rises to 253/268 FPS, and the serialized exclusive GPU union rises 7%
+to 4.30 ms/frame, of which the minimap pass is 1.01 ms. These are offscreen cells, so they
+establish no windowed ceiling; the
+[replay floor](../performance-baselines.md#replay-floor-measured-2026-09-15) remains the
+control for replay attribution.
 
 Next, in order:
 
@@ -281,7 +287,8 @@ Next, in order:
    this gates both. Acceptance: every drawing family has a non-zero arena/command counter in
    at least one scene at 0 comparison failures.
 3. **Sprite asset interning**, in parallel with 2: `arena_sprite_hits` is 0 against 39,267
-   misses, about 475 KB/frame and the largest remaining per-frame upload.
+   misses. Sprites and the minimap are the two largest remaining per-frame uploads, about
+   475 and 479 KB/frame; the minimap stays non-resident while PR #43 is unmerged.
 4. **Coverage and ownership before C/C++ drawing can be retired**: general-triangle runtime
    coverage and its alias fallback, possession-lens offscreen target residency, transition
    checkpoint removal, shadow scratch decoupling from `big_scratch`, the remaining declines,
@@ -292,20 +299,21 @@ Next, in order:
 5. **The default switch**, then per-family deletion of the C/C++ rasterizers with the CPU
    oracle preserved as a test-only library.
 
-Deferred: minimap residency ([PR #43](https://github.com/zillakot/keeperfx/pull/43)) is parked
-pending a rebase and a rescope after the dispatch-extent slice. Remaining presenter cost — host
-submission after replay, software index upload, late cursor restoration — sits behind the items
-above and must preserve `presentation_cpu` at most 1.0 ms and simulation cadence in uncapped
-comparisons. Reusable mapped staging is a later PR.
+Deferred: minimap residency ([PR #43](https://github.com/zillakot/keeperfx/pull/43)) is not
+merged; its evidence predates the packed arena and it conflicts with the current tree.
+Remaining presenter cost — host submission after replay, software index upload, late cursor
+restoration — sits behind the items above and must preserve `presentation_cpu` at most 1.0 ms
+and simulation cadence in uncapped comparisons. Reusable mapped staging is a later PR.
 
 In parallel, work the tooling plan's
-[recommended order](development-tooling-plan.md#recommended-order) from its first
-undelivered item: the bounds-superset property test, then command-stream capture with
-offline replay, then the per-suite frame-replay CI matrix, which today splits only the
-two arena formats. Control tooling has one open fault: `scripts/game-control.py
-cycle-mode` leaves the control API unresponsive after the video-mode switch — the game
-stays alive in fullscreen desktop mode and later operations time out — so oracle
-sessions skip the mode round trip until it is fixed.
+[recommended order](development-tooling-plan.md#recommended-order) on what each item still
+owes: the offscreen mode's locked-console acceptance, now closed; the trace profiler under
+GPU time attribution; the bounds-superset property test; command-stream capture with offline
+replay; deterministic scene mode; then the per-suite frame-replay CI matrix, which today
+splits only the two arena formats. Control tooling has one open fault:
+`scripts/game-control.py cycle-mode` leaves the control API unresponsive after the
+video-mode switch — the game stays alive in fullscreen desktop mode and later operations
+time out — so oracle sessions skip the mode round trip until it is fixed.
 
 ### Inventory and measurement
 
@@ -395,7 +403,7 @@ ownership, synchronization, counters and failure behavior.
 | General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level primitives; scaled normal/remap/one-colour/alpha and immediate normal/one-colour sprites | General-line coverage/color selection, unsupported sprite modes and full interleaving validation |
 | Text, including Asian fonts: [bflib_sprfnt.c](../../src/bflib_sprfnt.c) | Sprite glyphs and direct DBC bitmap GPU hooks; CPU layout retained; huge/DBC native fixture group has 849 exact Metal cases | Actual language/font runtime coverage, oversized custom inputs and mutable-source aliases |
 | Raw/tiled images, frontend backgrounds, landview/torture/zoom: [raw adapter](../../src/kfx/renderer/software/WgpuRawImage.c), [raw helper](../../src/front_simple.c), [slab helper](../../src/gui_draw.c) | Raw8 scaling/letterbox, tiled slabs, static backgrounds, huge sprite and campaign zoom GPU paths | Mutable source/destination aliases, noncanonical huge steps and source footprints above 1,048,576 pixels; full asset/runtime coverage |
-| Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | Semantic GPU cells, setup fills, markers and map/zoom transforms; 568 minimap and 1,358 map-view native/Metal fixtures | Minimap dictionary, cells and style tables are re-uploaded every frame rather than resident, and style tables churn about 30 times a second; the minimap compute dispatch still covers the whole `MapDiagonalLength` square instead of each command's written rectangle ([draw_minimap.rs](../../tools/frame-replay/src/draw_minimap.rs)); broader states and complete offscreen ownership |
+| Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | Semantic GPU cells, setup fills, markers and map/zoom transforms; 568 minimap and 1,358 map-view native/Metal fixtures | Minimap dictionary, cells and style tables are re-uploaded every frame rather than resident, and the PR #43 counters measured style tables churning about 30 times a second; the minimap compute dispatch still covers the whole `MapDiagonalLength` square instead of each command's written rectangle ([draw_minimap.rs](../../tools/frame-replay/src/draw_minimap.rs)); broader states and complete offscreen ownership |
 | Built-in possession lenses: [lens implementations](../../src/kfx/lense/) | Indexed displacement/flyeye remaps, mist and overlay GPU kernels preserve sequential source/target aliases; CPU map preparation and palette lifecycle remain | Resident GPU target views; lightness 32–63 mist, out-of-viewport maps, asset/destination aliases and oversized inputs still decline; full LensManager lifecycle/gameplay validation |
 | Custom Lua lenses: [LuaLensEffect.cpp](../../src/kfx/lense/LuaLensEffect.cpp), [lua_api_lens.c](../../src/lua_api_lens.c) | CPU reference | Ordered GPU writes/copies and exact read-after-write compatibility for arbitrary pixel-dependent Lua control flow; CPU-script readback is explicit, never hidden CPU-rendered lens upload |
 | Smoothing and map fades/transitions: [engine_redraw.c](../../src/engine_redraw.c) | GPU snapshots and exact indexed effects; 271 native/Metal cases plus failed-preparation/normal-exit state tests | Retained CPU recovery checkpoints, valid alias cases and broader lifecycle coverage |
