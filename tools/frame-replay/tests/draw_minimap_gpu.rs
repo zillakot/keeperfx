@@ -539,7 +539,10 @@ fn only_the_style_tables_that_changed_upload_again() {
         counters.minimap_cache_class_bytes,
         (3 * 256 + 256 + 256 + 5 * 65536) * stride()
     );
-    assert_eq!(counters.minimap_cache_evictions, 1, "the replaced cells");
+    assert_eq!(
+        counters.minimap_cache_evictions, 0,
+        "nothing here reaches the byte budget; the replaced cells are a rotation"
+    );
     world.finish();
 }
 
@@ -637,4 +640,134 @@ fn a_disabled_arena_draws_the_minimap_through_the_batch_path() {
     assert_eq!(world.draw.arena_counters().bytes_uploaded, 0);
     assert_eq!(world.draw.counters().minimap_cache_cpu_bytes, 0);
     world.finish();
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_replaced_segment_keeps_its_earlier_reader_in_the_same_encoder() {
+    // Two world commands in one queued frame, drawn side by side so both survive the
+    // readback. The second retires the single cell version the first's dispatch is
+    // already recorded against, so its region must not be recycled under the hold.
+    let tables = 4usize;
+    let dictionary: Vec<u8> = PALETTE[..tables].to_vec();
+    let origins = [2u32, DIAMETER + 3];
+    let width = DIAMETER * 2 + 5;
+    let mut draw = renderer(None);
+    let target = draw.create_target(width, WIDTH).unwrap();
+    let initial: Vec<u8> = (0..width * WIDTH)
+        .map(|i| dictionary[i as usize % tables])
+        .collect();
+    let image = draw.create_resource(&initial, width, WIDTH, width).unwrap();
+    let image_command = Command {
+        kind: IMAGE,
+        source: image,
+        width,
+        height: WIDTH,
+        source_width: width,
+        source_height: WIDTH,
+        ..Default::default()
+    };
+    let mut header = [0u32; 24];
+    header[0] = 4;
+    header[1] = width;
+    header[2] = WIDTH;
+    header[3] = origins[0];
+    header[4] = 2;
+    header[5] = DIAMETER;
+    header[22] = 96;
+    let capture: Vec<u8> = header.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let capture = draw.create_resource(&capture, 1, 1, 1).unwrap();
+    let command = Command {
+        kind: MINIMAP,
+        source: capture,
+        width,
+        height: WIDTH,
+        clip_width: width,
+        clip_height: WIDTH,
+        ..Default::default()
+    };
+    draw.submit(target, &[image_command]).unwrap();
+    draw.submit(target, &[command]).unwrap();
+    draw.release_resource(capture).unwrap();
+
+    header[0] = 0;
+    header[7] = 65536;
+    header[10] = DIAMETER;
+    header[11] = DIAMETER;
+    header[12] = 96;
+    header[13] = 352;
+    header[14] = header[13] + (DIAMETER + 1) * (DIAMETER + 1) * 2;
+    header[15] = tables as u32 * TABLE as u32;
+    let styles: Vec<Vec<u8>> = (0..tables).map(|table| style_table(table, 0)).collect();
+    let grids: Vec<Vec<u16>> = [617u32, 971]
+        .iter()
+        .map(|step| {
+            (0..(DIAMETER + 1).pow(2))
+                .map(|i| ((i * step) % TABLE as u32) as u16)
+                .collect()
+        })
+        .collect();
+
+    let mut expected = initial.clone();
+    let mut sources = Vec::new();
+    for (origin, cells) in origins.iter().zip(&grids) {
+        header[3] = *origin;
+        let mut source: Vec<u8> = header.iter().flat_map(|v| v.to_le_bytes()).collect();
+        source.extend(&dictionary);
+        source.resize(352, 0);
+        source.extend(cells.iter().flat_map(|v| v.to_le_bytes()));
+        for table in &styles {
+            source.extend(table);
+        }
+        sources.push(draw.create_resource(&source, 1, 1, 1).unwrap());
+        for (y, x) in disc() {
+            // The mode-4 snapshot was captured at the first origin, so the background
+            // colour every command samples comes from there.
+            let background = initial[((y + 2) * width + x + origins[0]) as usize];
+            let colour = dictionary
+                .iter()
+                .position(|&c| c == background)
+                .unwrap_or(0);
+            let cell = cells[(y * (DIAMETER + 1) + x) as usize] as usize;
+            expected[((y + 2) * width + x + origin) as usize] = styles[colour][cell];
+        }
+    }
+
+    let before = draw.counters();
+    draw.frame_begin(target).unwrap();
+    for source in &sources {
+        draw.submit(
+            target,
+            &[Command {
+                source: *source,
+                ..command
+            }],
+        )
+        .unwrap();
+    }
+    draw.frame_end().unwrap();
+    let after = draw.counters();
+    for source in sources {
+        draw.release_resource(source).unwrap();
+    }
+    assert_eq!(draw.readback(target).unwrap(), expected);
+    assert_eq!(
+        after.submits - before.submits,
+        1,
+        "one submit for the frame"
+    );
+    assert_eq!(
+        after.arena_by_kind[MINIMAP_KIND].misses - before.arena_by_kind[MINIMAP_KIND].misses,
+        2 * (3 + tables as u64) - (1 + tables as u64),
+        "the second command re-resolves only its prefix and cells"
+    );
+    // One cell version survives, so the first command's region was retired rather than
+    // replaced in place.
+    assert_eq!(
+        after.minimap_cache_cpu_bytes,
+        (3 * 96 + 256 + grids[0].len() * 2 + tables * TABLE) as u64
+    );
+    assert_eq!(after.minimap_cache_evictions, 0);
+    draw.release_resource(image).unwrap();
+    draw.release_target(target).unwrap();
 }

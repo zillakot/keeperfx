@@ -12,11 +12,30 @@ pub(super) struct MinimapState {
     pub(super) background: Option<(u64, u32)>,
 }
 
-/// Live cached size classes, counted in arena source bytes so the bound holds in both
-/// asset formats; the GPU cost is this times `assets::STRIDE`. It holds the advertised
-/// retention at the validated maximum of 16 background colours: 16 x `STYLE_VERSIONS`
-/// tables, one cell and one dictionary version and `PREFIX_VERSIONS` prefixes.
+/// Live cached size classes, bounded in both dimensions: the arena source bytes the
+/// split gate is stated in, so it admits the same commands in either asset format, and
+/// the GPU bytes those classes occupy, which is what the 32 MiB arena capacity gate
+/// counts. The source bound holds the advertised retention at the validated maximum of
+/// 16 background colours over a standard-sized cell grid; in the expanded format the GPU
+/// bound binds first and fewer style versions are retained.
 const CACHE_CLASS_BYTES: u64 = 5 << 20;
+const CACHE_GPU_BYTES: u64 = 8 << 20;
+
+/// The effective budget in arena source bytes. Soft for the single-version base roles,
+/// which are admitted even when they push the total past it; the evictable roles are
+/// held under it, so the overshoot is bounded by the base plus one segment.
+const fn cache_budget() -> u64 {
+    let gpu = CACHE_GPU_BYTES / assets::STRIDE as u64;
+    if gpu < CACHE_CLASS_BYTES {
+        gpu
+    } else {
+        CACHE_CLASS_BYTES
+    }
+}
+
+const _: () = assert!(cache_budget() * assets::STRIDE as u64 <= CACHE_GPU_BYTES);
+/// A quarter of the arena's 32 MiB capacity gate, in either asset format.
+const _: () = assert!(CACHE_GPU_BYTES * 4 <= 32 << 20);
 const PREFIX_VERSIONS: usize = 16;
 const STYLE_VERSIONS: usize = 4;
 const ROLE_PREFIX: u32 = 0;
@@ -79,6 +98,8 @@ struct Segment {
 pub(super) struct Resident {
     entries: Vec<Segment>,
     clock: u64,
+    /// Entries the byte budget retired. Routine per-role version rotation is not
+    /// counted, so this only rises under budget pressure.
     evictions: u64,
 }
 
@@ -107,13 +128,13 @@ impl Resident {
     }
 
     fn retire(&mut self, arena: &mut arena::Arena, index: usize) {
-        self.evictions += 1;
         arena.release(self.entries.remove(index).id);
     }
 
     /// Exact role, layout and byte identity. Only the retained versions of this role
     /// and layout are candidates, and the length and end samples reject a changed
-    /// segment before the full comparison reads it.
+    /// segment before the full comparison reads it; a hit still reads the whole
+    /// segment, because identity is complete byte equality.
     fn resolve(
         &mut self,
         arena: &mut arena::Arena,
@@ -137,10 +158,11 @@ impl Resident {
                 .context("empty minimap role")?;
             self.retire(arena, index);
         }
-        while self.class_bytes() + class_bytes(bytes.len()) > CACHE_CLASS_BYTES {
+        while self.class_bytes() + class_bytes(bytes.len()) > cache_budget() {
             let Some(index) = self.oldest(|e| evictable(e.role)) else {
                 break;
             };
+            self.evictions += 1;
             self.retire(arena, index);
         }
         let id = next_handle()?;
@@ -467,7 +489,7 @@ impl DrawRenderer {
                 .iter()
                 .map(|(_, _, r)| class_bytes(r.len()))
                 .sum::<u64>()
-                <= CACHE_CLASS_BYTES;
+                <= cache_budget();
         let mut segments = Vec::new();
         if split {
             let source = &self.resources[&c.source].bytes;
@@ -477,6 +499,11 @@ impl DrawRenderer {
                     resident.resolve(&mut self.arena, *role, *layout, &source[range.clone()])?;
                 segments.push(id);
             }
+        }
+        {
+            // Outside the split branch, so a renderer that has stopped splitting still
+            // reports what the cache holds rather than its last split figure.
+            let resident = &self.minimap.as_ref().unwrap().resident;
             self.counters.minimap_cache_class_bytes =
                 resident.class_bytes() * assets::STRIDE as u64;
             self.counters.minimap_cache_cpu_bytes = resident.cpu_bytes();
@@ -688,6 +715,10 @@ mod tests {
 
         let changed = resolve(&mut resident, 0, 2);
         assert!(!changed.1);
+        assert_eq!(
+            resident.evictions, 0,
+            "a version rotation is not an eviction"
+        );
         assert_eq!(resolve(&mut resident, 1, 9), (second.0, true));
         assert_eq!(resolve(&mut resident, 0, 1), (first.0, true));
 
@@ -710,7 +741,7 @@ mod tests {
     fn the_cache_budget_retires_the_least_recently_used_segment() {
         let mut arena = arena::Arena::new(32 << 20);
         let mut resident = Resident::default();
-        let slots = (CACHE_CLASS_BYTES / class_bytes(TABLE)) as usize;
+        let slots = (cache_budget() / class_bytes(TABLE)) as usize;
         let mut resolve = |resident: &mut Resident, index: usize, value: usize| {
             resident
                 .resolve(
@@ -724,7 +755,7 @@ mod tests {
         let first = resolve(&mut resident, 0, 0);
         for step in 1..=slots {
             resolve(&mut resident, step / STYLE_VERSIONS, step);
-            assert!(resident.class_bytes() <= CACHE_CLASS_BYTES);
+            assert!(resident.class_bytes() <= cache_budget());
         }
         assert_eq!(
             resident.cpu_bytes(),
@@ -734,7 +765,10 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_holds_the_advertised_retention_at_sixteen_backgrounds() {
+    fn the_budget_bounds_both_dimensions_and_holds_the_advertised_retention() {
+        // The GPU bound is asserted at compile time beside the constants. The source
+        // bound holds 16 background colours at four versions each over a
+        // standard 256-subtile cell grid, which is what the retention figure claims.
         let base = class_bytes(384) * PREFIX_VERSIONS as u64
             + class_bytes(256)
             + class_bytes(256 * 256 * 2);
@@ -756,7 +790,7 @@ mod tests {
             .resolve(&mut arena, ROLE_DICTIONARY, [16, 0], &dictionary)
             .unwrap()
             .0;
-        let slots = (CACHE_CLASS_BYTES / class_bytes(TABLE)) as usize;
+        let slots = (cache_budget() / class_bytes(TABLE)) as usize;
         for step in 0..slots + STYLE_VERSIONS {
             resident
                 .resolve(
@@ -767,7 +801,10 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(resident.evictions > 0);
+        assert!(
+            resident.evictions > 0,
+            "the byte budget, not the per-role rotation, retires under table pressure"
+        );
         assert_eq!(
             resident
                 .resolve(&mut arena, ROLE_CELLS, [255, 255], &cells)
