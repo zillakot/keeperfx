@@ -312,10 +312,12 @@ GPU time attribution; the bounds-superset property test; command-stream capture 
 replay; deterministic scene mode; then the per-suite frame-replay CI matrix, which today
 splits only the two arena formats. Control tooling has one open fault: after
 [PR #41](https://github.com/zillakot/keeperfx/pull/41) the API server no longer dies on the
-video-mode switch, but the `scripts/game-control.py cycle-mode` command itself and every
-later operation time out while the game keeps running in desktop mode, so oracle sessions
-skip the mode round trip until it is fixed (evidence under
-`out/wgpu-migration/byte-arena-runs/word-once/drawing-busy-control.incomplete-*/`).
+video-mode switch, but the `scripts/game-control.py cycle-mode` reply and the following
+quit timed out while the game kept running in desktop mode, so oracle sessions skip the
+mode round trip until it is fixed. Evidence:
+`out/wgpu-migration/byte-arena-runs/word-once/measure-schedule.log` lines 113-114 for the
+timed-out replies, and the `drawing-busy-control.incomplete-*/` session directory beside
+it for the game state.
 
 ### Inventory and measurement
 
