@@ -555,11 +555,13 @@ TbBool init_redpal_table(void)
     char* fname = prepare_file_path(FGrp_StdData, "redpal.col");
     SYNCDBG(0,"Reading red-blended color table file \"%s\".",fname);
     // Loading file data
+    kfx_render_assets_changed();
     if (LbFileLoadAt(fname, &red_pal) != 256)
     {
         compute_shifted_palette_table(red_pal, engine_palette, engine_palette, 20, -10, -10);
         LbFileSaveAt(fname, &red_pal, 256);
     }
+    kfx_render_assets_changed();
     return true;
 }
 
@@ -568,11 +570,13 @@ TbBool init_whitepal_table(void)
     char* fname = prepare_file_path(FGrp_StdData, "whitepal.col");
     SYNCDBG(0,"Reading white-blended color table file \"%s\".",fname);
     // Loading file data
+    kfx_render_assets_changed();
     if (LbFileLoadAt(fname, &white_pal) != 256)
     {
         compute_shifted_palette_table(white_pal, engine_palette, engine_palette, 48, 48, 48);
         LbFileSaveAt(fname, &white_pal, 256);
     }
+    kfx_render_assets_changed();
     return true;
 }
 

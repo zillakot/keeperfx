@@ -62,6 +62,17 @@ extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget* target,
     return active_bridge->SubmitNative(*target, *command, source, table, oracle, oracle_context);
 }
 
+extern "C" int kfx_wgpu_native_draw_sprite(const KfxGpolyTarget* target,
+    const KfxWgpuDrawCommand* command, const KfxWgpuSpriteAssets* assets,
+    KfxWgpuNativeOracle oracle, void* oracle_context)
+{
+    if (active_bridge == nullptr || active_bridge->IsOracleActive() || target == nullptr ||
+        command == nullptr || assets == nullptr || assets->artwork == nullptr ||
+        assets->ranges == nullptr || assets->remap == nullptr) return 0;
+    return active_bridge->SubmitNative(*target, *command, assets->artwork, assets->table,
+        oracle, oracle_context, assets);
+}
+
 extern "C" uint64_t kfx_wgpu_native_snapshot(const KfxGpolyTarget* target,
     uint32_t width, uint32_t height, uint32_t pitch, uint8_t* checkpoint)
 {
@@ -364,18 +375,19 @@ bool WgpuTerrainBridge::PurgeResources()
 {
     bool purged = true;
     if (m_context != nullptr) {
-        for (const auto& resource : m_native_tables)
-            purged = kfx_wgpu_draw_resource_release(m_context, resource.handle, m_error.data(),
-                m_error.size()) == 1 && purged;
+        for (const auto* cache : {&m_native_tables, &m_remap_tables})
+            for (const auto& resource : *cache)
+                purged = kfx_wgpu_draw_resource_release(m_context, resource.handle,
+                    m_error.data(), m_error.size()) == 1 && purged;
         purged = kfx_wgpu_draw_resources_purge_keyed(m_context, m_error.data(),
             m_error.size()) == 1 && purged;
     }
     m_native_tables.clear();
+    m_remap_tables.clear();
     purged = CollectSuperseded() && purged;
     m_replay_assets.clear();
     m_texture_memo = m_fade_memo = {};
-    m_table_memos = {};
-    m_table_memo_next = 0;
+    m_table_memos = m_remap_memos = {};
     if (!purged) ++m_counts.resource_purge_failures;
     return purged;
 }
@@ -533,11 +545,17 @@ uint64_t WgpuTerrainBridge::KeyedResource(uint32_t kind, const void* key, const 
         m_superseded.push_back(handle);
         return handle;
     }
+    return KeyedResourceRaw(kind, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(tail_key)),
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key)), generation, bytes, extent);
+}
+
+uint64_t WgpuTerrainBridge::KeyedResourceRaw(uint32_t kind, uint64_t key_hi, uint64_t key_lo,
+    uint64_t generation, const uint8_t* bytes, const Extent& extent)
+{
     uint64_t previous = 0;
-    const uint64_t handle = kfx_wgpu_draw_resource_create_keyed(m_context, kind,
-        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(tail_key)),
-        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(key)), generation, bytes, extent.length,
-        extent.width, extent.height, extent.pitch, &previous, m_error.data(), m_error.size());
+    const uint64_t handle = kfx_wgpu_draw_resource_create_keyed(m_context, kind, key_hi, key_lo,
+        generation, bytes, extent.length, extent.width, extent.height, extent.pitch, &previous,
+        m_error.data(), m_error.size());
     if (handle == 0) return 0;
     if (previous != handle) m_counts.resource_snapshot_bytes += extent.length;
     // The snapshot follows the handle, not the key: a run recorded before the bump can
@@ -610,7 +628,8 @@ const uint8_t* WgpuTerrainBridge::ReplayAsset(uint64_t handle) const
 
 /* Interns a lookup table by the caller's buffer identity. Tables built on the caller's
  * stack carry no identity the drawing context can key, so they still compare content. */
-uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, size_t limit)
+uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, uint32_t kind,
+    std::vector<Resource>& cache, TableMemos& memos, size_t limit)
 {
     const size_t length = table.length + table.tail_length;
     const void* key = StableKey(table.bytes, table.length);
@@ -620,7 +639,7 @@ uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, si
     if (key != nullptr && (table.tail == nullptr || tail_key != nullptr)) {
         // Before the concatenation: a resident key needs no bytes, and the tables are
         // 64 KiB and 80 KiB.
-        for (const auto& memo : m_table_memos) {
+        for (const auto& memo : memos.slots) {
             const uint64_t memoized = MemoHandle(memo, key, tail_key, extent);
             if (memoized != 0) return memoized;
         }
@@ -629,17 +648,17 @@ uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, si
         bytes.insert(bytes.end(), table.bytes, table.bytes + table.length);
         if (table.tail_length != 0)
             bytes.insert(bytes.end(), table.tail, table.tail + table.tail_length);
-        const uint64_t handle = KeyedResource(KFX_WGPU_DRAW_KEY_NATIVE_TABLE, key, tail_key,
-            kfx_render_asset_generation, bytes.data(), extent);
+        const uint64_t handle = KeyedResource(kind, key, tail_key, kfx_render_asset_generation,
+            bytes.data(), extent);
         // No replay half: RasterizePending only replays terrain, so no snapshot is kept.
         if (handle != 0) {
-            m_table_memos[m_table_memo_next] = {key, tail_key, kfx_render_asset_generation,
-                extent, handle};
-            m_table_memo_next = (m_table_memo_next + 1) % kTableMemos;
+            memos.slots[memos.next] = {key, tail_key, kfx_render_asset_generation, extent,
+                handle};
+            memos.next = (memos.next + 1) % kTableMemos;
         }
         return handle;
     }
-    for (const auto& resource : m_native_tables) {
+    for (const auto& resource : cache) {
         if (resource.width != table.width || resource.height != table.height ||
             resource.pitch != table.pitch || resource.bytes.size() != length) continue;
         if (std::memcmp(resource.bytes.data(), table.bytes, table.length) != 0) continue;
@@ -647,12 +666,12 @@ uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, si
                 table.tail, table.tail_length) != 0) continue;
         return resource.handle;
     }
-    if (m_native_tables.size() >= limit) {
+    if (cache.size() >= limit) {
         Flush();
         if (m_failed) return 0;
-        if (kfx_wgpu_draw_resource_release(m_context, m_native_tables.front().handle,
+        if (kfx_wgpu_draw_resource_release(m_context, cache.front().handle,
                 m_error.data(), m_error.size()) != 1) return 0;
-        m_native_tables.erase(m_native_tables.begin());
+        cache.erase(cache.begin());
     }
     Resource resource = {0, {}, table.width, table.height, table.pitch};
     resource.bytes.reserve(length);
@@ -663,8 +682,8 @@ uint64_t WgpuTerrainBridge::TableResource(const KfxWgpuNativeResource& table, si
         table.width, table.height, table.pitch, m_error.data(), m_error.size());
     if (resource.handle == 0) return 0;
     m_counts.resource_snapshot_bytes += length;
-    m_native_tables.push_back(std::move(resource));
-    return m_native_tables.back().handle;
+    cache.push_back(std::move(resource));
+    return cache.back().handle;
 }
 
 int WgpuTerrainBridge::Draw(const KfxGpolyTarget& target, const KfxGpolySpan& span,
@@ -1152,8 +1171,11 @@ void WgpuTerrainBridge::EmitterBoundary()
 
 int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
     const KfxWgpuDrawCommand& command, const KfxWgpuNativeResource* source,
-    const KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context)
+    const KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context,
+    const KfxWgpuSpriteAssets* sprite)
 {
+    const KfxWgpuNativeResource* ranges = sprite != nullptr ? sprite->ranges : nullptr;
+    const KfxWgpuNativeResource* remap = sprite != nullptr ? sprite->remap : nullptr;
     if (m_oracle_active) return 0;
     if (!m_pending.empty() || !m_triangles.empty()) {
         // A record carries the view it was issued against, so a target change opens a run
@@ -1201,29 +1223,63 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
             return resource && (aliases_range(resource->bytes, resource->length) ||
                 aliases_range(resource->tail, resource->tail_length));
         };
-        if (aliases_target(source) || aliases_target(table)) {
+        if (aliases_target(source) || aliases_target(ranges) || aliases_target(remap) ||
+            aliases_target(table)) {
             ++m_counts.target_alias_barriers;
-            if ((source && !ReadBarrier(source->bytes, source->length)) ||
-                (table && !ReadBarrier(table->bytes, table->length)) ||
-                (table && table->tail && !ReadBarrier(table->tail, table->tail_length)))
-                return Fail(nullptr);
+            for (const auto* resource : {source, ranges, remap, table}) {
+                if (resource == nullptr) continue;
+                if (!ReadBarrier(resource->bytes, resource->length)) return Fail(nullptr);
+                if (resource->tail && !ReadBarrier(resource->tail, resource->tail_length))
+                    return Fail(nullptr);
+            }
         }
         KfxWgpuDrawCommand owned = command;
         OwnedResource guard = {m_context, 0};
         if (source != nullptr) {
-            guard.handle = kfx_wgpu_draw_resource_create(m_context, source->bytes, source->length,
-                source->width, source->height, source->pitch, m_error.data(), m_error.size());
-            if (guard.handle == 0) return Fail(nullptr);
-            if (source->cursor) kfx_wgpu_draw_resource_mark_cursor(m_context, guard.handle);
-            m_counts.resource_snapshot_bytes += source->length;
+            if (sprite != nullptr && sprite->identity != nullptr) {
+                /* Artwork the emitter can name stays resident under one handle, so the
+                   arena keeps it across frames instead of re-uploading it per command. */
+                source_handle = KeyedResourceRaw(KFX_WGPU_DRAW_KEY_SPRITE_ARTWORK,
+                    (static_cast<uint64_t>(command.source_width) << 32) | command.source_height,
+                    static_cast<uint64_t>(reinterpret_cast<uintptr_t>(sprite->identity)),
+                    sprite->generation, source->bytes,
+                    {source->length, source->width, source->height, source->pitch});
+                if (source_handle == 0) return Fail(nullptr);
+            } else {
+                source_handle = kfx_wgpu_draw_resource_create(m_context, source->bytes,
+                    source->length, source->width, source->height, source->pitch,
+                    m_error.data(), m_error.size());
+                if (source_handle == 0) return Fail(nullptr);
+                m_counts.resource_snapshot_bytes += source->length;
+                // The batch owns one handle; a second per-call one is released with the run.
+                if (ranges == nullptr) guard.handle = source_handle;
+                else m_superseded.push_back(source_handle);
+            }
+            if (source->cursor) kfx_wgpu_draw_resource_mark_cursor(m_context, source_handle);
         }
-        source_handle = guard.handle;
+        uint64_t remap_handle = 0;
+        if (ranges != nullptr) {
+            guard.handle = kfx_wgpu_draw_resource_create(m_context, ranges->bytes, ranges->length,
+                ranges->width, ranges->height, ranges->pitch, m_error.data(), m_error.size());
+            if (guard.handle == 0) return Fail(nullptr);
+            m_counts.resource_snapshot_bytes += ranges->length;
+            remap_handle = TableResource(*remap, KFX_WGPU_DRAW_KEY_SPRITE_REMAP, m_remap_tables,
+                m_remap_memos, 16);
+            if (remap_handle == 0) return Fail(nullptr);
+        }
         if (table != nullptr) {
-            table_handle = TableResource(*table, 16);
+            table_handle = TableResource(*table, KFX_WGPU_DRAW_KEY_NATIVE_TABLE, m_native_tables,
+                m_table_memos, 16);
         }
         const bool resources_ready = table == nullptr || table_handle != 0;
         owned.source = command.kind == KFX_WGPU_DRAW_TRANSITION ? command.source : source_handle;
         owned.table = table_handle;
+        if (ranges != nullptr) {
+            owned.start_low = static_cast<uint32_t>(guard.handle);
+            owned.start_high = static_cast<uint32_t>(guard.handle >> 32);
+            owned.step_low = static_cast<uint32_t>(remap_handle);
+            owned.step_high = static_cast<uint32_t>(remap_handle >> 32);
+        }
         bool success = false;
         if (resources_ready) {
             AppendCommand(owned, guard.Take());
@@ -1267,4 +1323,6 @@ extern "C" void kfx_wgpu_native_invalidate_frame(void) {}
 extern "C" void kfx_wgpu_terrain_boundary(int) {}
 extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
     const KfxWgpuNativeResource*, const KfxWgpuNativeResource*, KfxWgpuNativeOracle, void*) { return 0; }
+extern "C" int kfx_wgpu_native_draw_sprite(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
+    const KfxWgpuSpriteAssets*, KfxWgpuNativeOracle, void*) { return 0; }
 #endif

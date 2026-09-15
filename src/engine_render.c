@@ -70,6 +70,7 @@
 #include "vidmode.h"
 
 #include "performance_capture.h"
+#include "kfx/renderer/GpolyCapture.h"
 #include "post_inc.h"
 
 #ifdef __cplusplus
@@ -7824,6 +7825,7 @@ static long load_single_frame(TbSpriteData *data_ptr, unsigned short kspr_idx)
     LbFileRead(jty_file_handle, *data_ptr, nlength);
 
     keepsprite[kspr_idx] = data_ptr;
+    kfx_render_sprites_changed();
     return 1;
 }
 
@@ -7895,6 +7897,9 @@ static void draw_keepersprite(long x, long y, const struct KeeperSprite * kspr, 
         kspr->SWidth,
         clipped_height,
         kspr->SWidth,
+        /* The heap slot, not the frame bytes: reloading a frame moves the bytes but
+           keeps the slot, and the reload bumps the sprite generation. */
+        sprite_data_ptr,
     };
     if ( EngineSpriteDrawUsingAlpha ) {
         DrawAlphaSpriteUsingScalingData(x, y, &buffer);

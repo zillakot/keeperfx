@@ -37,6 +37,7 @@
 #include <minizip/unzip.h>
 #include "post_inc.h"
 #include "bflib_sprite.h"
+#include "kfx/renderer/GpolyCapture.h"
 
 // Performance tests
 // #define OUTER
@@ -469,6 +470,7 @@ void init_custom_campaign_sprites(const char *dir_path, const char *dir_desc)
 void init_custom_sprites(LevelNumber lvnum)
 {
     SYNCDBG(8, "Starting");
+    kfx_render_sprites_changed();
     free_spritesheet(&custom_sprites);
     custom_sprites = create_spritesheet();
     memset(required_sprite_zip_checksums, 0, sizeof(required_sprite_zip_checksums));

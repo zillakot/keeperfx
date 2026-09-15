@@ -5,18 +5,76 @@ pub(super) fn ordered(command: &Command) -> bool {
     command.kind == SPRITE && command.source_x & 8 != 0
 }
 
+/// The range and remap resource handles a split sprite carries in its accumulator
+/// words, which no sprite kernel reads.
+pub(super) fn handles(c: &Command) -> (u64, u64) {
+    (
+        u64::from(c.start_high) << 32 | u64::from(c.start_low),
+        u64::from(c.step_high) << 32 | u64::from(c.step_low),
+    )
+}
+
+/// The three parts of a sprite asset: interned artwork, per-call scaling ranges and a
+/// 256-byte remap. An emitter that cannot name its artwork submits one resource holding
+/// the three in that order and no handles, and they are sliced back out of it.
+pub(super) struct Parts<'a> {
+    pub artwork: &'a [u8],
+    pub ranges: &'a [u8],
+    pub remap: &'a [u8],
+    pub split: bool,
+}
+
+pub(super) fn parts<'a>(c: &Command, resources: &'a HashMap<u64, Resource>) -> Result<Parts<'a>> {
+    let source = resources.get(&c.source).context("unknown source version")?;
+    let (w, h) = (c.source_width as usize, c.source_height as usize);
+    ensure!(
+        w > 0 && h > 0 && w <= 8192 && h <= 8192,
+        "invalid sprite dimensions"
+    );
+    let (artwork_len, ranges_len) = (2 * w * h, 8 * (w + h));
+    let (ranges_id, remap_id) = handles(c);
+    if ranges_id == 0 && remap_id == 0 {
+        ensure!(
+            source.bytes.len() == artwork_len + ranges_len + 256,
+            "invalid sprite asset length"
+        );
+        let (artwork, rest) = source.bytes.split_at(artwork_len);
+        let (ranges, remap) = rest.split_at(ranges_len);
+        return Ok(Parts {
+            artwork,
+            ranges,
+            remap,
+            split: false,
+        });
+    }
+    let ranges = resources
+        .get(&ranges_id)
+        .context("unknown sprite range version")?;
+    let remap = resources
+        .get(&remap_id)
+        .context("unknown sprite remap version")?;
+    ensure!(
+        source.bytes.len() == artwork_len
+            && ranges.bytes.len() == ranges_len
+            && remap.bytes.len() == 256,
+        "invalid sprite asset length"
+    );
+    Ok(Parts {
+        artwork: &source.bytes,
+        ranges: &ranges.bytes,
+        remap: &remap.bytes,
+        split: true,
+    })
+}
+
 /// Validates the sprite asset and returns the half-open destination box a *raster*
 /// sprite can write inside, in view space: the union of the per-call axis ranges, which
 /// this function proves contiguous. Outside it `sprite_axis` returns `count`,
 /// `sprite_sample` returns the transparent index and `draw.wgsl` skips the pixel. An
 /// ordered sprite writes through its own kernel and takes `write_rect` instead.
-pub(super) fn validate(command: &Command, source: &Resource) -> Result<[i64; 4]> {
+pub(super) fn validate(command: &Command, parts: &Parts) -> Result<[i64; 4]> {
     let w = command.source_width as usize;
     let h = command.source_height as usize;
-    ensure!(
-        w > 0 && h > 0 && w <= 8192 && h <= 8192,
-        "invalid sprite dimensions"
-    );
     ensure!(
         command.source_x <= 15
             && command.source_y <= if ordered(command) { 3 } else { 0 }
@@ -24,12 +82,7 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<[i64; 4]>
             && (!ordered(command) || (command.source_x & 1 != 0 && command.blend == 0)),
         "invalid sprite options"
     );
-    let axis = 2 * w * h;
-    ensure!(
-        source.bytes.len() == axis + 8 * (w + h) + 256,
-        "invalid sprite asset length"
-    );
-    for row in source.bytes[..axis].chunks_exact(w * 2) {
+    for row in parts.artwork.chunks_exact(w * 2) {
         let mut in_run = false;
         for pixel in row.as_chunks::<2>().0 {
             ensure!(pixel[1] <= 2, "invalid sprite coverage");
@@ -41,12 +94,12 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<[i64; 4]>
         ensure!(!in_run, "unterminated sprite row");
     }
     let mut span = [0i64; 4];
-    for (slot, (offset, count)) in [(axis, w), (axis + 8 * w, h)].into_iter().enumerate() {
+    for (slot, (offset, count)) in [(0, w), (8 * w, h)].into_iter().enumerate() {
         let mut previous = None;
         for i in 0..count {
             let index = offset + 8 * i;
-            let start = u32::from_le_bytes(source.bytes[index..index + 4].try_into().unwrap());
-            let length = u32::from_le_bytes(source.bytes[index + 4..index + 8].try_into().unwrap());
+            let start = u32::from_le_bytes(parts.ranges[index..index + 4].try_into().unwrap());
+            let length = u32::from_le_bytes(parts.ranges[index + 4..index + 8].try_into().unwrap());
             ensure!(
                 start <= 16384 && length <= 16384 && start + length <= 16384,
                 "invalid sprite scaling range"
@@ -65,30 +118,29 @@ pub(super) fn validate(command: &Command, source: &Resource) -> Result<[i64; 4]>
     Ok(span)
 }
 
-fn range(source: &Resource, offset: usize) -> (i64, i64) {
-    let start = u32::from_le_bytes(source.bytes[offset..offset + 4].try_into().unwrap());
-    let count = u32::from_le_bytes(source.bytes[offset + 4..offset + 8].try_into().unwrap());
+fn range(ranges: &[u8], offset: usize) -> (i64, i64) {
+    let start = u32::from_le_bytes(ranges[offset..offset + 4].try_into().unwrap());
+    let count = u32::from_le_bytes(ranges[offset + 4..offset + 8].try_into().unwrap());
     (i64::from(start), i64::from(count))
 }
 
-fn validate_target(c: &Command, source: &Resource, width: u32, height: u32) -> Result<()> {
+fn validate_target(c: &Command, parts: &Parts, width: u32, height: u32) -> Result<()> {
     ensure!(
         c.x == 0 && c.y == 0 && c.width == width && c.height == height,
         "ordered sprite requires full target bounds"
     );
     let w = c.source_width as usize;
     let h = c.source_height as usize;
-    let axis = 2 * w * h;
     for (offset, count, start, length, limit) in [
-        (axis, w, c.clip_x, c.clip_width, width),
-        (axis + w * 8, h, c.clip_y, c.clip_height, height),
+        (0, w, c.clip_x, c.clip_width, width),
+        (w * 8, h, c.clip_y, c.clip_height, height),
     ] {
         ensure!(
             start >= 0 && i64::from(start) + i64::from(length) <= i64::from(limit),
             "ordered sprite clip outside target"
         );
         for i in 0..count {
-            let (at, n) = range(source, offset + 8 * i);
+            let (at, n) = range(parts.ranges, offset + 8 * i);
             ensure!(
                 at >= i64::from(start) && at + n <= i64::from(start) + i64::from(length),
                 "ordered sprite range outside clip"
@@ -97,13 +149,13 @@ fn validate_target(c: &Command, source: &Resource, width: u32, height: u32) -> R
     }
     for sy in 0..h {
         let ay = if c.source_x & 2 != 0 { h - 1 - sy } else { sy };
-        let (y, n) = range(source, axis + (w + ay) * 8);
+        let (y, n) = range(parts.ranges, (w + ay) * 8);
         if n <= 1 || y != 0 {
             continue;
         }
         for sx in 0..w {
-            if source.bytes[2 * (sy * w + sx) + 1] == 2 {
-                let (x, _) = range(source, axis + (w - 1 - sx) * 8);
+            if parts.artwork[2 * (sy * w + sx) + 1] == 2 {
+                let (x, _) = range(parts.ranges, (w - 1 - sx) * 8);
                 ensure!(x > 0, "ordered sprite row copy outside target");
             }
         }
@@ -126,19 +178,18 @@ fn validate_target(c: &Command, source: &Resource, width: u32, height: u32) -> R
 /// still writes: with `xcount == 0` the run collapses onto `xstart - 1` and each row
 /// copy carries that one pixel down, so an empty x span keeps the left column and only
 /// an empty y span, which skips every row, makes the rectangle empty.
-pub(super) fn write_rect(c: &Command, source: &Resource, width: u32) -> [i64; 4] {
+pub(super) fn write_rect(c: &Command, parts: &Parts, width: u32) -> [i64; 4] {
     let (w, h) = (c.source_width as usize, c.source_height as usize);
-    let axis = 2 * w * h;
-    if w == 0 || h == 0 || source.bytes.len() < axis + 8 * (w + h) {
+    if w == 0 || h == 0 || parts.ranges.len() < 8 * (w + h) {
         return [0; 4];
     }
     let span = |offset: usize, count: usize| {
-        let (start, _) = range(source, offset);
-        let (last, length) = range(source, offset + 8 * (count - 1));
+        let (start, _) = range(parts.ranges, offset);
+        let (last, length) = range(parts.ranges, offset + 8 * (count - 1));
         (start, last + length)
     };
-    let (x0, x1) = span(axis, w);
-    let (y0, y1) = span(axis + 8 * w, h);
+    let (x0, x1) = span(0, w);
+    let (y0, y1) = span(8 * w, h);
     let mut rect = [
         x0.max(i64::from(c.clip_x)),
         y0.max(i64::from(c.clip_y)),
@@ -242,7 +293,7 @@ impl DrawRenderer {
         )?;
         packer.finish();
         for c in commands.iter().filter(|c| ordered(c)) {
-            validate_target(c, &self.resources[&c.source], width, height)?;
+            validate_target(c, &parts(c, &self.resources)?, width, height)?;
         }
         // A raster command between two ordered sprites orders them both, so a run of
         // consecutive ordered sprites is the largest set layering may reorder within.
@@ -289,10 +340,10 @@ impl DrawRenderer {
             self.box_policy,
         )?;
         let assets = packer.finish();
-        let rects: Vec<_> = run
+        let rects = run
             .iter()
-            .map(|c| write_rect(c, &self.resources[&c.source], target.width))
-            .collect();
+            .map(|c| Ok(write_rect(c, &parts(c, &self.resources)?, target.width)))
+            .collect::<Result<Vec<_>>>()?;
         let layers = layers(&rects)?;
         ensure!(
             layers.iter().map(Vec::len).max().unwrap_or(0) as u32
@@ -405,40 +456,94 @@ mod tests {
         u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())
     }
 
-    #[test]
-    fn rejects_malformed_sprite_assets() {
-        let command = Command {
-            kind: SPRITE,
-            source_width: 1,
-            source_height: 1,
-            ..Default::default()
-        };
-        let mut resource = Resource {
+    fn asset(bytes: Vec<u8>) -> Resource {
+        Resource {
             cursor: false,
             width: 1,
             height: 1,
             pitch: 1,
-            bytes: vec![0; 274],
+            bytes,
             key: None,
+        }
+    }
+
+    /// The combined layout, as an emitter with no name for its artwork submits it.
+    fn parts_of<'a>(c: &Command, resource: &'a Resource) -> Parts<'a> {
+        let (w, h) = (c.source_width as usize, c.source_height as usize);
+        let (artwork, rest) = resource.bytes.split_at(2 * w * h);
+        let (ranges, remap) = rest.split_at(8 * (w + h));
+        Parts {
+            artwork,
+            ranges,
+            remap,
+            split: false,
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_sprite_assets() {
+        let command = Command {
+            kind: SPRITE,
+            source: 1,
+            source_width: 1,
+            source_height: 1,
+            ..Default::default()
         };
-        validate(&command, &resource).unwrap();
+        let mut resource = asset(vec![0; 274]);
+        validate(&command, &parts_of(&command, &resource)).unwrap();
         resource.bytes[1] = 3;
-        assert!(validate(&command, &resource).is_err());
+        assert!(validate(&command, &parts_of(&command, &resource)).is_err());
         resource.bytes[1] = 1;
         resource.bytes[2..6].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(validate(&command, &resource).is_err());
-        resource.bytes.clear();
-        assert!(validate(&command, &resource).is_err());
+        assert!(validate(&command, &parts_of(&command, &resource)).is_err());
+    }
+
+    /// A sprite names its three parts or none of them, and each part's length is fixed
+    /// by the decoded size either way.
+    #[test]
+    fn parts_reject_a_wrong_length_or_a_half_named_asset() {
+        let mut command = Command {
+            kind: SPRITE,
+            source: 1,
+            source_width: 2,
+            source_height: 3,
+            ..Default::default()
+        };
+        let mut resources = HashMap::from([
+            (1u64, asset(vec![0; 12])),
+            (2u64, asset(vec![0; 40])),
+            (3u64, asset(vec![0; 256])),
+        ]);
+        let combined = |resources: &mut HashMap<u64, Resource>| {
+            resources.insert(1, asset(vec![0; 12 + 40 + 256]));
+        };
+        combined(&mut resources);
+        assert!(!parts(&command, &resources).unwrap().split);
+        resources.get_mut(&1).unwrap().bytes.push(0);
+        assert!(parts(&command, &resources).is_err());
+        combined(&mut resources);
         assert!(
-            validate(
+            parts(
                 &Command {
                     source_width: u32::MAX,
                     ..command
                 },
-                &resource
+                &resources
             )
             .is_err()
         );
+        resources.insert(1, asset(vec![0; 12]));
+        (command.start_low, command.step_low) = (2, 3);
+        let split = parts(&command, &resources).unwrap();
+        assert!(split.split && split.artwork.len() == 12 && split.ranges.len() == 40);
+        assert_eq!(split.remap.len(), 256);
+        command.step_low = 0;
+        assert!(parts(&command, &resources).is_err(), "no remap resource");
+        command.step_low = 4;
+        assert!(parts(&command, &resources).is_err(), "unknown remap");
+        command.step_low = 3;
+        resources.get_mut(&2).unwrap().bytes.pop();
+        assert!(parts(&command, &resources).is_err());
     }
 
     #[test]
@@ -454,44 +559,37 @@ mod tests {
             source_height: 1,
             ..Default::default()
         };
-        let mut resource = Resource {
-            cursor: false,
-            width: 1,
-            height: 1,
-            pitch: 1,
-            bytes: vec![0; 284],
-            key: None,
-        };
+        let mut resource = asset(vec![0; 284]);
         resource.bytes[1] = 2;
         resource.bytes[3] = 2;
         for (offset, value) in [(4, 0u32), (8, 4), (12, 4), (16, 4), (20, 1), (24, 3)] {
             resource.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
-        validate(&command, &resource).unwrap();
-        validate_target(&command, &resource, 8, 8).unwrap();
+        validate(&command, &parts_of(&command, &resource)).unwrap();
+        validate_target(&command, &parts_of(&command, &resource), 8, 8).unwrap();
         resource.bytes[3] = 1;
-        assert!(validate(&command, &resource).is_err());
+        assert!(validate(&command, &parts_of(&command, &resource)).is_err());
         resource.bytes[3] = 0;
         resource.bytes[1] = 1;
-        assert!(validate(&command, &resource).is_err());
+        assert!(validate(&command, &parts_of(&command, &resource)).is_err());
         resource.bytes[1] = 2;
         resource.bytes[3] = 2;
         resource.bytes[20..24].copy_from_slice(&0u32.to_le_bytes());
-        assert!(validate_target(&command, &resource, 8, 8).is_err());
+        assert!(validate_target(&command, &parts_of(&command, &resource), 8, 8).is_err());
         command.source_x = 11;
-        assert!(validate_target(&command, &resource, 8, 8).is_err());
+        assert!(validate_target(&command, &parts_of(&command, &resource), 8, 8).is_err());
         resource.bytes[24..28].copy_from_slice(&1u32.to_le_bytes());
-        validate_target(&command, &resource, 8, 8).unwrap();
+        validate_target(&command, &parts_of(&command, &resource), 8, 8).unwrap();
         command.source_y = 3;
-        validate(&command, &resource).unwrap();
+        validate(&command, &parts_of(&command, &resource)).unwrap();
         command.source_y = 4;
-        assert!(validate(&command, &resource).is_err());
+        assert!(validate(&command, &parts_of(&command, &resource)).is_err());
         command.source_y = 0;
         command.source_x = 8;
-        assert!(validate(&command, &resource).is_err());
+        assert!(validate(&command, &parts_of(&command, &resource)).is_err());
         command.source_x = 9;
         command.blend = 1;
-        assert!(validate(&command, &resource).is_err());
+        assert!(validate(&command, &parts_of(&command, &resource)).is_err());
     }
 
     /// One ordered sprite whose single run spans the clip rectangle and replicates it
@@ -510,14 +608,7 @@ mod tests {
             source_height: 1,
             ..Default::default()
         };
-        let mut resource = Resource {
-            cursor: false,
-            width: 1,
-            height: 1,
-            pitch: 1,
-            bytes: vec![0; 284],
-            key: None,
-        };
+        let mut resource = asset(vec![0; 284]);
         resource.bytes[1] = 1;
         resource.bytes[3] = 2;
         let split = clip_width / 2;
@@ -531,8 +622,8 @@ mod tests {
         ] {
             resource.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
-        validate(&command, &resource).unwrap();
-        validate_target(&command, &resource, target, target).unwrap();
+        validate(&command, &parts_of(&command, &resource)).unwrap();
+        validate_target(&command, &parts_of(&command, &resource), target, target).unwrap();
         (command, resource)
     }
 
@@ -543,8 +634,8 @@ mod tests {
         for (offset, value) in [(4, origin as u32), (8, 0), (12, origin as u32), (16, 0)] {
             resource.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
-        validate(&command, &resource).unwrap();
-        validate_target(&command, &resource, target, target).unwrap();
+        validate(&command, &parts_of(&command, &resource)).unwrap();
+        validate_target(&command, &parts_of(&command, &resource), target, target).unwrap();
         (command, resource)
     }
 
@@ -553,12 +644,12 @@ mod tests {
     fn touched(c: &Command, source: &Resource, width: i64) -> Vec<i64> {
         let w = c.source_width as usize;
         let h = c.source_height as usize;
-        let axis = 2 * w * h;
+        let parts = parts_of(c, source);
         let stride = if c.source_x & 2 != 0 { -width } else { width };
         let mut hits = Vec::new();
         for sy in 0..h {
             let ay = if stride < 0 { h - 1 - sy } else { sy };
-            let (ystart, ycount) = range(source, axis + (w + ay) * 8);
+            let (ystart, ycount) = range(parts.ranges, (w + ay) * 8);
             if ycount == 0 {
                 continue;
             }
@@ -569,11 +660,11 @@ mod tests {
             };
             let (mut run_right, mut in_run) = (0, false);
             for sx in 0..w {
-                let coverage = source.bytes[2 * (sy * w + sx) + 1];
+                let coverage = parts.artwork[2 * (sy * w + sx) + 1];
                 if coverage == 0 {
                     continue;
                 }
-                let (xstart, xcount) = range(source, axis + (w - 1 - sx) * 8);
+                let (xstart, xcount) = range(parts.ranges, (w - 1 - sx) * 8);
                 let right = y * width + xstart + xcount - 1;
                 if !in_run {
                     run_right = right;
@@ -596,7 +687,7 @@ mod tests {
     }
 
     fn covers(command: &Command, resource: &Resource, width: i64) -> [i64; 4] {
-        let rect = write_rect(command, resource, width as u32);
+        let rect = write_rect(command, &parts_of(command, resource), width as u32);
         for address in touched(command, resource, width) {
             let (x, y) = (address % width, address / width);
             assert!(
@@ -650,9 +741,9 @@ mod tests {
         let (right, right_asset) = layered(4, 6, target);
         let (left, left_asset) = layered(1, 3, target);
         let rects = [
-            write_rect(&right, &right_asset, target),
-            write_rect(&left, &left_asset, target),
-            write_rect(&right, &right_asset, target),
+            write_rect(&right, &parts_of(&right, &right_asset), target),
+            write_rect(&left, &parts_of(&left, &left_asset), target),
+            write_rect(&right, &parts_of(&right, &right_asset), target),
         ];
         // The clip rectangles 4..10 and 1..4 do not overlap; the write rectangles do,
         // because the left sprite's row copy reaches column 0 and the right one's
@@ -661,8 +752,8 @@ mod tests {
         assert_eq!(layers(&rects).unwrap(), vec![vec![0], vec![1], vec![2]]);
         let (apart, apart_asset) = layered(5, 5, target);
         let pair = [
-            write_rect(&left, &left_asset, target),
-            write_rect(&apart, &apart_asset, target),
+            write_rect(&left, &parts_of(&left, &left_asset), target),
+            write_rect(&apart, &parts_of(&apart, &apart_asset), target),
         ];
         assert!(pair[0][2] == pair[1][0], "the rectangles touch at an edge");
         assert_eq!(layers(&pair).unwrap(), vec![vec![0, 1]]);
@@ -670,8 +761,8 @@ mod tests {
         band_asset.bytes[20..24].copy_from_slice(&9u32.to_le_bytes());
         assert_eq!(
             layers(&[
-                write_rect(&left, &left_asset, target),
-                write_rect(&band, &band_asset, target)
+                write_rect(&left, &parts_of(&left, &left_asset), target),
+                write_rect(&band, &parts_of(&band, &band_asset), target)
             ])
             .unwrap(),
             vec![vec![0, 1]],
@@ -684,8 +775,8 @@ mod tests {
         let (touching, touching_asset) = layered(2, 3, 16);
         let (gone, gone_asset) = scrolled_off(6, 16);
         let rects = [
-            write_rect(&touching, &touching_asset, 16),
-            write_rect(&gone, &gone_asset, 16),
+            write_rect(&touching, &parts_of(&touching, &touching_asset), 16),
+            write_rect(&gone, &parts_of(&gone, &gone_asset), 16),
         ];
         assert_eq!(
             rects,
@@ -695,8 +786,8 @@ mod tests {
         assert_eq!(layers(&rects).unwrap(), vec![vec![0, 1]]);
         let (wide, wide_asset) = layered(2, 4, 16);
         let overlapping = [
-            write_rect(&wide, &wide_asset, 16),
-            write_rect(&gone, &gone_asset, 16),
+            write_rect(&wide, &parts_of(&wide, &wide_asset), 16),
+            write_rect(&gone, &parts_of(&gone, &gone_asset), 16),
         ];
         assert_eq!(layers(&overlapping).unwrap(), vec![vec![0], vec![1]]);
     }
@@ -706,12 +797,15 @@ mod tests {
         let (clipped, mut asset) = layered(4, 6, 16);
         // An empty row band is the only empty case: the kernel skips every row.
         asset.bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
-        assert_eq!(write_rect(&clipped, &asset, 16), [0; 4]);
+        assert_eq!(
+            write_rect(&clipped, &parts_of(&clipped, &asset), 16),
+            [0; 4]
+        );
         let (visible, visible_asset) = layered(4, 6, 16);
         assert_eq!(
             layers(&[
-                write_rect(&clipped, &asset, 16),
-                write_rect(&visible, &visible_asset, 16)
+                write_rect(&clipped, &parts_of(&clipped, &asset), 16),
+                write_rect(&visible, &parts_of(&visible, &visible_asset), 16)
             ])
             .unwrap(),
             vec![vec![0, 1]]
@@ -735,7 +829,7 @@ mod tests {
         let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
         let mut header = [0u8; 20];
         file.read_exact(&mut header).unwrap();
-        assert_eq!(word(&header, 0), 0x3353464b);
+        assert_eq!(word(&header, 0), 0x3453464b);
         assert_eq!(word(&header, 4), 112);
         let count = word(&header, 1);
         let width = word(&header, 2);
@@ -759,12 +853,17 @@ mod tests {
         for fixture in 0..count {
             let mut bytes = [0; 112];
             file.read_exact(&mut bytes).unwrap();
-            let mut length = [0; 4];
-            file.read_exact(&mut length).unwrap();
-            let mut source = vec![0; u32::from_le_bytes(length) as usize];
-            file.read_exact(&mut source).unwrap();
-            let source_handle = drawing.create_resource(&source, 1, 1, 1).unwrap();
-            source.fill(19);
+            // Artwork, per-call scaling ranges and remap, each length-prefixed.
+            let mut handles = [0u64; 3];
+            for handle in &mut handles {
+                let mut length = [0; 4];
+                file.read_exact(&mut length).unwrap();
+                let mut part = vec![0; u32::from_le_bytes(length) as usize];
+                file.read_exact(&mut part).unwrap();
+                *handle = drawing.create_resource(&part, 1, 1, 1).unwrap();
+                part.fill(19);
+            }
+            let [source_handle, ranges_handle, remap_handle] = handles;
             let mut table_handle = 0;
             if word(&bytes, 2) != 0 {
                 let mut table = vec![0; 65536];
@@ -792,13 +891,23 @@ mod tests {
                 source_y: word(&bytes, 17),
                 source_width: word(&bytes, 18),
                 source_height: word(&bytes, 19),
-                start_low: word(&bytes, 20),
-                start_high: word(&bytes, 21),
-                step_low: word(&bytes, 22),
-                step_high: word(&bytes, 23),
+                start_low: ranges_handle as u32,
+                start_high: (ranges_handle >> 32) as u32,
+                step_low: remap_handle as u32,
+                step_high: (remap_handle >> 32) as u32,
                 transparent: word(&bytes, 24),
                 ..Default::default()
             };
+            assert_eq!(
+                [
+                    word(&bytes, 20),
+                    word(&bytes, 21),
+                    word(&bytes, 22),
+                    word(&bytes, 23)
+                ],
+                [0; 4],
+                "a sprite carries nothing of its own in the accumulator"
+            );
             drawing
                 .submit(
                     target,
@@ -816,7 +925,9 @@ mod tests {
                     ],
                 )
                 .unwrap();
-            drawing.release_resource(source_handle).unwrap();
+            for handle in handles {
+                drawing.release_resource(handle).unwrap();
+            }
             if table_handle != 0 {
                 drawing.release_resource(table_handle).unwrap();
             }

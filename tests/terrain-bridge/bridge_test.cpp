@@ -220,6 +220,16 @@ extern "C" int32_t kfx_wgpu_draw_readback(void* handle, uint64_t id, uint8_t* by
 }
 #endif
 
+/* What the drawing context does with a sprite: write the artwork's first byte at the
+   command's origin. Verification compares this against the readback, so a sprite served
+   the wrong artwork or the wrong position fails the batch. */
+struct SpriteVerify { uint8_t value; uint32_t x, y; };
+static void sprite_verify_oracle(uint8_t* pixels, uint32_t pitch, void* context)
+{
+    const auto* expected = static_cast<const SpriteVerify*>(context);
+    pixels[expected->y * pitch + expected->x] = expected->value;
+}
+
 static void oracle(std::vector<uint8_t>& target, uint32_t pitch, const KfxGpolySpan& span,
     const std::vector<uint8_t>& texture, const std::vector<uint8_t>& fade)
 {
@@ -413,7 +423,7 @@ int main()
         std::vector<uint8_t> source_pixels(200, 17);
         KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 20, 10, 20, nullptr, 0, 0};
         KfxWgpuDrawCommand image = {};
-        image.abi_version = 1;
+        image.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         image.kind = KFX_WGPU_DRAW_IMAGE;
         image.width = image.clip_width = image.source_width = 20;
         image.height = image.clip_height = image.source_height = 10;
@@ -450,7 +460,7 @@ int main()
         std::vector<uint8_t> source_pixels(12 * 6, 17);
         KfxWgpuNativeResource source = {source_pixels.data(), source_pixels.size(), 12, 6, 12, nullptr, 0, 0};
         KfxWgpuDrawCommand image = {};
-        image.abi_version = 1;
+        image.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         image.kind = KFX_WGPU_DRAW_IMAGE;
         image.width = image.clip_width = image.source_width = 12;
         image.height = image.clip_height = image.source_height = 6;
@@ -479,7 +489,7 @@ int main()
         std::vector<uint8_t> clear_pixels(200, 144);
         KfxWgpuNativeResource clear_reference = {clear_pixels.data(), clear_pixels.size(), 20, 10, 20, nullptr, 0, 0};
         KfxWgpuDrawCommand clear = {};
-        clear.abi_version = 1;
+        clear.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         clear.kind = KFX_WGPU_DRAW_CLEAR;
         clear.colour = 144;
         clear.width = clear.clip_width = 20;
@@ -560,7 +570,7 @@ int main()
         bridge.Flush();
         KfxWgpuNativeResource alias_source = {resident_pixels.data(), 236, 20, 10, 24, nullptr, 0, 0};
         KfxWgpuDrawCommand image = {};
-        image.abi_version = 1;
+        image.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         image.kind = KFX_WGPU_DRAW_IMAGE;
         image.width = image.clip_width = image.source_width = 20;
         image.height = image.clip_height = image.source_height = 10;
@@ -632,7 +642,7 @@ int main()
         std::vector<uint8_t> triangle_pixels(20 * 10, 106);
         KfxGpolyTarget triangle_target = {triangle_pixels.data(), 20, 10, 20};
         KfxWgpuTriangle triangle = {};
-        triangle.abi_version = 1;
+        triangle.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         WgpuTerrainBridge bridge(0, false, true);
         mock_triangles = true;
         mismatch_triangles = mismatch;
@@ -810,7 +820,7 @@ int main()
                     assert(kfx_gpoly_sink(kfx_gpoly_sink_context, &frame, &a, texture.data(), fade.data()) == 1);
                 } else {
                     KfxWgpuTriangle triangle = {};
-                    triangle.abi_version = 1;
+                    triangle.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
                     assert(kfx_gpoly_triangle_sink(kfx_gpoly_triangle_context, &frame,
                         &triangle, texture.data(), fade.data(), triangle_oracle) == 1);
                 }
@@ -1026,6 +1036,100 @@ int main()
             assert(keyed_creates == created + 1 && live_resources == live + 3);
             kfx_wgpu_terrain_boundary(0);
             assert(live_resources == live + 1);
+            assert(bridge.GetCounters().failures == 0);
+        }
+    }
+    {
+        /* Sprite artwork is named by the emitter, so the same name serves one handle
+           until the generation moves. The fake submit writes the artwork's first byte,
+           which is what tells a stale upload from a fresh one. */
+        std::vector<uint8_t> sprite_pixels(24 * 10, 0x11);
+        KfxGpolyTarget sprite_target = {sprite_pixels.data(), 20, 10, 24};
+        std::vector<uint8_t> artwork(2 * 4 * 3), ranges(8 * (4 + 3)), remap(256);
+        for (size_t i = 0; i < remap.size(); ++i) remap[i] = i;
+        for (size_t i = 0; i < 4 * 3u; ++i) { artwork[2 * i] = 0x40 + i; artwork[2 * i + 1] = 1; }
+        KfxWgpuNativeResource art = {artwork.data(), artwork.size(), 1, 1, 1, nullptr, 0, 0};
+        KfxWgpuNativeResource rng = {ranges.data(), ranges.size(), 1, 1, 1, nullptr, 0, 0};
+        KfxWgpuNativeResource map = {remap.data(), remap.size(), 1, 1, 1, nullptr, 0, 0};
+        KfxWgpuDrawCommand command = {};
+        command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+        command.kind = KFX_WGPU_DRAW_SPRITE;
+        command.x = 2;
+        command.y = 3;
+        command.width = command.clip_width = 20;
+        command.height = command.clip_height = 10;
+        command.source_width = 4;
+        command.source_height = 3;
+        command.transparent = KFX_WGPU_DRAW_OPAQUE;
+        // One name reused across a whole scene takes one handle and one upload.
+        {
+            WgpuTerrainBridge bridge(0, false, false);
+            const uint64_t created = keyed_creates;
+            const uint64_t snapshot = bridge.GetCounters().resource_snapshot_bytes;
+            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, artwork.data(), 1};
+            for (unsigned i = 0; i < 5; ++i)
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets, nullptr, nullptr) == 1);
+            assert(keyed_creates == created + 1);
+            assert(bridge.GetCounters().resource_snapshot_bytes ==
+                snapshot + artwork.size() + 5 * ranges.size() + remap.size());
+            assert(sprite_pixels[3 * 24 + 2] == artwork[0]);
+            // Rewriting the bytes behind a live name without a bump serves the upload the
+            // name already has; the bump is what makes the new artwork visible.
+            for (auto& value : artwork) value ^= 0x5a;
+            assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets, nullptr, nullptr) == 1);
+            assert(sprite_pixels[3 * 24 + 2] == (artwork[0] ^ 0x5a) && keyed_creates == created + 1);
+            assets.generation = 2;
+            assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets, nullptr, nullptr) == 1);
+            assert(sprite_pixels[3 * 24 + 2] == artwork[0] && keyed_creates == created + 2);
+        }
+        // An address reused by different artwork of the same size: only the generation
+        // separates them, and the superseded handle is released with the run.
+        {
+            WgpuTerrainBridge bridge(0, false, false);
+            const uint64_t created = keyed_creates, live = live_resources;
+            std::vector<uint8_t> reborn = artwork;
+            for (auto& value : reborn) value ^= 0x27;
+            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, artwork.data(), 7};
+            assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets, nullptr, nullptr) == 1);
+            assert(sprite_pixels[3 * 24 + 2] == artwork[0]);
+            art.bytes = reborn.data();
+            assets.generation = 8;
+            assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets, nullptr, nullptr) == 1);
+            assert(sprite_pixels[3 * 24 + 2] == reborn[0]);
+            // The live artwork and the interned remap; the superseded artwork is gone.
+            assert(keyed_creates == created + 2 && live_resources == live + 2);
+            art.bytes = artwork.data();
+        }
+        /* One name, two positions in one frame: the ranges carry the position and stay
+           per call, so verification against the CPU oracle must hold for both. */
+        {
+            WgpuTerrainBridge bridge(0, false, true);
+            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, artwork.data(), 11};
+            const std::pair<uint32_t, uint32_t> places[] = {{2, 3}, {9, 6}};
+            for (const auto& place : places) {
+                command.x = place.first;
+                command.y = place.second;
+                SpriteVerify expected = {artwork[0], place.first, place.second};
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets,
+                    sprite_verify_oracle, &expected) == 1);
+            }
+            command.x = 2;
+            command.y = 3;
+            assert(sprite_pixels[3 * 24 + 2] == artwork[0]);
+            assert(sprite_pixels[6 * 24 + 9] == artwork[0]);
+            assert(bridge.GetCounters().gpu_sprite_commands == 2);
+            assert(bridge.GetCounters().verification_cpu_commands == 2);
+            assert(bridge.GetCounters().failures == 0);
+        }
+        // No name, no residency: the artwork takes a per-call resource like the ranges.
+        {
+            WgpuTerrainBridge bridge(0, false, false);
+            const uint64_t created = keyed_creates, live = live_resources;
+            KfxWgpuSpriteAssets assets = {&art, &rng, &map, nullptr, nullptr, 0};
+            for (unsigned i = 0; i < 3; ++i)
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets, nullptr, nullptr) == 1);
+            // Only the remap is interned, by content: it carries no registered pointer.
+            assert(keyed_creates == created && live_resources == live + 1);
             assert(bridge.GetCounters().failures == 0);
         }
     }

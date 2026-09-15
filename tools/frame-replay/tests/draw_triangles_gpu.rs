@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use keeperfx_frame_replay::{
-    draw::{CLEAR, Command, DrawRenderer, TriangleCommand},
+    draw::{ABI_VERSION, CLEAR, Command, DrawRenderer, TriangleCommand},
     gpoly::Vertex,
 };
 
@@ -77,7 +77,7 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
             }
         }
         commands.push(TriangleCommand {
-            abi_version: 1,
+            abi_version: ABI_VERSION,
             reserved: 0,
             source,
             table: if triangle % 2 == 0 { table } else { table2 },
@@ -129,7 +129,7 @@ fn original_vertex_production_order_resources_and_rejection() -> Result<()> {
         },
     ];
     let valid = TriangleCommand {
-        abi_version: 1,
+        abi_version: ABI_VERSION,
         reserved: 0,
         source,
         table,
@@ -238,7 +238,7 @@ fn triangle_device_limit_rejection_preserves_target_and_device() -> Result<()> {
         let source = drawing.create_resource(&[0; 7968], 32, 32, 256)?;
         let table = drawing.create_resource(&[0; 16384], 256, 64, 256)?;
         let command = TriangleCommand {
-            abi_version: 1,
+            abi_version: ABI_VERSION,
             reserved: 0,
             source,
             table,

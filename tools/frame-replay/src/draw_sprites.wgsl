@@ -20,7 +20,7 @@ fn sprite_axis(offset: u32, count: u32, position: u32) -> u32 {
 fn sprite_sample(c: Command, pixel: vec2<u32>) -> u32 {
     let w = c.source.z;
     let h = c.source.w;
-    let axis = c.assets.x + 2u * w * h;
+    let axis = c.assets.w;
     var x = sprite_axis(axis, w, pixel.x);
     var y = sprite_axis(axis + w * 8u, h, pixel.y);
     if x == w || y == h { return 256u; }
@@ -30,7 +30,7 @@ fn sprite_sample(c: Command, pixel: vec2<u32>) -> u32 {
     let artwork = le16(index);
     if (artwork >> 8u) == 0u { return 256u; }
     if (c.source.x & 4u) != 0u { return c.operation.w; }
-    return byte(axis + (w + h) * 8u + (artwork & 255u));
+    return byte(c.options.y + (artwork & 255u));
 }
 
 fn sprite_copy_forward(source: i32, destination: i32, count: i32, alignment: u32) {
@@ -63,8 +63,8 @@ fn sprite_ordered(@builtin(workgroup_id) wid: vec3<u32>) {
     let c = commands[layer[wid.x]];
     let w = c.source.z;
     let h = c.source.w;
-    let axis = c.assets.x + 2u * w * h;
-    let remap = axis + (w + h) * 8u;
+    let axis = c.assets.w;
+    let remap = c.options.y;
     let stride = select(i32(parameters.x), -i32(parameters.x), (c.source.x & 2u) != 0u);
     for (var sy = 0u; sy < h; sy++) {
         let ay = select(sy, h - 1u - sy, stride < 0);

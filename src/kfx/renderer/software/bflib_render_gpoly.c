@@ -24,6 +24,7 @@
 #include "bflib_sprite.h"
 #include "bflib_vidraw.h"
 #include "kfx/renderer/GpolyCapture.h"
+#include "kfx/renderer/WgpuDraw.h"
 #include "post_inc.h"
 
 #ifdef __GNUC__
@@ -946,7 +947,7 @@ void draw_gpoly(struct PolyPoint* a, struct PolyPoint* b, struct PolyPoint* c)
     if (kfx_gpoly_triangle_sink && vec_mode == VM_QuadTextured) {
         const struct KfxGpolyTarget target = {vec_screen, vec_window_width,
             vec_window_height, vec_screen_width};
-        const struct KfxWgpuTriangle triangle = {1, 0, 0, 0, {
+        const struct KfxWgpuTriangle triangle = {KFX_WGPU_DRAW_ABI_VERSION, 0, 0, 0, {
             {(a->X >= -32768 && a->X <= 32767) ? a->X : 32768,
              (a->Y >= -32768 && a->Y <= 32767) ? a->Y : 32768, a->U, a->V, a->S},
             {(b->X >= -32768 && b->X <= 32767) ? b->X : 32768,

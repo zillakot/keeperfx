@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define KFX_WGPU_DRAW_ABI_VERSION 1u
+#define KFX_WGPU_DRAW_ABI_VERSION 2u
 #define KFX_WGPU_DRAW_CLEAR 0u
 #define KFX_WGPU_DRAW_RECT 1u
 #define KFX_WGPU_DRAW_IMAGE 2u
@@ -17,9 +17,14 @@ extern "C" {
 #define KFX_WGPU_DRAW_CIRCLE_FILLED 4u
 #define KFX_WGPU_DRAW_CIRCLE_OUTLINE 5u
 #define KFX_WGPU_DRAW_SPRITE 6u
-/* SPRITE source: index/coverage byte pairs, x then y little-endian u32
- * start/count pairs, and a 256-byte remap. source_width/height give decoded size;
- * source_x bits 0/1/2 select horizontal flip, vertical flip, and one-colour.
+/* SPRITE source: 2*w*h index/coverage byte pairs, the artwork alone. The per-call
+ * scaling ranges (x then y little-endian u32 start/count pairs) and the 256-byte
+ * remap are separate resources, whose handles a sprite carries in start_low/high and
+ * step_low/high; the accumulator is otherwise unread by a sprite kernel, and the
+ * packer zeroes those record words. An emitter with no name for its artwork may
+ * instead pass one resource holding artwork, ranges and remap in that order and leave
+ * both handles zero. source_width/height give decoded size; source_x bits 0/1/2 select
+ * horizontal flip, vertical flip, and one-colour.
  * Ordered sprite source_y records the native target base byte alignment modulo 4.
  * Bit 3 preserves solid-RL row-copy order; coverage 2 ends each positive RLE run.
  * Scaling ranges are target-relative; table uses the ordinary blend axes. */
@@ -172,6 +177,8 @@ uint64_t kfx_wgpu_draw_resource_create(void *drawing, const uint8_t *bytes, size
 #define KFX_WGPU_DRAW_KEY_TERRAIN_TILE 0u
 #define KFX_WGPU_DRAW_KEY_TERRAIN_FADE 1u
 #define KFX_WGPU_DRAW_KEY_NATIVE_TABLE 2u
+#define KFX_WGPU_DRAW_KEY_SPRITE_ARTWORK 3u
+#define KFX_WGPU_DRAW_KEY_SPRITE_REMAP 4u
 /* Creates or resolves the resource resident for (kind, key_hi, key_lo), so repeated
  * uses of one asset keep a single handle instead of a fresh handle per command.
  * A generation the key has not been seen with takes a new handle, because the bytes

@@ -59,7 +59,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wgpu::util::DeviceExt;
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 /// A debug bound on what one command buffer carries; a busy frame records ~114.
 const MAX_ENCODER_PASSES: u64 = 4096;
 pub const CLEAR: u32 = 0;
@@ -1541,6 +1541,9 @@ impl AssetPacker<'_> {
                         <= *limit / 4,
                     arena::OVERFLOW
                 );
+                // Four-aligned like an arena region, so every le16 and le32 the kernels
+                // take at an aligned offset stays inside one word in the packed format.
+                assets.resize(assets::aligned(assets.len()), 0);
                 let offset = assets.len() as u32;
                 let _scope = Scope::new(Phase::Upload);
                 let _copy = host::UploadTimer::new(host::UploadPart::Copy, length);
@@ -1792,6 +1795,10 @@ fn pack_records<'a>(
         let mut source_offset = 0;
         let mut table_offset = 0;
         let mut source_pitch = 0;
+        // Sprites address their scaling ranges and remap from their own record words,
+        // so the arena is free to hold the artwork under a handle of its own.
+        let mut ranges_offset = 0;
+        let mut remap_offset = 0;
         if matches!(
             c.kind,
             IMAGE
@@ -1853,11 +1860,28 @@ fn pack_records<'a>(
             } else if c.kind == TRIG {
                 tight = Some(trig::validate(c, source, width, height)?);
             } else if c.kind == SPRITE {
-                let box_of = sprites::validate(c, source)?;
+                let parts = sprites::parts(c, resources)?;
+                let box_of = sprites::validate(c, &parts)?;
                 tight = Some(match sprites::ordered(c) {
-                    true => sprites::write_rect(c, source, width),
+                    true => sprites::write_rect(c, &parts, width),
                     false => box_of,
                 });
+                let kind = arena_kinds::source_kind(c, source.cursor);
+                let (ranges_id, remap_id) = sprites::handles(c);
+                (ranges_offset, remap_offset) = if parts.split {
+                    (
+                        packer.offset(ranges_id, parts.ranges, kind)?,
+                        packer.offset(remap_id, parts.remap, kind)?,
+                    )
+                } else {
+                    let base = source_offset as usize;
+                    let remap = base + parts.artwork.len() + parts.ranges.len();
+                    (
+                        u32::try_from(base + parts.artwork.len())
+                            .context("sprite asset offset overflow")?,
+                        u32::try_from(remap).context("sprite asset offset overflow")?,
+                    )
+                };
             } else {
                 ensure!(
                     source.pitch == 256 && source.width >= 32 && source.height >= 32,
@@ -1902,10 +1926,13 @@ fn pack_records<'a>(
         words.extend([c.kind, c.blend, index, c.colour]);
         words.extend(view.rebase(rectangle));
         words.extend(view.clip(clip));
-        words.extend([source_offset, table_offset, source_pitch, 0]);
+        words.extend([source_offset, table_offset, source_pitch, ranges_offset]);
         words.extend([c.source_x, c.source_y, c.source_width, c.source_height]);
-        words.extend([c.start_low, c.start_high, c.step_low, c.step_high]);
-        words.extend([c.transparent, 0, 0, 0]);
+        match c.kind {
+            SPRITE => words.extend([0; 4]),
+            _ => words.extend([c.start_low, c.start_high, c.step_low, c.step_high]),
+        }
+        words.extend([c.transparent, remap_offset, 0, 0]);
     }
     Ok(words)
 }
@@ -2310,7 +2337,7 @@ mod tests {
         let resources = HashMap::new();
         for command in [
             Command {
-                abi_version: 2,
+                abi_version: ABI_VERSION + 1,
                 ..Default::default()
             },
             Command {

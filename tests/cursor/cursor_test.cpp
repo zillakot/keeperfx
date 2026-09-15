@@ -51,7 +51,7 @@ static uint64_t upload(const KfxGpolyTarget& t)
         t.width, t.height, t.pitch, error, sizeof(error));
     check(asset, "upload resource");
     KfxWgpuDrawCommand c = {};
-    c.abi_version = 1; c.kind = KFX_WGPU_DRAW_IMAGE;
+    c.abi_version = KFX_WGPU_DRAW_ABI_VERSION; c.kind = KFX_WGPU_DRAW_IMAGE;
     c.width = c.clip_width = c.source_width = t.width;
     c.height = c.clip_height = c.source_height = t.height;
     c.source = asset; c.transparent = 256;
@@ -168,7 +168,7 @@ static void refill(SDL_Surface* surface, unsigned seed)
         size_t(surface->pitch) * surface->h, surface->w, surface->h, surface->pitch, error, sizeof(error));
     check(asset, "tail repaint resource");
     KfxWgpuDrawCommand c = {};
-    c.abi_version = 1; c.kind = KFX_WGPU_DRAW_IMAGE;
+    c.abi_version = KFX_WGPU_DRAW_ABI_VERSION; c.kind = KFX_WGPU_DRAW_IMAGE;
     c.width = c.clip_width = c.source_width = surface->w;
     c.height = c.clip_height = c.source_height = surface->h;
     c.source = asset; c.transparent = 256;

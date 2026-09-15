@@ -28,6 +28,7 @@
 #include "front_simple.h"
 #include "engine_render.h"
 #include "sounds.h"
+#include "kfx/renderer/GpolyCapture.h"
 #include "post_inc.h"
 
 #ifdef __cplusplus
@@ -64,6 +65,7 @@ void reset_heap_manager(void)
 {
     long i;
     SYNCDBG(8,"Starting");
+    kfx_render_sprites_changed();
     LbFileClose(jty_file_handle);
     jty_file_handle = NULL;
     for (i=0; i < KEEPSPRITE_LENGTH; i++)

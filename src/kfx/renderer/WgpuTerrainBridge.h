@@ -31,6 +31,24 @@ void kfx_wgpu_native_snapshot_release(uint64_t snapshot);
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget* target,
     const struct KfxWgpuDrawCommand* command, const struct KfxWgpuNativeResource* source,
     const struct KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context);
+/* A sprite's three resources: artwork of 2*w*h index/coverage pairs, per-call scaling
+ * ranges and a 256-byte remap. identity is a stable address naming the artwork, under
+ * which the drawing context keeps it resident instead of re-uploading it per command;
+ * NULL means the emitter has no name for these bytes. The name is only as good as the
+ * generation, which must move whenever the artwork behind a live identity is rewritten
+ * or the address can be reused. */
+struct KfxWgpuSpriteAssets {
+    const struct KfxWgpuNativeResource* artwork;
+    const struct KfxWgpuNativeResource* ranges;
+    const struct KfxWgpuNativeResource* remap;
+    const struct KfxWgpuNativeResource* table;
+    const void* identity;
+    uint64_t generation;
+};
+/* The command carries the range and remap handles in its accumulator words. */
+int kfx_wgpu_native_draw_sprite(const struct KfxGpolyTarget* target,
+    const struct KfxWgpuDrawCommand* command, const struct KfxWgpuSpriteAssets* assets,
+    KfxWgpuNativeOracle oracle, void* oracle_context);
 #ifdef __cplusplus
 }
 #endif
@@ -95,7 +113,8 @@ public:
     void ReleaseSnapshot(uint64_t snapshot);
     int SubmitNative(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table,
-        KfxWgpuNativeOracle oracle, void* oracle_context);
+        KfxWgpuNativeOracle oracle, void* oracle_context,
+        const KfxWgpuSpriteAssets* sprite = nullptr);
     int SubmitShadow(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table, uint8_t* scratch,
         KfxWgpuNativeOracle oracle, void* oracle_context);
@@ -136,6 +155,13 @@ private:
         Extent extent;
         uint64_t handle;
     };
+    /* One slot per live lookup-table identity: a single slot missed on every alternation
+       between two tables and rebuilt an 80 KiB concatenation the context already held. */
+    static constexpr size_t kTableMemos = 4;
+    struct TableMemos {
+        std::array<KeyMemo, kTableMemos> slots = {};
+        size_t next = 0;
+    };
     static int Sink(void* context, const KfxGpolyTarget* target,
         const KfxGpolySpan* span, const uint8_t* texture, const uint8_t* fade);
     static int TriangleSink(void*, const KfxGpolyTarget*, const KfxWgpuTriangle*,
@@ -149,13 +175,17 @@ private:
        A null key has no name the context can trust, so it takes a per-call handle. */
     uint64_t KeyedResource(uint32_t kind, const void* key, const void* tail_key,
         uint64_t generation, const uint8_t* bytes, const Extent& extent);
+    /* The same, for a key the caller builds out of something other than two pointers. */
+    uint64_t KeyedResourceRaw(uint32_t kind, uint64_t key_hi, uint64_t key_lo,
+        uint64_t generation, const uint8_t* bytes, const Extent& extent);
     uint64_t TerrainResource(uint32_t kind, KeyMemo& memo, const void* key,
         const uint8_t* bytes, const Extent& extent);
     uint64_t MemoHandle(const KeyMemo& memo, const void* key, const void* tail_key,
         const Extent& extent) const;
     uint64_t TextureResource(const uint8_t* texture);
     uint64_t FadeResource(const uint8_t* fade);
-    uint64_t TableResource(const KfxWgpuNativeResource& table, size_t limit);
+    uint64_t TableResource(const KfxWgpuNativeResource& table, uint32_t kind,
+        std::vector<Resource>& cache, TableMemos& memos, size_t limit);
     // Releases handles no pending command can name any more; false if a release failed.
     bool CollectSuperseded();
     const uint8_t* ReplayAsset(uint64_t handle) const;
@@ -219,8 +249,10 @@ private:
     KfxGpolyRasterizer m_rasterizer = nullptr;
     bool m_fail_init, m_verify, m_failed = false;
     std::array<char, 1024> m_error = {};
-    // Lookup tables with no identity to key on; the only cache left that compares content.
-    std::vector<Resource> m_native_tables;
+    /* Lookup tables with no identity to key on; the only caches left that compare
+       content. Sprite remaps keep their own so a 256-byte palette cannot evict a
+       64 KiB blend table, or the reverse. */
+    std::vector<Resource> m_native_tables, m_remap_tables;
     std::vector<uint64_t> m_superseded;
     /* Terrain bytes the CPU replay rasterizes, one entry per live terrain handle. Taken
        when the handle is created and dropped when it is released, so resolving a resident
@@ -229,11 +261,7 @@ private:
        shows up as a KFX_WGPU_DRAW_VERIFY comparison failure. */
     std::map<uint64_t, std::vector<uint8_t>> m_replay_assets;
     KeyMemo m_texture_memo = {}, m_fade_memo = {};
-    /* One slot per live lookup-table identity: a single slot missed on every alternation
-       between two tables and rebuilt an 80 KiB concatenation the context already held. */
-    static constexpr size_t kTableMemos = 4;
-    std::array<KeyMemo, kTableMemos> m_table_memos = {};
-    size_t m_table_memo_next = 0;
+    TableMemos m_table_memos, m_remap_memos;
     std::vector<uint8_t> m_readback;
     Counters m_counts;
 };

@@ -16,9 +16,9 @@ int main(void)
     uint64_t target = kfx_wgpu_draw_target_create(draw, 5, 4, error, sizeof(error));
     CHECK(target != 0);
     struct KfxWgpuDrawCommand initial[2] = {
-        {.abi_version = 1, .kind = KFX_WGPU_DRAW_CLEAR, .colour = 0,
+        {.abi_version = KFX_WGPU_DRAW_ABI_VERSION, .kind = KFX_WGPU_DRAW_CLEAR, .colour = 0,
             .clip_width = 5, .clip_height = 4, .transparent = 256},
-        {.abi_version = 1, .kind = KFX_WGPU_DRAW_RECT, .colour = 255,
+        {.abi_version = KFX_WGPU_DRAW_ABI_VERSION, .kind = KFX_WGPU_DRAW_RECT, .colour = 255,
             .x = 2, .y = 1, .width = 1, .height = 2,
             .clip_width = 5, .clip_height = 4, .transparent = 256},
     };
@@ -28,11 +28,11 @@ int main(void)
     initial[0].colour = 99;
     CHECK(kfx_wgpu_draw_submit(draw, target, initial, 1, error, sizeof(error)) == 1);
     struct KfxWgpuDrawCommand images[2] = {
-        {.abi_version = 1, .kind = KFX_WGPU_DRAW_IMAGE, .source = snapshot,
+        {.abi_version = KFX_WGPU_DRAW_ABI_VERSION, .kind = KFX_WGPU_DRAW_IMAGE, .source = snapshot,
             .x = 1, .y = 1, .width = 2, .height = 2,
             .clip_width = 5, .clip_height = 4, .source_width = 2, .source_height = 2,
             .transparent = 256},
-        {.abi_version = 1, .kind = KFX_WGPU_DRAW_IMAGE, .source = 0,
+        {.abi_version = KFX_WGPU_DRAW_ABI_VERSION, .kind = KFX_WGPU_DRAW_IMAGE, .source = 0,
             .width = 2, .height = 2, .clip_width = 5, .clip_height = 4,
             .source_width = 2, .source_height = 2, .transparent = 256},
     };

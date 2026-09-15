@@ -2,6 +2,7 @@
 #include "bflib_sprite.h"
 #include "bflib_filelst.h"
 #include "bflib_dernc.h"
+#include "kfx/renderer/GpolyCapture.h"
 #include <vector>
 #include <memory>
 #include <map>
@@ -84,6 +85,7 @@ bool load_data_file(TbSpriteSheet & sheet, offset_list & offsets, const char * f
 extern "C" TbSpriteSheet * create_spritesheet()
 {
     try {
+        kfx_render_sprites_changed();
         return new TbSpriteSheet();
     } catch (const std::exception & e) {
         ERRORLOG("Failed to create sprite sheet: %s", e.what());
@@ -94,6 +96,7 @@ extern "C" TbSpriteSheet * create_spritesheet()
 extern "C" TbSpriteSheet * load_spritesheet(const char * data_fname, const char * index_fname)
 {
     try {
+        kfx_render_sprites_changed();
         auto sheet = std::make_unique<TbSpriteSheet>();
         offset_list offsets;
         if (!load_index_file(*sheet, offsets, index_fname)) return nullptr;
@@ -108,6 +111,7 @@ extern "C" TbSpriteSheet * load_spritesheet(const char * data_fname, const char 
 extern "C" void free_spritesheet(TbSpriteSheet ** sheet)
 {
     if (sheet) {
+        kfx_render_sprites_changed();
         delete *sheet;
         *sheet = NULL;
     }
@@ -130,6 +134,8 @@ extern "C" TbBool add_sprite(TbSpriteSheet * sheet, unsigned char width, unsigne
 #endif
 {
     try {
+        // Also covers the vector reallocation that moves every sprite's artwork.
+        kfx_render_sprites_changed();
         sheet->data.emplace_back(std::vector<unsigned char >(static_cast<const unsigned char *>(data), static_cast<const unsigned char *>(data) + size));
         try {
             sheet->sprites.emplace_back(TbSprite{sheet->data.back().data(), width, height});

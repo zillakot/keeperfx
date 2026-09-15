@@ -10,7 +10,8 @@ if(NOT KFX_SDL3_INCLUDE_DIR)
 endif()
 get_filename_component(KFX_ROOT "../.." ABSOLUTE)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ver_defs.h" "#define VER_STRING \"sprite-test\"\n")
-set(SPRITE_SOURCES "${KFX_ROOT}/src/kfx/renderer/software/SwDrawTarget.c"
+set(SPRITE_SOURCES "${KFX_ROOT}/src/kfx/renderer/GpolyCapture.c"
+    "${KFX_ROOT}/src/kfx/renderer/software/SwDrawTarget.c"
     "${KFX_ROOT}/src/kfx/renderer/software/WgpuSprite.c"
     "${KFX_ROOT}/src/kfx/renderer/software/bflib_vidraw_spr_norm.c"
     "${KFX_ROOT}/src/kfx/renderer/software/bflib_vidraw_spr_remp.c"
