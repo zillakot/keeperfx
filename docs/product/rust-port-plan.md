@@ -293,26 +293,53 @@ modes, so this lands as a parity-and-upload-volume change with no regression sho
 throughput gain claimed. [PR #43](https://github.com/zillakot/keeperfx/pull/43) is closed as
 superseded by it.
 
+**N1, keyed resource creation, is delivered**
+([PR #55](https://github.com/zillakot/keeperfx/pull/55)): an asset is created under
+`kfx_wgpu_draw_resource_create_keyed(kind, key, generation)` instead of being recognised by
+content, `ResourceFor`'s `memcmp` path is deleted, and `keyed_resources` counts the handles
+that carry a name. The call is what S2 and the later identity slices consume.
+
+**Coverage slice S2, sprite interning by identity, is delivered**
+([PR #57](https://github.com/zillakot/keeperfx/pull/57),
+[measurements](../performance-baselines.md#sprite-asset-interning-counters-measured-2026-09-15)):
+the artwork and the remap table are keyed by the artwork's own address under a sprite
+generation and only the per-call scaling ranges stay per command, so `arena_sprite_bytes`
+falls from 531–558 KB to 70–71 KB per frame and `arena_bytes_uploaded` by 61% capped and 79%
+uncapped, at 183–189 sprite hits per frame, offscreen busy 1080p. The replay upload phase is
+lower in every cell; FPS and the GPU pass union are inside the recorded pair spread in both
+cap modes, so no regression is shown and no gain is claimed, and the slice lands on the byte
+and parity gates.
+
 Next, in order:
 
-1. **N1, keyed resource creation (ABI v2)**
-   ([PR #55](https://github.com/zillakot/keeperfx/pull/55), in flight), per the semantic
-   stream spec's slice order: `kfx_wgpu_draw_resource_create_keyed` with terrain and tables
-   moved onto it and `ResourceFor`'s `memcmp` path deleted. Acceptance:
-   `arena_terrain_tile_hits` unchanged, `arena_misses_new_id` per frame equal to the distinct
-   new assets, raster byte-identical.
-2. **S2, sprite interning by identity** (in flight on top of PR #55, which supplies the keyed
-   call): `arena_sprite_hits` is 0 against 39,267 misses, and sprites are now the largest
-   remaining per-frame upload at about 475 KB/frame.
-3. **Coverage and ownership before C/C++ drawing can be retired**: general-triangle runtime
+1. **N6, asset registry ids for raw images, tiled images and fonts**
+   ([PR #58](https://github.com/zillakot/keeperfx/pull/58), in flight). Review round 1 keys
+   raw images, tiled images and DBC glyphs; huge sprites are deferred to N4, because their
+   bytes bake the caller's scroll position and cannot be named until the asset is split.
+2. **N2, the cursor and keepersprite identity remainder** that S2 left per call.
+3. **N3, remap and table identity enumeration**: `remap_id`, a range for the static palettes,
+   and shadow, transition and map-view stopping their `pixmap` copies.
+4. **N4, the asset split** — sprite ranges, trig textures, shadow tables and lens become
+   resources of their own; this is also what unblocks huge sprites.
+5. **N5, semantic record words** behind ABI v2: `page_id`, `sprite_id`, `frame`, `remap_id`,
+   `shade`.
+6. **Coverage and ownership before C/C++ drawing can be retired**: general-triangle runtime
    coverage and its alias fallback, possession-lens offscreen target residency, transition
    checkpoint removal, shadow scratch decoupling from `big_scratch`, the remaining declines,
    an ordered contract for arbitrary Lua pixel drawing, same-frame recovery for every command
    kind, and an audit of all targets and aliases — including
    [frontend.cpp](../../src/frontend.cpp) lines 1044–1047, which write the screen with no hook
    and no barrier. Reaching a frame-rate target does not complete the drawing goal.
-4. **The default switch**, then per-family deletion of the C/C++ rasterizers with the CPU
+7. **The default switch**, then per-family deletion of the C/C++ rasterizers with the CPU
    oracle preserved as a test-only library.
+
+Items 1–5 follow the slice order in the semantic stream spec,
+`out/wgpu-migration/impl-spec-semantic-stream.md`. N1–N6 must all land before any C
+rasterizer is deleted: each captures an identity that exists only in the code being deleted
+or in the emitter beside it.
+
+In parallel, the platform matrix: the five Metal-only unit tests in
+[draw_frame.rs](../../tools/frame-replay/src/draw_frame.rs) and a Windows leg.
 
 The drawing-family scene matrix (slice S1) is delivered
 ([PR #52](https://github.com/zillakot/keeperfx/pull/52)) and supplies the scenes both the
@@ -419,11 +446,11 @@ ownership, synchronization, counters and failure behavior.
 | Front view: `display_fast_drawlist()` in [engine_render.c](../../src/engine_render.c) | `QK_TextureQuad` original-vertex terrain batching is wired and inherits binning through the same sink | Independent front-view runtime proof and its own `terrain_tile_entries` read; sprites and interleaved overlays |
 | General triangles: [trig](../../src/kfx/renderer/software/bflib_render_trig.c), world dispatch | Original vertices feed GPU kernels for modes 0–26; native adapter covers 26 modes and dedicated shadows provide mode10 | Allocation/alias fallback, combined-head native coverage and resident target integration |
 | Creature shadows: [shadow adapter](../../src/kfx/renderer/software/WgpuShadow.h), world dispatch | Original RLE/frame metadata → GPU silhouette in a resident 256x256 scratch → one of two resident mask slots → both native-order mode10 triangles in the next submission; partial scratch clear preserved | The resident chain and the shared `big_scratch` are unreconciled in both directions, measured by `shadow_prior_divergence` under verification; scratch-alias residency, broader assets and combined-head gameplay |
-| World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores. Consecutive ordered sprites with disjoint scaling-range rectangles share one dispatch of *M* workgroups, reported by `ordered_sprite_layers` and `ordered_sprite_passes` | Ordered GPU run copies cover solid scaled-up horizontal flips, including native alignment/chunk behavior; asset/destination aliases and custom-asset/gameplay coverage remain open. Layering measured 2.68 layers against 2.69 ordered sprites on a busy 640x480 pair, so it pays nothing today: ordered sprites almost never land consecutively in the stream |
+| World sprites, creatures, objects and effects: [sprite adapter](../../src/kfx/renderer/software/WgpuSprite.c) | RLE index/coverage assets and scale ranges feed GPU source selection, flips, clipping, remap/ghost/alpha; source-frame offsets and water-truncated height preserved; accepted calls bypass native stores. Consecutive ordered sprites with disjoint scaling-range rectangles share one dispatch of *M* workgroups, reported by `ordered_sprite_layers` and `ordered_sprite_passes`. Artwork and remap table are resident by identity — the artwork's own address under a sprite generation — while the scaling ranges stay per call, so two commands for one sprite upload only their positions | Ordered GPU run copies cover solid scaled-up horizontal flips, including native alignment/chunk behavior; asset/destination aliases and custom-asset/gameplay coverage remain open. Layering measured 2.68 layers against 2.69 ordered sprites on a busy 640x480 pair, so it pays nothing today: ordered sprites almost never land consecutively in the stream |
 | Pixels, boxes, HV lines and circles: [bflib_vidraw.c](../../src/kfx/renderer/software/bflib_vidraw.c) | Reviewed native GPU hooks and 1,116 exact fixtures; circles preserve repeated blend hits | Circle radii above 8,191 and other unsupported inputs decline to CPU; complete runtime coverage remains open |
 | General lines, world overlays, HUD/menu sprites: [engine_render.c](../../src/engine_render.c), [UI interface](../../src/kfx/renderer/IUIRenderer.h) | Selected low-level primitives; scaled normal/remap/one-colour/alpha and immediate normal/one-colour sprites | General-line coverage/color selection, unsupported sprite modes and full interleaving validation |
 | Text, including Asian fonts: [bflib_sprfnt.c](../../src/bflib_sprfnt.c) | Sprite glyphs and direct DBC bitmap GPU hooks; CPU layout retained; huge/DBC native fixture group has 849 exact Metal cases | Actual language/font runtime coverage, oversized custom inputs and mutable-source aliases |
-| Raw/tiled images, frontend backgrounds, landview/torture/zoom: [raw adapter](../../src/kfx/renderer/software/WgpuRawImage.c), [raw helper](../../src/front_simple.c), [slab helper](../../src/gui_draw.c) | Raw8 scaling/letterbox, tiled slabs, static backgrounds, huge sprite and campaign zoom GPU paths | Mutable source/destination aliases, noncanonical huge steps and source footprints above 1,048,576 pixels; full asset/runtime coverage |
+| Raw/tiled images, frontend backgrounds, landview/torture/zoom: [raw adapter](../../src/kfx/renderer/software/WgpuRawImage.c), [raw helper](../../src/front_simple.c), [slab helper](../../src/gui_draw.c) | Raw8 scaling/letterbox, tiled slabs, static backgrounds, huge sprite and campaign zoom GPU paths | Mutable source/destination aliases, noncanonical huge steps and source footprints above 1,048,576 pixels; full asset/runtime coverage. Arena identity for raw images, tiled images and DBC glyphs is pending [PR #58](https://github.com/zillakot/keeperfx/pull/58); huge sprites stay per call until the N4 asset split, because their bytes carry the caller's scroll position |
 | Minimap, parchment and overhead/zoom maps: [frontmenu_ingame_map.c](../../src/frontmenu_ingame_map.c), [gui_parchment.c](../../src/gui_parchment.c) | Semantic GPU cells, setup fills, markers and map/zoom transforms; 568 minimap and 1,358 map-view native/Metal fixtures | The dispatch extent is done, each command dispatching only its written rectangle, and the payload is split into resident base segments and per-table versioned style tables, so an unchanged table is a hit rather than a re-upload; identity keys for the dictionary and the panel map (N7), broader states and complete offscreen ownership |
 | Built-in possession lenses: [lens implementations](../../src/kfx/lense/) | Indexed displacement/flyeye remaps, mist and overlay GPU kernels preserve sequential source/target aliases; CPU map preparation and palette lifecycle remain | Resident GPU target views; lightness 32–63 mist, out-of-viewport maps, asset/destination aliases and oversized inputs still decline; full LensManager lifecycle/gameplay validation |
 | Custom Lua lenses: [LuaLensEffect.cpp](../../src/kfx/lense/LuaLensEffect.cpp), [lua_api_lens.c](../../src/lua_api_lens.c) | CPU reference | Ordered GPU writes/copies and exact read-after-write compatibility for arbitrary pixel-dependent Lua control flow; CPU-script readback is explicit, never hidden CPU-rendered lens upload |
