@@ -878,3 +878,10 @@ Performance, snapshot operation budgets and acquired-surface parity remain host 
 PR #43 is not included: its split descriptors must use these byte accessors and its
 physical cache budget must change from 9 MiB to 2.25 MiB if integrated, keeping logical
 admission and raw-source hashes unchanged in both controls.
+
+Packed LE16/LE32 reads fetch one storage word, or two when crossing a word
+boundary; sprite colour/coverage pairs share the LE16 fetch. Minimap dictionary
+inversion happens once per dispatch. Its private view is 144 bytes: four target
+words followed by 32 words holding eight four-bit dictionary indices each.
+Unknown background colours retain dictionary index zero. This uses the existing
+uniform ring and adds no GPU pass or barrier; raw minimap sources stay unchanged.

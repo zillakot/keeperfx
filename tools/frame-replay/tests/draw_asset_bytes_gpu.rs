@@ -1,3 +1,5 @@
+mod families;
+
 use keeperfx_frame_replay::draw::assets;
 use wgpu::util::DeviceExt;
 
@@ -7,9 +9,12 @@ const READS: &str = r#"
 @compute @workgroup_size(1)
 fn sample_bytes(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
-    output[i * 3u] = byte(i);
-    output[i * 3u + 1u] = le16(i);
-    output[i * 3u + 2u] = bitcast<u32>(bitcast<i32>(le32(i)));
+    let pair = le16(i);
+    output[i * 5u] = byte(i);
+    output[i * 5u + 1u] = pair;
+    output[i * 5u + 2u] = bitcast<u32>(bitcast<i32>(le32(i)));
+    output[i * 5u + 3u] = pair & 255u;
+    output[i * 5u + 4u] = pair >> 8u;
 }
 "#;
 
@@ -61,6 +66,8 @@ fn unaligned_reads_match_expanded_and_native_bytes() {
                     u32::from(data[i]),
                     u32::from(u16::from_le_bytes(data[i..i + 2].try_into().unwrap())),
                     u32::from_le_bytes(data[i..i + 4].try_into().unwrap()),
+                    u32::from(data[i]),
+                    u32::from(data[i + 1]),
                 ]
             })
             .collect();
@@ -78,7 +85,7 @@ fn unaligned_reads_match_expanded_and_native_bytes() {
                 contents: &encoded,
                 usage: wgpu::BufferUsages::STORAGE,
             });
-            let size = (reads * 3 * 4) as u64;
+            let size = (reads * 5 * 4) as u64;
             let output = device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size,
@@ -153,6 +160,73 @@ fn unaligned_reads_match_expanded_and_native_bytes() {
                 .collect();
             assert_eq!(actual, expected, "packed={packed}, tail={tail}");
             readback.unmap();
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn sprite_pairs_and_triangle_vertices_at_every_batch_lane() {
+    use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, IMAGE, SPRITE, TRIG};
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits {
+            max_storage_buffer_binding_size: 16 << 20,
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
+    .unwrap();
+    let renderer = keeperfx_frame_replay::gpu::Renderer::new(device, queue).unwrap();
+    let mut draw = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let data = families::assets(&mut draw);
+    let target = draw.create_target(32, 32).unwrap();
+    for command in families::family(&data, 32, 32, 19)
+        .into_iter()
+        .filter(|c| matches!(c.kind, SPRITE | TRIG))
+    {
+        let mut expected = None;
+        for length in 4..8 {
+            let source = draw
+                .create_resource(&vec![241; length], length as u32, 1, length as u32)
+                .unwrap();
+            draw.submit(
+                target,
+                &[
+                    Command {
+                        kind: IMAGE,
+                        source,
+                        width: length as u32,
+                        height: 1,
+                        source_width: length as u32,
+                        source_height: 1,
+                        ..Default::default()
+                    },
+                    Command {
+                        kind: CLEAR,
+                        colour: 19,
+                        ..Default::default()
+                    },
+                    command,
+                ],
+            )
+            .unwrap();
+            let pixels = draw.readback(target).unwrap();
+            assert!(pixels.iter().any(|&p| p != 19));
+            if let Some(expected) = &expected {
+                assert_eq!(
+                    &pixels,
+                    expected,
+                    "kind={}, lane={}",
+                    command.kind,
+                    length & 3
+                );
+            } else {
+                expected = Some(pixels);
+            }
+            assert_eq!(draw.arena_counters().bytes_uploaded, 0);
+            draw.release_resource(source).unwrap();
         }
     }
 }

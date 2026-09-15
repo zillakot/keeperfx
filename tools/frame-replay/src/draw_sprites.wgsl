@@ -27,9 +27,10 @@ fn sprite_sample(c: Command, pixel: vec2<u32>) -> u32 {
     if (c.source.x & 1u) != 0u { x = w - 1u - x; }
     if (c.source.x & 2u) != 0u { y = h - 1u - y; }
     let index = c.assets.x + 2u * (y * w + x);
-    if byte(index + 1u) == 0u { return 256u; }
+    let artwork = le16(index);
+    if (artwork >> 8u) == 0u { return 256u; }
     if (c.source.x & 4u) != 0u { return c.operation.w; }
-    return byte(axis + (w + h) * 8u + byte(index));
+    return byte(axis + (w + h) * 8u + (artwork & 255u));
 }
 
 fn sprite_copy_forward(source: i32, destination: i32, count: i32, alignment: u32) {
@@ -74,15 +75,15 @@ fn sprite_ordered(@builtin(workgroup_id) wid: vec3<u32>) {
         var run_right = 0i;
         var in_run = false;
         for (var sx = 0u; sx < w; sx++) {
-            let artwork = c.assets.x + 2u * (sy * w + sx);
-            let coverage = byte(artwork + 1u);
+            let artwork = le16(c.assets.x + 2u * (sy * w + sx));
+            let coverage = artwork >> 8u;
             if coverage == 0u { continue; }
             let ax = w - 1u - sx;
             let xstart = sprite_word(axis + ax * 8u);
             let xcount = sprite_word(axis + ax * 8u + 4u);
             let right = i32(y * parameters.x + xstart + xcount) - 1;
             if !in_run { run_right = right; in_run = true; }
-            let colour = select(byte(remap + byte(artwork)), c.operation.w, (c.source.x & 4u) != 0u);
+            let colour = select(byte(remap + (artwork & 255u)), c.operation.w, (c.source.x & 4u) != 0u);
             for (var dx = 0u; dx < xcount; dx++) {
                 pixels[pixel_address(u32(right - i32(dx)))] = colour;
             }

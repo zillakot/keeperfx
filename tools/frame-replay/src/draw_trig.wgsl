@@ -1,8 +1,8 @@
 struct TrigVertex { xy: vec2<i32>, attr: vec3<i32>, }
 fn trig_vertex(base: u32, n: u32) -> TrigVertex {
     let p = base + n * 20u;
-    return TrigVertex(vec2(i32(sprite_word(p)), i32(sprite_word(p + 4u))),
-        vec3(i32(sprite_word(p + 8u)), i32(sprite_word(p + 12u)), i32(sprite_word(p + 16u))));
+    return TrigVertex(vec2(i32(le32(p)), i32(le32(p + 4u))),
+        vec3(i32(le32(p + 8u)), i32(le32(p + 12u)), i32(le32(p + 16u))));
 }
 fn trig_fixed(a: i32, b: i32) -> i32 {
     let hi = mul_high(u32(a), u32(b)) - select(0u, u32(b), a < 0) - select(0u, u32(a), b < 0);
