@@ -899,6 +899,112 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn shadow_headroom_submit_keeps_triangle_regions_in_the_next_encoder() {
+        use super::super::{CLEAR, Command, DrawRenderer, TRIG};
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let renderer = crate::gpu::Renderer::new(device, queue).unwrap();
+        let mut draw = DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        let target = draw.create_target(8, 8).unwrap();
+        draw.submit(
+            target,
+            &[Command {
+                kind: CLEAR,
+                colour: 71,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let vertices: [i32; 15] = [1, 1, 0, 0, 0, 7, 1, 0, 0, 0, 1, 7, 0, 0, 0];
+        let geometry: Vec<_> = vertices.into_iter().flat_map(i32::to_le_bytes).collect();
+        let table = draw
+            .create_resource(&vec![93; 81920], 256, 320, 256)
+            .unwrap();
+        let sources: Vec<_> = (0..2)
+            .map(|_| draw.create_resource(&geometry, 1, 1, 1).unwrap())
+            .collect();
+        let mut artwork: Vec<_> = [256u32, 256, 4, 4, 0, 0, 0, 24]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        artwork.extend(&geometry);
+        artwork.extend(&geometry);
+        artwork.extend((0..4).flat_map(|_| [4, 1, 1, 1, 1, 0]));
+        let mask = draw.create_resource(&artwork, 1, 1, 1).unwrap();
+        let commands: Vec<_> = sources
+            .iter()
+            .map(|&source| Command {
+                kind: TRIG,
+                source,
+                table,
+                source_x: 10,
+                source_y: 65536,
+                source_width: 64,
+                colour: 1,
+                width: 8,
+                height: 8,
+                clip_width: 8,
+                clip_height: 8,
+                ..Default::default()
+            })
+            .collect();
+        draw.submit_target_triangles(target, &commands, 0, Some(mask))
+            .unwrap();
+        let expected = draw.readback(target).unwrap();
+        assert!(expected.contains(&93));
+        assert!(expected.iter().all(|&pixel| pixel == 71 || pixel == 93));
+        draw.submit(
+            target,
+            &[Command {
+                kind: CLEAR,
+                colour: 71,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        draw.arena = Arena::new(draw.storage_limit());
+        draw.arena
+            .grow_to(&draw.device, &draw.queue, &mut draw.counters, 1);
+        draw.arena.high_water = INITIAL_WORDS - 150_016;
+        assert!(draw.arena.fits(131_840));
+        assert!(draw.arena.fits(draw.resource_bytes as u64));
+        let other = draw.create_target(8, 8).unwrap();
+        draw.frame_begin(target).unwrap();
+        draw.frame_encoder();
+        assert!(draw.arena.locked);
+        let before = draw.counters();
+        draw.submit_target_triangles(target, &commands, 0, Some(mask))
+            .unwrap();
+        assert_eq!(draw.arena.capacity, INITIAL_WORDS * 2);
+        assert_eq!(draw.counters().submits - before.submits, 2);
+        assert_eq!(draw.counters().dispatches - before.dispatches, 2);
+        assert!(draw.encoder.is_some());
+        let buffers = draw.counters().buffers;
+        draw.submit_target_triangles(
+            other,
+            &[Command {
+                source_x: 0,
+                colour: 7,
+                ..commands[0]
+            }],
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(draw.counters().submits - before.submits, 2);
+        assert_eq!(draw.counters().buffers, buffers);
+        draw.frame_end().unwrap();
+        assert_eq!(draw.counters().submits - before.submits, 3);
+        assert_eq!(draw.frame_status().1, 0);
+        assert_eq!(draw.readback(target).unwrap(), expected);
+        assert!(draw.readback(other).unwrap().contains(&7));
+    }
+
+    #[test]
     fn releases_retire_pinned_regions_and_drop_miss_history() {
         let mut arena = Arena::new(32 << 20);
         arena.hold();

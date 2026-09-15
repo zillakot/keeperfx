@@ -663,9 +663,10 @@ impl DrawRenderer {
     /// Drops a half-recorded frame. Dropping a `CommandEncoder` without finishing it
     /// discards its recording, which is what an abort or a terminal failure wants.
     pub fn frame_discard(&mut self) {
+        let had_encoder = self.encoder.take().is_some();
         self.uploads.borrow_mut().discard();
         self.arena.discard();
-        if self.encoder.take().is_none() {
+        if !had_encoder {
             return;
         }
         if let Some(slot) = self.timing_slot.take()
@@ -695,6 +696,7 @@ impl DrawRenderer {
             .and_then(|(timings, slot)| timings.close(slot, &mut encoder));
         self.counters.submits += 1;
         self.last_submission = Some(self.queue.submit([encoder.finish()]));
+        self.uploads.borrow_mut().retire();
         self.end_encoder_scope();
         if let Some(slot) = closed {
             self.timings.as_mut().unwrap().map(slot);
@@ -702,13 +704,11 @@ impl DrawRenderer {
         }
     }
 
-    /// The arena pin scope and the stream ring's bump cursor both end with the
-    /// encoder, because that is the submission whose head every staged write reaches.
+    /// Releases encoder-scoped arena pins after submission or discard.
     fn end_encoder_scope(&mut self) {
         self.present_cursor = 0;
         self.arena.lock(false);
         self.arena.release_hold();
-        self.uploads.borrow_mut().retire();
         self.encoder_passes = 0;
     }
 

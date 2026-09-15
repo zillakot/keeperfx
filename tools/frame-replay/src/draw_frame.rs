@@ -464,7 +464,7 @@ impl DrawRenderer {
         if result.is_ok() {
             self.flush_uploads();
         } else {
-            self.uploads.borrow_mut().discard();
+            self.uploads.borrow_mut().drop_pending();
             self.arena.discard();
         }
         self.counters.replay.accumulate(replay.finish());

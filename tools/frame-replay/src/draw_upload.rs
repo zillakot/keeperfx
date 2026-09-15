@@ -1,6 +1,6 @@
 use super::Counters;
 use super::host::{self, Phase, Scope};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 const MIB: u64 = 1 << 20;
@@ -11,7 +11,7 @@ pub(crate) struct Region {
     buffer: wgpu::Buffer,
     offset: u64,
     size: u64,
-    _lease: Option<Rc<()>>,
+    generation: Option<GenerationStamp>,
 }
 
 impl Region {
@@ -21,11 +21,14 @@ impl Region {
             buffer,
             offset: 0,
             size,
-            _lease: None,
+            generation: None,
         }
     }
 
     pub(crate) fn entry(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
+        if let Some(generation) = &self.generation {
+            generation.record();
+        }
         wgpu::BindGroupEntry {
             binding,
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -34,6 +37,67 @@ impl Region {
                 size: std::num::NonZeroU64::new(self.size),
             }),
         }
+    }
+}
+
+struct EncoderGenerations {
+    recording: Cell<u64>,
+    retired: Cell<u64>,
+}
+
+impl EncoderGenerations {
+    fn new() -> Self {
+        Self {
+            recording: Cell::new(1),
+            retired: Cell::new(0),
+        }
+    }
+
+    fn retire(&self) {
+        let generation = self.recording.get();
+        self.retired.set(generation);
+        self.recording.set(
+            generation
+                .checked_add(1)
+                .expect("encoder generation exhausted"),
+        );
+    }
+}
+
+struct RingGeneration {
+    encoders: Rc<EncoderGenerations>,
+    last_use: Cell<u64>,
+}
+
+impl RingGeneration {
+    fn can_rewind(self: &Rc<Self>) -> bool {
+        // Live reservations may be bound again after a nested submission.
+        Rc::strong_count(self) == 1 && self.last_use.get() <= self.encoders.retired.get()
+    }
+}
+
+#[derive(Clone)]
+struct GenerationStamp {
+    generation: Cell<u64>,
+    ring: Rc<RingGeneration>,
+}
+
+impl GenerationStamp {
+    fn new(ring: &Rc<RingGeneration>) -> Self {
+        let stamp = Self {
+            generation: Cell::new(0),
+            ring: ring.clone(),
+        };
+        stamp.record();
+        stamp
+    }
+
+    fn record(&self) {
+        let generation = self.ring.encoders.recording.get();
+        self.generation.set(generation);
+        self.ring
+            .last_use
+            .set(self.ring.last_use.get().max(self.generation.get()));
     }
 }
 
@@ -63,9 +127,7 @@ struct Ring {
     reservations: Reservation,
     image: Vec<u8>,
     dirty: Option<u64>,
-    // Serial timing may submit while a later pass still holds the same Region.
-    lease: Rc<()>,
-    retired: bool,
+    generation: Rc<RingGeneration>,
     label: &'static str,
     usage: wgpu::BufferUsages,
 }
@@ -77,6 +139,7 @@ impl Ring {
         cap: u64,
         label: &'static str,
         uniform: bool,
+        encoders: Rc<EncoderGenerations>,
     ) -> Self {
         let (alignment, binding_limit, usage) = if uniform {
             (
@@ -104,21 +167,20 @@ impl Ring {
             reservations: Reservation::default(),
             image: Vec::new(),
             dirty: None,
-            lease: Rc::new(()),
-            retired: false,
+            generation: Rc::new(RingGeneration {
+                encoders,
+                last_use: Cell::new(0),
+            }),
             label,
             usage,
         }
     }
 
     fn rewind(&mut self) {
-        if self.retired {
-            if Rc::strong_count(&self.lease) == 1 {
-                self.reservations.cursor = 0;
-                self.image.clear();
-                self.dirty = None;
-            }
-            self.retired = false;
+        if self.generation.can_rewind() {
+            self.reservations.cursor = 0;
+            self.image.clear();
+            self.dirty = None;
         }
     }
 
@@ -130,7 +192,7 @@ impl Ring {
     ) -> Option<Region> {
         self.rewind();
         let size = (words.len().max(1) as u64).checked_mul(4)?;
-        if self.reservations.cursor == 0 && Rc::strong_count(&self.lease) == 1 {
+        if self.reservations.cursor == 0 && self.generation.can_rewind() {
             let wanted = self
                 .initial
                 .max(self.reservations.demand)
@@ -174,7 +236,7 @@ impl Ring {
             buffer: self.buffer.as_ref()?.clone(),
             offset: start,
             size,
-            _lease: Some(self.lease.clone()),
+            generation: Some(GenerationStamp::new(&self.generation)),
         })
     }
 
@@ -191,18 +253,35 @@ impl Ring {
 
 pub(crate) struct Uploads {
     rings: [Ring; 3],
+    encoders: Rc<EncoderGenerations>,
     overflow_bytes: u64,
     compatibility: bool,
 }
 
 impl Uploads {
     pub(crate) fn new(limits: &wgpu::Limits) -> Self {
+        let encoders = Rc::new(EncoderGenerations::new());
         Self {
             rings: [
-                Ring::new(limits, 2 * MIB, 8 * MIB, "record ring", false),
-                Ring::new(limits, 8 * MIB, 16 * MIB, "index ring", false),
-                Ring::new(limits, MIB, 2 * MIB, "uniform ring", true),
+                Ring::new(
+                    limits,
+                    2 * MIB,
+                    8 * MIB,
+                    "record ring",
+                    false,
+                    encoders.clone(),
+                ),
+                Ring::new(
+                    limits,
+                    8 * MIB,
+                    16 * MIB,
+                    "index ring",
+                    false,
+                    encoders.clone(),
+                ),
+                Ring::new(limits, MIB, 2 * MIB, "uniform ring", true, encoders.clone()),
             ],
+            encoders,
             overflow_bytes: 0,
             compatibility: false,
         }
@@ -218,10 +297,7 @@ impl Uploads {
                 alignment >= ring.alignment && alignment.is_multiple_of(ring.alignment),
                 "invalid ring alignment"
             );
-            anyhow::ensure!(
-                Rc::strong_count(&ring.lease) == 1,
-                "live upload reservation"
-            );
+            anyhow::ensure!(ring.generation.can_rewind(), "live upload reservation");
             ring.buffer = None;
             ring.capacity = 0;
             ring.initial = capacity;
@@ -289,9 +365,7 @@ impl Uploads {
     }
 
     pub(crate) fn retire(&mut self) {
-        for ring in &mut self.rings {
-            ring.retired = true;
-        }
+        self.encoders.retire();
     }
 
     pub(crate) fn begin_frame(&mut self) {
@@ -299,10 +373,14 @@ impl Uploads {
         self.compatibility = false;
     }
 
-    pub(crate) fn discard(&mut self) {
+    pub(crate) fn drop_pending(&mut self) {
         for ring in &mut self.rings {
             ring.dirty = None;
         }
+    }
+
+    pub(crate) fn discard(&mut self) {
+        self.drop_pending();
         self.retire();
     }
 }
@@ -339,25 +417,49 @@ mod tests {
     }
 
     #[test]
-    fn discard_drops_pending_bytes_and_live_leases_delay_rewind() {
+    fn rebound_generation_prevents_rewind_after_cpu_reservations_drop() {
         let mut uploads = Uploads::new(&wgpu::Limits::default());
         let ring = &mut uploads.rings[0];
         ring.reservations.cursor = 64;
         ring.reservations.demand = 64;
         ring.image.resize(64, 17);
+        let earlier = GenerationStamp::new(&ring.generation);
+        assert_eq!(earlier.generation.get(), 1);
+        uploads.retire();
+        uploads.rings[0].rewind();
+        assert_eq!(uploads.rings[0].reservations.cursor, 64);
+        earlier.record();
+        assert_eq!(earlier.generation.get(), 2);
+        drop(earlier);
+        uploads.rings[0].rewind();
+        assert_eq!(uploads.rings[0].reservations.cursor, 64);
+        assert_eq!(uploads.rings[0].image, [17; 64]);
+        uploads.retire();
+        uploads.rings[0].rewind();
+        assert_eq!(uploads.rings[0].reservations.cursor, 0);
+        assert!(uploads.rings[0].image.is_empty());
+        assert_eq!(uploads.rings[0].reservations.demand, 64);
+    }
+
+    #[test]
+    fn discard_retires_the_generation_and_drops_pending_writes() {
+        let mut uploads = Uploads::new(&wgpu::Limits::default());
+        let ring = &mut uploads.rings[0];
+        ring.reservations.cursor = 64;
+        ring.image.resize(64, 17);
         ring.dirty = Some(0);
-        let earlier = ring.lease.clone();
+        drop(GenerationStamp::new(&ring.generation));
+        ring.rewind();
+        assert_eq!(ring.reservations.cursor, 64);
+        uploads.drop_pending();
+        uploads.rings[0].rewind();
+        assert_eq!(uploads.rings[0].reservations.cursor, 64);
+        assert_eq!(uploads.encoders.retired.get(), 0);
         uploads.discard();
         let ring = &mut uploads.rings[0];
         assert!(ring.dirty.is_none());
         ring.rewind();
-        assert_eq!(ring.reservations.cursor, 64);
-        drop(earlier);
-        ring.retired = true;
-        ring.rewind();
         assert_eq!(ring.reservations.cursor, 0);
-        assert!(ring.image.is_empty());
-        assert_eq!(ring.reservations.demand, 64);
     }
 
     #[test]
