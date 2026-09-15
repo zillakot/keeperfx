@@ -70,5 +70,6 @@ int main()
 #undef KFX_UPLOAD_FIELD
     for (const auto name : drawing_counter_names) assert(name != nullptr);
     static_assert(offsetof(KfxWgpuDrawCounters, arena_by_kind) == 79 * sizeof(uint64_t));
-    static_assert(sizeof(KfxWgpuDrawCounters) == (79 + 19 * 6 + 1 + 11 + KFX_UPLOAD_COUNTER_COUNT) * sizeof(uint64_t));
+    // The trailing 1 is keyed_resources, appended after the upload fields.
+    static_assert(sizeof(KfxWgpuDrawCounters) == (79 + 19 * 6 + 1 + 11 + KFX_UPLOAD_COUNTER_COUNT + 1) * sizeof(uint64_t));
 }
