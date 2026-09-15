@@ -114,7 +114,7 @@ impl DrawRenderer {
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("native creature shadow mask"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("draw_shadow.wgsl").into()),
+                    source: wgpu::ShaderSource::Wgsl(assets::shader(include_str!("draw_shadow.wgsl")).into()),
                 });
             self.shadow = Some(self.device.create_compute_pipeline(
                 &wgpu::ComputePipelineDescriptor {
@@ -211,7 +211,7 @@ impl DrawRenderer {
         self.counters.dispatches += 1;
         self.pass_boundary();
         if let Some(values) = &values {
-            self.counters.asset_upload_bytes += values.len() as u64 * 4;
+            self.counters.asset_upload_bytes += values.len() as u64 * assets::STRIDE as u64;
         }
         self.counters.commands += 1;
         Ok(())
