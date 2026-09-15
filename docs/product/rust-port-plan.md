@@ -307,13 +307,15 @@ and simulation cadence in uncapped comparisons. Reusable mapped staging is a lat
 
 In parallel, work the tooling plan's
 [recommended order](development-tooling-plan.md#recommended-order) on what each item still
-owes: the offscreen mode's locked-console acceptance, now closed; the trace profiler under
+owes: the offscreen mode's locked/unlocked per-pass equivalence; the trace profiler under
 GPU time attribution; the bounds-superset property test; command-stream capture with offline
 replay; deterministic scene mode; then the per-suite frame-replay CI matrix, which today
-splits only the two arena formats. Control tooling has one open fault:
-`scripts/game-control.py cycle-mode` leaves the control API unresponsive after the
-video-mode switch — the game stays alive in fullscreen desktop mode and later operations
-time out — so oracle sessions skip the mode round trip until it is fixed.
+splits only the two arena formats. Control tooling has one open fault: after
+[PR #41](https://github.com/zillakot/keeperfx/pull/41) the API server no longer dies on the
+video-mode switch, but the `scripts/game-control.py cycle-mode` command itself and every
+later operation time out while the game keeps running in desktop mode, so oracle sessions
+skip the mode round trip until it is fixed (evidence under
+`out/wgpu-migration/byte-arena-runs/word-once/drawing-busy-control.incomplete-*/`).
 
 ### Inventory and measurement
 

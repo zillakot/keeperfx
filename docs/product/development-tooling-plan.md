@@ -112,8 +112,10 @@ wait. The scene has two workload modes (46 and 59 dispatches per frame) that mus
 separated before anything is compared. Within both, volume counters are identical and
 per-pass GPU times agree inside the run-to-run spread; the reviewer's interleaved
 46-dispatch comparison puts `gpu_pass_union_ns` within 0.2% and every pass within 1.4%.
-The locked-console acceptance is closed: with the console locked the swapchain runner is
-refused by the guard and offscreen runs complete normally.
+With the console locked the swapchain runner is refused by the guard and offscreen runs
+complete: 85 locked offscreen reports this session. **The remaining clause is per-pass
+equivalence:** a matched locked/unlocked offscreen pair within the usual spread is still
+unmeasured.
 
 **Acceptance.** A busy 1080p timing run completes with the console locked and
 produces the same per-pass counters as an unlocked run within the usual run
