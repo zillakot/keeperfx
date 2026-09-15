@@ -97,11 +97,21 @@ class MatrixTests(unittest.TestCase):
 
     def test_markdown_lists_every_scene_and_family(self):
         scenes = [scene("busy", ("Minimap",))]
-        results = {"busy": result("busy", counters(arena_minimap_misses=1234))}
+        results = {"busy": dict(result("busy", counters(arena_minimap_misses=1234)),
+                                binary=dict(sha256="abc123", binary="/tmp/keeperfx", size_bytes=1))}
         text = COVERAGE.markdown(COVERAGE.summarize(scenes, results))
+        self.assertIn("`abc123`", text)
         self.assertIn("| busy | complete | 5 | 10 | 0 | pass |", text)
         self.assertIn("**1,234**", text)
         self.assertIn("`arena_minimap_misses`", text)
+
+    def test_mixed_binaries_are_called_out(self):
+        scenes = [scene("a", ()), scene("b", ())]
+        results = {name: dict(result(name, counters()), binary=dict(sha256=sha))
+                   for name, sha in (("a", "one"), ("b", "two"))}
+        summary = COVERAGE.summarize(scenes, results)
+        self.assertFalse(summary["binaries_agree"])
+        self.assertIn("did not all run the same binary", COVERAGE.markdown(summary))
 
     def test_scene_selection(self):
         self.assertEqual([entry["name"] for entry in COVERAGE.selected("dungeon-busy,lua-*")],

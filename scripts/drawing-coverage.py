@@ -268,7 +268,10 @@ def summarize(scenes, results):
         else:
             row["status"] = "not reached"
         families.append(row)
-    return dict(generated_utc=datetime.now(timezone.utc).isoformat(), scenes=[
+    binaries = [results[name]["binary"] for name in order if results[name].get("binary")]
+    return dict(generated_utc=datetime.now(timezone.utc).isoformat(),
+                binary=binaries[0] if binaries else None,
+                binaries_agree=len({entry["sha256"] for entry in binaries}) <= 1, scenes=[
         dict(scene=name, status=results[name]["status"], error=results[name].get("error"),
              gate=results[name].get("gate"), targets=list(scene["families"]))
         for name, scene in zip(order, scenes)], families=families)
@@ -276,8 +279,12 @@ def summarize(scenes, results):
 
 def markdown(summary):
     order = [scene["scene"] for scene in summary["scenes"]]
+    binary = summary.get("binary") or {}
+    identity = f" Binary `{binary.get('sha256', 'unknown')}`." if binary else ""
+    if not summary.get("binaries_agree", True):
+        identity += " **Scenes did not all run the same binary.**"
     lines = ["# Drawing-family scene matrix", "",
-             f"Generated {summary['generated_utc']}.", "",
+             f"Generated {summary['generated_utc']}.{identity}", "",
              "## Scenes", "",
              "| Scene | Status | Frames | Verified batches | Failures | Gate |",
              "| --- | --- | --- | --- | --- | --- |"]
