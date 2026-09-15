@@ -120,11 +120,51 @@ class MatrixTests(unittest.TestCase):
                 COVERAGE.summarize(scenes, {"lua-lens": result("lua-lens", counters())})["families"]}
         self.assertEqual(rows["Lua lenses, Lua pixel/batch API"]["status"], "exercised, no counter")
 
+    def test_aggregate_counter_rows_are_not_reported_as_measured(self):
+        scenes = [scene("front-view", ("Front view (display_fast_drawlist)",))]
+        results = {"front-view": result("front-view", counters(gpu_sprite_commands=26464))}
+        rows = {row["family"]: row for row in COVERAGE.summarize(scenes, results)["families"]}
+        self.assertEqual(rows["Front view (display_fast_drawlist)"]["status"],
+                         "exercised, aggregate counter only")
+        self.assertTrue(rows["Front view (display_fast_drawlist)"]["aggregate"])
+        self.assertEqual(rows["World/HUD sprites"]["status"], "measured")
+
     def test_scene_selection(self):
         self.assertEqual([entry["name"] for entry in COVERAGE.selected("dungeon-busy,lua-*")],
                          ["dungeon-busy", "lua-lens"])
         with self.assertRaisesRegex(ValueError, "no scene matches"):
             COVERAGE.selected("nothing")
+
+
+class ResumeTests(unittest.TestCase):
+    def test_only_a_complete_scene_is_skipped_on_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            self.assertIsNone(COVERAGE.complete_record(work))
+            (work / "scene.json").write_text(json.dumps(dict(scene="x", status="failed", error="boom")))
+            self.assertIsNone(COVERAGE.complete_record(work))
+            (work / "scene.json").write_text(json.dumps(dict(scene="x", status="complete")))
+            self.assertEqual(COVERAGE.complete_record(work)["status"], "complete")
+
+    def test_a_partial_selection_writes_its_own_summary(self):
+        self.assertEqual(COVERAGE.summary_name(list(COVERAGE.SCENES)), "summary")
+        self.assertEqual(COVERAGE.summary_name(COVERAGE.selected("map-fade")), "summary-map-fade")
+
+    def test_a_failed_scene_keeps_what_it_recorded(self):
+        record = dict(scene="x", status="running", launch_args=None, operations=[])
+        with mock.patch.object(COVERAGE, "await_no_game"), mock.patch.object(COVERAGE, "await_console"), \
+                mock.patch.object(COVERAGE.CONTROL, "launch", side_effect=TimeoutError("startup")), \
+                mock.patch.object(COVERAGE, "quit_session", return_value={"returncode": 0}) as quit_call:
+            with tempfile.TemporaryDirectory() as directory:
+                work = Path(directory)
+                work.joinpath("session.json").write_text("{}")
+                with mock.patch.object(COVERAGE.CONTROL, "read_session", return_value={"work": str(work)}):
+                    with self.assertRaises(TimeoutError):
+                        COVERAGE.run_scene(COVERAGE.SCENES[0], argparse.Namespace(
+                            lifetime=600, step_timeout=10, out=work, game_dir=work, engine=work,
+                            campaign="keeporig"), work, record)
+            quit_call.assert_called_once()
+        self.assertEqual(record["exit"], {"returncode": 0})
 
 
 class HostGuardTests(unittest.TestCase):
@@ -142,7 +182,8 @@ class HostGuardTests(unittest.TestCase):
         with mock.patch.object(COVERAGE, "await_no_game", side_effect=RuntimeError("already running")), \
                 mock.patch.object(COVERAGE.CONTROL, "launch") as launch:
             with self.assertRaisesRegex(RuntimeError, "already running"):
-                COVERAGE.run_scene(COVERAGE.SCENES[0], argparse.Namespace(lifetime=600), Path("/nonexistent"))
+                COVERAGE.run_scene(COVERAGE.SCENES[0], argparse.Namespace(lifetime=600),
+                                   Path("/nonexistent"), {})
             launch.assert_not_called()
 
     def test_game_wait_retries_then_reports_the_holder(self):

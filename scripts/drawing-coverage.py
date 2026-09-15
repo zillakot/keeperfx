@@ -39,18 +39,22 @@ FAMILIES = (
     dict(name="Legacy gpoly span sink", counters=("gpu_spans", "cpu_gpoly_spans", "cpu_replayed_spans"),
          exclusive=True, expect="zero", note="dead sink; a non-zero value is a regression, not coverage"),
     dict(name="Front view (display_fast_drawlist)", counters=("gpu_sprite_commands", "gpu_batches"),
-         exclusive=False, note="shares the sprite and quad sinks; only the front-view scene attributes it"),
+         exclusive=False, aggregate=True,
+         note="no counter of its own: it shares the sprite and quad sinks that every scene moves, so "
+              "only the front-view scene's screenshot shows the drawlist was the front-view one"),
     dict(name="General triangles, modes 0-26", counters=("arena_trig_misses", "arena_trig_bytes"), exclusive=True),
     dict(name="Creature shadows", counters=("gpu_shadow_commands",), exclusive=True),
     dict(name="Shadow mode10 target triangles", counters=("arena_target_trig_geometry_misses",), exclusive=True),
     dict(name="World/HUD sprites", counters=("gpu_sprite_commands",), exclusive=True),
     dict(name="Ordered sprite runs", counters=("gpu_ordered_sprites",), exclusive=True),
     dict(name="Pixels, boxes, HV lines, circles", counters=("gpu_batches",), exclusive=False,
-         note="no per-primitive counter exists; a per-kind command counter would be needed"),
+         aggregate=True, note="no per-primitive counter exists; gpu_batches counts every kind, so a "
+              "per-kind command counter would be needed"),
     dict(name="General lines", counters=(), exclusive=False, expect="none",
          note="no kfx_wgpu hook on the general line path, so no counter can move"),
-    dict(name="Text / GUI sprites", counters=("gpu_sprite_commands",), exclusive=False,
-         note="drawn through the sprite wrappers; not separable from world sprites"),
+    dict(name="Text / GUI sprites", counters=("gpu_sprite_commands",), exclusive=False, aggregate=True,
+         note="drawn through the sprite wrappers and counted with world sprites; a text-sprite "
+              "command counter would be needed"),
     dict(name="DBC (Asian) glyph bitmaps", counters=("arena_bitmap_misses", "arena_bitmap_bytes"), exclusive=False,
          note="shares the bitmap arena kind with huge bitmaps; the DBC scene attributes it"),
     dict(name="Huge bitmaps", counters=("arena_bitmap_misses", "arena_bitmap_bytes"), exclusive=False,
@@ -76,8 +80,8 @@ FAMILIES = (
     dict(name="Smoothing", counters=("transition_commands",), exclusive=False,
          note="shares transition_commands with map fades; the smoothing scene attributes it"),
     dict(name="Cursor", counters=("arena_cursor_misses",), exclusive=True),
-    dict(name="Full-surface clear", counters=("gpu_batches",), exclusive=False,
-         note="no clear counter exists; every scene clears"),
+    dict(name="Full-surface clear", counters=("gpu_batches",), exclusive=False, aggregate=True,
+         note="no clear counter exists and gpu_batches counts every kind; every scene clears"),
     dict(name="Screenshots / recording", counters=(), exclusive=False, expect="none",
          note="reads the target with no hook; exercised by the snapshot operations"),
     dict(name="Direct unhooked screen write", counters=(), exclusive=False, expect="none",
@@ -144,6 +148,8 @@ SCENES = (
         ("wait", dict(frames=40, until=["view=2"])),
         ("snapshot", {}),
     ), families=("Lua lenses, Lua pixel/batch API",)),
+    # view_type stays PVT_DungeonTop in front view, so state cannot prove the mode; the snapshot
+    # shows the orthographic drawlist and rotate_mode 2 is what selects it at player init.
     dict(name="front-view", launch=dict(level=BUSY_LEVEL, rotate_mode=2), steps=(
         ("wait", dict(frames=120, until=["frontend=0", "presenter=wgpu"])),
         ("snapshot", {}),
@@ -172,6 +178,20 @@ SCENES = (
         ("snapshot", {}),
     ), families=("Map fades / transitions",)),
     # Main menu 1, campaign selection 31, land view 3; the campaign list starts at y=167.
+    # The in-game fade branch is dead (see the family note), so this scene drives the fade view
+    # mode straight onto the active camera through the unvalidated Lua camera field to exercise the
+    # producer itself; it is not a gameplay path.
+    dict(name="map-fade-lua", launch=dict(level=BUSY_LEVEL, cheats=True), steps=(
+        ("wait", dict(frames=120, until=["frontend=0", "view=1", "presenter=wgpu"])),
+        ("console", dict(command="lua PLAYER0.camera.view_mode = 6")),
+        ("wait", dict(frames=30)),
+        ("snapshot", {}),
+        ("console", dict(command="lua PLAYER0.camera.view_mode = 7")),
+        ("wait", dict(frames=30)),
+        ("snapshot", {}),
+        ("console", dict(command="lua PLAYER0.camera.view_mode = 2")),
+        ("wait", dict(frames=10)),
+    ), families=("Map fades / transitions",)),
     dict(name="landview", launch=dict(), steps=(
         ("wait", dict(frames=60, until=["frontend=1", "presenter=wgpu"])),
         ("snapshot", {}),
@@ -256,6 +276,7 @@ def summarize(scenes, results):
     families = []
     for family in FAMILIES:
         row = dict(family=family["name"], counters=list(family["counters"]), exclusive=family["exclusive"],
+                   aggregate=family.get("aggregate", False),
                    expect=family.get("expect", "nonzero"), note=family.get("note", ""),
                    targeted_by=[scene["name"] for scene in scenes if family["name"] in scene["families"]],
                    scenes={})
@@ -273,7 +294,8 @@ def summarize(scenes, results):
         elif row["expect"] == "zero":
             row["status"] = "zero as expected" if not row["nonzero_in"] else "unexpectedly non-zero"
         elif row["measured_in"]:
-            row["status"] = "measured" if family["exclusive"] else "measured (scene-attributed)"
+            row["status"] = ("exercised, aggregate counter only" if row["aggregate"] else
+                             "measured" if family["exclusive"] else "measured (scene-attributed)")
         elif row["nonzero_in"]:
             row["status"] = "not reached (shared counter moved elsewhere)"
         else:
@@ -325,22 +347,24 @@ def markdown(summary):
     return "\n".join(lines) + "\n"
 
 
-def run_scene(scene, args, work):
-    await_no_game()
+def run_scene(scene, args, work, record):
+    await_no_game(timeout=args.lifetime + 120)
     await_console()
+    # Every scene writes save/settings.toml, so all of them take the load path and its sanity
+    # clamps; a scene without the file would keep the unclamped defaults instead.
     options = dict(out=work, game_dir=args.game_dir, engine=args.engine, backend="wgpu", verify=False,
                    draw_backend="wgpu", draw_verify=True, copy_saves=False, lifetime=args.lifetime,
                    campaign=args.campaign, level=None, cheats=False, play_movies=False, smoothing=False,
-                   ingame_res=None, language=None, rotate_mode=None, startup_timeout=None,
+                   ingame_res=None, language=None, rotate_mode=0, startup_timeout=None,
                    turns_per_second=None, movie_scaling=None)
     options.update(scene["launch"])
     launch = argparse.Namespace(**options)
-    record = dict(scene=scene["name"], status="running", launch_args=None, operations=[])
-    started = CONTROL.launch(launch)
-    session = CONTROL.read_session(Path(started["session"]))
-    record["launch_args"] = session["args"]
-    record["engine_sha256"] = session["engine_sha256"]
+    session = None
     try:
+        started = CONTROL.launch(launch)
+        session = CONTROL.read_session(Path(started["session"]))
+        record["launch_args"] = session["args"]
+        record["engine_sha256"] = session["engine_sha256"]
         for index, (op, fields) in enumerate(scene["steps"]):
             client = CONTROL.Client(session, timeout=args.step_timeout)
             try:
@@ -352,7 +376,11 @@ def run_scene(scene, args, work):
             if output["after"].get("presenter") not in (None, "wgpu"):
                 raise RuntimeError(f"presenter fell back to {output['after']['presenter']}")
     finally:
-        record["exit"] = quit_session(session, args.step_timeout)
+        # A launch that times out has already started the game, so the descriptor is the handle.
+        if session is None and (work / "session.json").is_file():
+            session = CONTROL.read_session(work / "session.json")
+        if session is not None:
+            record["exit"] = quit_session(session, args.step_timeout)
     return record
 
 
@@ -372,6 +400,22 @@ def quit_session(session, timeout):
                     raise RuntimeError("the session supervisor did not stop the game; inspect process.json")
                 time.sleep(0.2)
     return json.loads((work / "exit.json").read_text())
+
+
+def complete_record(work):
+    """A finished scene record, or None when the directory holds a failed or partial run."""
+    try:
+        record = json.loads((work / "scene.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return record if record.get("status") == "complete" else None
+
+
+def summary_name(scenes):
+    """A partial selection gets its own summary so it cannot overwrite the full matrix."""
+    if len(scenes) == len(SCENES):
+        return "summary"
+    return "summary-" + "-".join(scene["name"] for scene in scenes)[:80]
 
 
 def selected(patterns):
@@ -406,18 +450,21 @@ def main():
             print(f"timing lock acquired after {lock['waited_seconds']:.1f}s", flush=True)
             for scene in scenes:
                 work = args.out / scene["name"]
-                if (work / "scene.json").exists():
+                done = complete_record(work)
+                if done is not None:
                     print(f"skipping completed scene {scene['name']}", flush=True)
+                    results[scene["name"]] = done
                     continue
                 if work.exists():
                     work.rename(work.with_name(work.name + "-incomplete-" +
                                                datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")))
                 print(f"scene {scene['name']}", flush=True)
+                record = dict(scene=scene["name"], status="running", launch_args=None, operations=[])
                 try:
-                    record = run_scene(scene, args, work)
+                    run_scene(scene, args, work, record)
                     record["status"] = "complete"
                 except (OSError, RuntimeError, TimeoutError, ValueError, subprocess.SubprocessError) as error:
-                    record = dict(scene=scene["name"], status="failed", error=f"{type(error).__name__}: {error}")
+                    record.update(status="failed", error=f"{type(error).__name__}: {error}")
                 if work.is_dir():
                     record["counters"] = read_counters(work) if (work / "drawing.json").exists() else {}
                     record["gate"] = gate_of(record["counters"])
@@ -430,8 +477,9 @@ def main():
             results[scene["name"]] = json.loads(path.read_text())
         results.setdefault(scene["name"], dict(scene=scene["name"], status="not run"))
     summary = summarize(scenes, results)
-    (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    (args.out / "summary.md").write_text(markdown(summary))
+    name = summary_name(scenes)
+    (args.out / f"{name}.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (args.out / f"{name}.md").write_text(markdown(summary))
     print(markdown(summary))
 
 
