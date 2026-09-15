@@ -885,3 +885,35 @@ inversion happens once per dispatch. Its private view is 144 bytes: four target
 words followed by 32 words holding eight four-bit dictionary indices each.
 Unknown background colours retain dictionary index zero. This uses the existing
 uniform ring and adds no GPU pass or barrier; raw minimap sources stay unchanged.
+
+Capped matched pairs measured 2026-09-15 08:30–08:50, offscreen, wgpu drawing,
+40 warmup / 200 measured turns, alternated within each pair. Word-once binary
+b94fa46c7 (sha256 070e996c…) against PR #45 head 416a46d59 (sha256 fb4cd2c7…).
+Every cell is baseline → word-once; replay, upload, pack and process CPU are
+means per presentation in ms, FPS is observed.
+
+| Cell / pair | Replay | Upload | Pack | FPS | Process CPU/frame |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| capped-busy-1080 1 | 1.976 → 1.360 | 1.476 → 0.838 | 0.278 → 0.293 | 60.0 → 60.0 | 6.13 → 5.67 |
+| capped-busy-1080 2 | 1.960 → 1.323 | 1.464 → 0.807 | 0.277 → 0.290 | 60.0 → 60.0 | 6.09 → 5.54 |
+| capped-quiet-1080 1 | 1.855 → 1.266 | 1.368 → 0.765 | 0.283 → 0.291 | 60.0 → 60.0 | 5.39 → 4.76 |
+| capped-quiet-1080 2 | 1.837 → 1.248 | 1.355 → 0.743 | 0.279 → 0.293 | 60.0 → 60.0 | 5.37 → 4.78 |
+| capped-busy-640 1 | 1.893 → 1.196 | 1.500 → 0.751 | 0.267 → 0.295 | 60.0 → 60.0 | 5.54 → 5.32 |
+| capped-busy-640 2 | 1.945 → 1.301 | 1.540 → 0.832 | 0.275 → 0.310 | 60.0 → 60.0 | 5.62 → 5.63 |
+| capped-quiet-640 1 | 1.818 → 1.084 | 1.390 → 0.669 | 0.292 → 0.288 | 60.0 → 60.0 | 5.36 → 4.31 |
+| capped-quiet-640 2 | 1.774 → 1.193 | 1.357 → 0.743 | 0.283 → 0.311 | 60.0 → 60.0 | 5.24 → 4.74 |
+| uncapped-busy-1080 1 | 1.722 → 0.992 | 1.313 → 0.598 | 0.228 → 0.224 | 241.1 → 253.2 | 5.13 → 4.06 |
+| uncapped-busy-1080 2 | 1.612 → 0.904 | 1.247 → 0.547 | 0.216 → 0.210 | 255.8 → 267.5 | 4.41 → 3.46 |
+
+Replay falls 0.58–0.73 ms in every cell and the capped cells stay on the 60 FPS
+cap. Pack time is within +5% in the 1080p and uncapped cells but +10–12% (about
+0.03 ms) in the busy 640x480 pairs. The uncapped 1080p ceiling rises about
+12 FPS in both pairs. The serialized exclusive GPU union is still about +7%
+(4.02 → 4.30 ms), with the minimap pass the largest growth, so GPU work per
+frame is higher even though host time is lower.
+
+Windowed parity on the word-once binary: KFX_WGPU_VERIFY surface sessions
+verified every presented frame at 640x480 and 1920x1080 on both wgpu and
+software drawing, 717–719 frames each with 16–18 startup acquisition skips,
+the normal pattern for every windowed run since 2026-09-15 00:20. Run outputs
+are under `out/wgpu-migration/byte-arena-runs/word-once/`.
