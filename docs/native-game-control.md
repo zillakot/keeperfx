@@ -41,8 +41,8 @@ check rather than a performance run. `--level 1 --campaign keeporig` starts game
 Further launch options exist to reach drawing paths a default session never enters:
 `--cheats` passes `-alex`, which the `lua` and `dbc` console commands require; `--play-movies`
 keeps the startup movies and forces the short Bullfrog logo movie; `--smoothing` passes
-`-vidsmooth`; `--ingame-res` replaces the in-game video mode list (the parchment fade only
-runs below 321 pixels wide); `--language` writes a three-letter language code, and a
+`-vidsmooth`; `--ingame-res` replaces the in-game video mode list (the parchment fade state is only
+entered below 321 pixels wide); `--language` writes a three-letter language code, and a
 double-byte language switches all text to the Asian glyph path; `--rotate-mode 2` writes the
 isolated `save/settings.toml` so the level starts in front view.
 

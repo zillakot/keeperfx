@@ -68,9 +68,11 @@ FAMILIES = (
          note="no counter: the Lua callback runs behind a CPU barrier that possession itself also "
               "takes, so cpu_barriers does not separate it; a Lua-lens command counter would"),
     dict(name="Possession lens offscreen target", counters=("target_alias_barriers",), exclusive=True),
-    dict(name="Map fades / transitions",
-         counters=("transition_checkpoint_bytes", "transition_snapshot_copy_bytes", "transition_commands"),
-         exclusive=False, note="shares transition_commands with smoothing; the checkpoint bytes are fade-only"),
+    dict(name="Map fades / transitions", counters=("transition_checkpoint_bytes",), exclusive=True,
+         note="only capture_map_fade_buffer passes a checkpoint, so these bytes are fade-only, while "
+              "transition_commands and transition_snapshot_copy_bytes are shared with smoothing; the "
+              "fade producer is dead at this head because redraw_display switches on the camera view "
+              "mode, which set_engine_view leaves unchanged in the fade states"),
     dict(name="Smoothing", counters=("transition_commands",), exclusive=False,
          note="shares transition_commands with map fades; the smoothing scene attributes it"),
     dict(name="Cursor", counters=("arena_cursor_misses",), exclusive=True),
@@ -313,6 +315,8 @@ def markdown(summary):
         for name in order:
             cell = row["scenes"][name]
             value = "-" if cell["value"] is None else f"{cell['value']:,}"
+            if cell["value"] and cell["counter"] != counter:
+                value += f" ({cell['counter']})"
             cells.append(f"**{value}**" if cell["value"] and name in row["targeted_by"] else value)
         lines.append(f"| {row['family']} | `{counter}` | " + " | ".join(cells) + f" | {row['status']} |")
     notes = [row for row in summary["families"] if row["note"]]
