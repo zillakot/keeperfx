@@ -14,7 +14,7 @@ fn movie_sample(c: Command, pixel: vec2<u32>, view: vec3<u32>) -> u32 {
         let row = u32(local) / stride;
         let column = u32(local) % stride;
         if row < c.source.w && column < copied_width {
-            return assets[c.assets.x + row * c.assets.z + column / double_width];
+            return byte(c.assets.x + row * c.assets.z + column / double_width);
         }
     }
     return 256u;

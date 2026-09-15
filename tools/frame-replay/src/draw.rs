@@ -331,7 +331,7 @@ impl DrawRenderer {
         let queue = renderer.queue().clone();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ordered indexed drawing"),
-            source: wgpu::ShaderSource::Wgsl(DRAW_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(assets::shader(DRAW_SHADER).into()),
         });
         let compute = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("ordered indexed drawing"),

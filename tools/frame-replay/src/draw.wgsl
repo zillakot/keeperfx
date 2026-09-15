@@ -60,7 +60,7 @@ fn terrain_sample(c: Command, viewed: vec2<u32>, pixel: vec2<i32>) -> u32 {
     let high = row.accumulator.y + row.accumulator.w * offset
         + mul_high(row.accumulator.z, offset) + u32(low < row.accumulator.x);
     let uv = ((high << 8u) | (high >> 24u)) & 0x1f1fu;
-    return assets[c.assets.y + (assets[c.assets.x + uv] | (low & 0xff00u))];
+    return byte(c.assets.y + (byte(c.assets.x + uv) | (low & 0xff00u)));
 }
 
 fn circle_octants(p: vec2<i32>, a: i32, b: i32) -> u32 {
@@ -137,7 +137,7 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
         if c.operation.x == 2u {
             let size = vec2<u32>(c.bounds.zw - c.bounds.xy);
             let sample = c.source.xy + (local * c.source.zw) / size;
-            source = assets[c.assets.x + sample.y * c.assets.z + sample.x];
+            source = byte(c.assets.x + sample.y * c.assets.z + sample.x);
         }
         if c.operation.x == 3u {
             let low_product = c.accumulator.z * local.x;
@@ -146,7 +146,7 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
                 + mul_high(c.accumulator.z, local.x) + select(0u, 1u, low < c.accumulator.x);
             let uv = ((high << 8u) | (high >> 24u)) & 0x1f1fu;
             let shade = low & 0xff00u;
-            source = assets[c.assets.y + shade + assets[c.assets.x + uv]];
+            source = byte(c.assets.y + shade + byte(c.assets.x + uv));
         }
         // Kinds below SPRITE never leave the dispatch's space, so they never read the view.
         if c.operation.x >= 6u {
@@ -181,9 +181,9 @@ fn draw(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         for (var hit = 0u; hit < hits; hit++) {
         if c.operation.y == 1u {
-            destination = assets[c.assets.y + (source << 8u) + destination];
+            destination = byte(c.assets.y + (source << 8u) + destination);
         } else if c.operation.y == 2u {
-            destination = assets[c.assets.y + (destination << 8u) + source];
+            destination = byte(c.assets.y + (destination << 8u) + source);
         } else {
             destination = source;
         }

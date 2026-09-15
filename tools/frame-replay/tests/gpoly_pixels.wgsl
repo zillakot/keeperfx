@@ -26,7 +26,7 @@ fn render(@builtin(global_invocation_id) gid: vec3<u32>) {
             + u32(low < row.accumulator.x);
         let uv = ((high << 8u) | (high >> 24u)) & 0x1f1fu;
         let shade = low & 0xff00u;
-        color = assets[7968u + (assets[uv] | shade)];
+        color = byte(7968u + (byte(uv) | shade));
     }
     pixels[(gid.z * parameters.height + gid.y) * parameters.pitch + gid.x] = color;
 }
