@@ -922,9 +922,13 @@ pair 1 by 5.4%, capped-quiet-640 pair 2 by 9.9% and the busy 640x480 pairs by
 capped-busy-640 pair 2; no row moves more than 0.035 ms either way. The uncapped
 1080p ceiling rises about 12 FPS in both pairs.
 
-The serialized exclusive GPU union is still about +7%, 4.02 → 4.30 ms, with the
-minimap pass the largest growth, so GPU work per frame is higher even though host
-time is lower. That figure is the separate `serial-busy-1080-baseline` /
+The serialized exclusive GPU union is still about +7%, 4.02 → 4.30 ms, so GPU work
+per frame is higher even though host time is lower. Every timed drawing pass but
+terrain prepare (0.065 → 0.059 ms) grows, the scene reaching no lens pass: shadow
+mask 0.765 → 0.844 ms is the largest absolute growth at +0.079 ms, ordered sprites
+0.220 → 0.265 ms the largest relative one at +20.1%, then raster 1.153 → 1.221 ms
+(+5.9%), target triangles 0.865 → 0.931 ms (+7.6%) and the minimap 0.960 → 1.012 ms
+(+5.4%), which stays the second most expensive pass. That figure is the separate `serial-busy-1080-baseline` /
 `serial-busy-1080-branch` cells: busy 1920x1080, capped, `--serial-gpu-timing`,
 which drains between passes and so measures each family exclusively over 587 and
 581 frames. It is not comparable with the overlapped `gpu_pass_union_ns` of the

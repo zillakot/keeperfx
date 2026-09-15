@@ -92,6 +92,11 @@ python3 scripts/game-control.py cycle-mode --until fullscreen=false --until widt
 python3 scripts/game-control.py resize 937 613 --until width=937 --until height=613 --session out/control-example/session.json
 ```
 
+After PR #41 the API server survives the video-mode switch, but `cycle-mode` and the
+following operation both time out while the game keeps running in desktop mode — the
+measurement schedule logged `{"error": "timed out"}` for each — so drawing-oracle sessions
+exclude the mode round trip until that is fixed.
+
 Only the isolated control session ignores physical keyboard/mouse events received
 by its window and avoids grabbing/warping the host cursor. Native close, focus and
 window lifecycle events remain active. Control requests run on the main thread;
@@ -138,8 +143,10 @@ python3 scripts/game-control.py quit --session out/control-reconnect/session.jso
 ```
 
 Every command must succeed; `quit` must report `exit.returncode: 0` and
-`exit.timed_out: false`. The C socket fixture covers closed-peer writes with the
-default SIGPIPE disposition and replacement cleanup without launching the game.
+`exit.timed_out: false`. This regression currently fails at `cycle-mode` and the following
+operation, which both time out after the switch. The C socket fixture covers
+closed-peer writes with the default SIGPIPE disposition and replacement cleanup without
+launching the game.
 
 Screenshots plus state predicates establish UI outcomes. For rendering experiments,
 record the executable hash and final Rust verification counts; run performance
