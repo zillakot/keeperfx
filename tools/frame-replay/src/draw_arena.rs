@@ -774,6 +774,35 @@ mod tests {
     }
 
     #[test]
+    fn byte_class_boundaries_and_full_allocator() {
+        let mut arena = Arena::new(u64::MAX);
+        for (length, expected) in [
+            (0, 256),
+            (1, 256),
+            (255, 256),
+            (256, 256),
+            (257, 512),
+            (511, 512),
+            (512, 512),
+            (513, 1024),
+        ] {
+            assert_eq!(arena.allocation_bytes(1, length).unwrap(), expected);
+            assert_eq!(expected % 4, 0);
+        }
+        assert!(arena.allocation_bytes(1, u32::MAX as usize).is_err());
+        arena.capacity = ALIGN_BYTES + 4 * MIN_CLASS_BYTES;
+        for index in 0..4 {
+            assert_eq!(
+                arena.bump(MIN_CLASS_BYTES),
+                Some(ALIGN_BYTES + index * MIN_CLASS_BYTES)
+            );
+        }
+        assert_eq!(arena.high_water, arena.capacity);
+        assert_eq!(arena.bump(MIN_CLASS_BYTES), None);
+        assert_eq!(arena.high_water, arena.capacity);
+    }
+
+    #[test]
     fn allocation_demand_uses_classes_and_existing_residency() {
         let mut arena = Arena::new(32 << 20);
         assert_eq!(arena.allocation_bytes(1, 60).unwrap(), 256);

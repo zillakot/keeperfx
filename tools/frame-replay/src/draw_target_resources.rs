@@ -164,31 +164,34 @@ impl DrawRenderer {
         self.arena_headroom(batch.asset_bytes as u64)?;
         let (assets, base) = if self.arena.enabled() {
             self.arena.begin_batch();
-            let words =
+            let scratch_bytes =
                 u32::try_from(batch.asset_bytes).context("snapshot arena exceeds storage limit")?;
-            let base =
-                self.arena
-                    .reserve_scratch(&self.device, &self.queue, &mut self.counters, words)?;
+            let base = self.arena.reserve_scratch(
+                &self.device,
+                &self.queue,
+                &mut self.counters,
+                scratch_bytes,
+            )?;
             (
                 self.arena
                     .binding(&self.device, &self.queue, &mut self.counters),
                 base,
             )
         } else {
-            let mut words = vec![0u8; batch.asset_bytes.max(1)];
+            let mut bytes = vec![0u8; batch.asset_bytes.max(1)];
             let _scope = Scope::new(Phase::Upload);
             for (&id, &offset) in &batch.tables {
                 let offset = offset as usize;
-                for (at, &byte) in self.resources[&id].bytes.iter().enumerate() {
-                    words[offset + at] = byte;
-                }
+                let source = &self.resources[&id].bytes;
+                let _copy = host::UploadTimer::new(host::UploadPart::Copy, source.len());
+                bytes[offset..offset + source.len()].copy_from_slice(source);
             }
             (
                 byte_buffer(
                     &self.device,
                     &mut self.counters,
                     "GPU snapshot sampling arena",
-                    &words,
+                    &bytes,
                     wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 ),
                 0,
