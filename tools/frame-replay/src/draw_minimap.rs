@@ -430,4 +430,264 @@ mod tests {
             assert_eq!(index(&colours, colour), position as u32 & 15);
         }
     }
+
+    const DRAW_SQUARE: [(i32, i32); 36] = [
+        (0, 0),
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (2, -1),
+        (2, 0),
+        (2, 1),
+        (2, 2),
+        (1, 2),
+        (0, 2),
+        (-1, 2),
+        (-2, 2),
+        (-2, 1),
+        (-2, 0),
+        (-2, -1),
+        (-2, -2),
+        (-1, -2),
+        (0, -2),
+        (1, -2),
+        (2, -2),
+        (3, -2),
+        (3, -1),
+        (3, 0),
+        (3, 1),
+        (3, 2),
+        (3, 3),
+        (2, 3),
+        (1, 3),
+        (0, 3),
+        (-1, 3),
+        (-2, 3),
+    ];
+
+    fn payload(h: &[u32; 24], pattern: &[(i32, i32)]) -> Vec<u8> {
+        let mut b: Vec<u8> = h.iter().flat_map(|v| v.to_le_bytes()).collect();
+        for (dx, dy) in pattern {
+            b.extend(dx.to_le_bytes());
+            b.extend(dy.to_le_bytes());
+        }
+        b
+    }
+
+    fn shipped_box(h: &[u32; 24]) -> [u32; 4] {
+        written_box(h, &payload(h, &DRAW_SQUARE))
+    }
+
+    fn noise(state: &mut u32) -> u32 {
+        *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        *state >> 8
+    }
+
+    fn pattern_hit(h: &[u32; 24], b: &[u8], p: [i32; 2], centre: [i32; 2], spread: i32) -> bool {
+        (0..h[18] as usize).any(|i| {
+            let o = h[22] as usize + i * 8;
+            let dx = p[0] - centre[0] - i32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+            let dy = p[1] - centre[1] - i32::from_le_bytes(b[o + 4..o + 8].try_into().unwrap());
+            (dx == 0 && dy == 0)
+                || (spread != 0
+                    && ((dy == 0 && dx.abs() == spread.abs())
+                        || (dx == 0 && dy.abs() == spread.abs())))
+        })
+    }
+
+    fn octant(q: [i32; 2], x: i32, y: i32) -> bool {
+        (q[0].abs() == x && q[1].abs() == y) || (q[0].abs() == y && q[1].abs() == x)
+    }
+
+    fn circle_hit(h: &[u32; 24], q: [i32; 2], early: bool) -> bool {
+        let (high, low) = (q[0].abs().max(q[1].abs()), q[0].abs().min(q[1].abs()));
+        let increment = h[21] as i32;
+        let mut y = h[18] as i32;
+        let mut x = 0;
+        let mut decision = 3 - 2 * y;
+        if y <= 1 {
+            return false;
+        }
+        while x < y {
+            if early && (x > low || y < high) {
+                break;
+            }
+            if octant(q, x, y) {
+                return true;
+            }
+            if decision >= 0 {
+                decision += 4 * (x - y) + increment;
+                y -= 1;
+            } else {
+                decision += 4 * (x - 1) + increment;
+            }
+            x += 1;
+        }
+        x == y && octant(q, x, y)
+    }
+
+    fn kernel_writes(h: &[u32; 24], b: &[u8], p: [i32; 2]) -> bool {
+        let si = |i: usize| h[i] as i32;
+        match h[0] {
+            1 => pattern_hit(h, b, p, [si(16), si(17)], si(19)),
+            2 => circle_hit(h, [p[0] - si(16), p[1] - si(17)], false),
+            3 => {
+                let mut pos = [si(16), si(17)];
+                let mut remaining = si(21) - 4;
+                while remaining > 0 {
+                    if pos[0] < 0 || pos[1] < 0 || (pos[0] >> 8) >= si(5) || (pos[1] >> 8) >= si(5)
+                    {
+                        break;
+                    }
+                    pos = [pos[0] + si(6), pos[1] + si(7)];
+                    if pattern_hit(h, b, p, [pos[0] >> 8, pos[1] >> 8], 0) {
+                        return true;
+                    }
+                    remaining -= 4;
+                }
+                false
+            }
+            _ => true,
+        }
+    }
+
+    #[test]
+    fn written_box_is_a_superset_of_every_written_pixel() {
+        let d = 32u32;
+        let mut seed = 0x5eed_u32;
+        let mut boxed = 0;
+        for mode in [1u32, 2, 3] {
+            for _ in 0..96 {
+                let mut h = [0u32; 24];
+                h[0] = mode;
+                h[1] = 64;
+                h[2] = 64;
+                h[5] = d;
+                h[22] = 96;
+                h[23] = 36;
+                h[16] = (noise(&mut seed) % (d + 16)).wrapping_sub(8);
+                h[17] = (noise(&mut seed) % (d + 16)).wrapping_sub(8);
+                h[18] = noise(&mut seed) % 37;
+                h[19] = (noise(&mut seed) % 17).wrapping_sub(8);
+                h[20] = noise(&mut seed) % 256;
+                h[21] = noise(&mut seed) % 200;
+                if mode == 2 {
+                    h[18] = noise(&mut seed) % 24;
+                }
+                if mode == 3 {
+                    h[16] = (h[16] as i32).wrapping_mul(256) as u32;
+                    h[17] = (h[17] as i32).wrapping_mul(256) as u32;
+                    h[6] = (noise(&mut seed) % 1024).wrapping_sub(512);
+                    h[7] = (noise(&mut seed) % 1024).wrapping_sub(512);
+                    h[21] = noise(&mut seed) % 400;
+                }
+                let b = payload(&h, &DRAW_SQUARE);
+                let bounds = written_box(&h, &b);
+                if bounds != [0, 0, d, d] {
+                    boxed += 1;
+                }
+                for y in 0..d as i32 {
+                    for x in 0..d as i32 {
+                        if kernel_writes(&h, &b, [x, y]) {
+                            assert!(
+                                x >= bounds[0] as i32
+                                    && x < bounds[2] as i32
+                                    && y >= bounds[1] as i32
+                                    && y < bounds[3] as i32,
+                                "mode {mode} pixel ({x},{y}) outside {bounds:?} of {h:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(boxed > 200, "the randomized headers never narrowed the box");
+    }
+
+    #[test]
+    fn written_box_clamps_to_the_square_and_reports_empty_spans() {
+        let mut h = [0u32; 24];
+        h[0] = 1;
+        h[1] = 64;
+        h[2] = 64;
+        h[5] = 32;
+        h[18] = 36;
+        h[22] = 96;
+        h[23] = 36;
+        assert_eq!(shipped_box(&h), [0, 0, 4, 4]);
+        h[16] = 31;
+        h[17] = 31;
+        assert_eq!(shipped_box(&h), [29, 29, 32, 32]);
+        h[19] = (-4i32) as u32;
+        assert_eq!(shipped_box(&h), [25, 25, 32, 32]);
+        h[19] = 0;
+        h[16] = (-40i32) as u32;
+        assert_eq!(shipped_box(&h), [0; 4]);
+        h[0] = 3;
+        h[16] = 0;
+        h[21] = 4;
+        assert_eq!(shipped_box(&h), [0; 4]);
+        h[0] = 0;
+        assert_eq!(shipped_box(&h), [0, 0, 32, 32]);
+        h[0] = 4;
+        assert_eq!(shipped_box(&h), [0, 0, 32, 32]);
+        h[0] = 2;
+        h[16] = 16;
+        h[17] = 16;
+        h[18] = 4;
+        assert_eq!(shipped_box(&h), [11, 11, 22, 22]);
+        h[18] = 15;
+        assert_eq!(shipped_box(&h), [0, 0, 32, 32]);
+    }
+
+    #[test]
+    fn shipped_pattern_stays_inside_the_assumed_bound() {
+        let bound = -(PATTERN_LOW as i32)..=PATTERN_HIGH as i32;
+        assert!(
+            DRAW_SQUARE
+                .iter()
+                .all(|(x, y)| bound.contains(x) && bound.contains(y))
+        );
+        let mut h = [0u32; 24];
+        h[0] = 1;
+        h[1] = 64;
+        h[2] = 64;
+        h[5] = 32;
+        h[16] = 16;
+        h[17] = 16;
+        h[18] = 36;
+        h[22] = 96;
+        h[23] = 36;
+        assert_eq!(shipped_box(&h), [14, 14, 20, 20]);
+        let mut wide = DRAW_SQUARE;
+        wide[35] = (4, 0);
+        assert_eq!(written_box(&h, &payload(&h, &wide)), [0, 0, 32, 32]);
+    }
+
+    #[test]
+    fn circle_early_break_matches_the_full_bresenham() {
+        for radius in 0..52u32 {
+            for increment in [0u32, 1, 6] {
+                let mut h = [0u32; 24];
+                h[0] = 2;
+                h[18] = radius;
+                h[21] = increment;
+                let span = radius as i32 + 2;
+                for y in -span..=span {
+                    for x in -span..=span {
+                        assert_eq!(
+                            circle_hit(&h, [x, y], false),
+                            circle_hit(&h, [x, y], true),
+                            "radius {radius} increment {increment} at ({x},{y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
