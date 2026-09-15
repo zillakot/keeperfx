@@ -1,6 +1,5 @@
 fn sprite_word(offset: u32) -> u32 {
-    return assets[offset] | (assets[offset + 1u] << 8u)
-        | (assets[offset + 2u] << 16u) | (assets[offset + 3u] << 24u);
+    return le32(offset);
 }
 
 fn sprite_axis(offset: u32, count: u32, position: u32) -> u32 {
@@ -28,9 +27,9 @@ fn sprite_sample(c: Command, pixel: vec2<u32>) -> u32 {
     if (c.source.x & 1u) != 0u { x = w - 1u - x; }
     if (c.source.x & 2u) != 0u { y = h - 1u - y; }
     let index = c.assets.x + 2u * (y * w + x);
-    if assets[index + 1u] == 0u { return 256u; }
+    if byte(index + 1u) == 0u { return 256u; }
     if (c.source.x & 4u) != 0u { return c.operation.w; }
-    return assets[axis + (w + h) * 8u + assets[index]];
+    return byte(axis + (w + h) * 8u + byte(index));
 }
 
 fn sprite_copy_forward(source: i32, destination: i32, count: i32, alignment: u32) {
@@ -76,14 +75,14 @@ fn sprite_ordered(@builtin(workgroup_id) wid: vec3<u32>) {
         var in_run = false;
         for (var sx = 0u; sx < w; sx++) {
             let artwork = c.assets.x + 2u * (sy * w + sx);
-            let coverage = assets[artwork + 1u];
+            let coverage = byte(artwork + 1u);
             if coverage == 0u { continue; }
             let ax = w - 1u - sx;
             let xstart = sprite_word(axis + ax * 8u);
             let xcount = sprite_word(axis + ax * 8u + 4u);
             let right = i32(y * parameters.x + xstart + xcount) - 1;
             if !in_run { run_right = right; in_run = true; }
-            let colour = select(assets[remap + assets[artwork]], c.operation.w, (c.source.x & 4u) != 0u);
+            let colour = select(byte(remap + byte(artwork)), c.operation.w, (c.source.x & 4u) != 0u);
             for (var dx = 0u; dx < xcount; dx++) {
                 pixels[pixel_address(u32(right - i32(dx)))] = colour;
             }
