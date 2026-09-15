@@ -144,20 +144,32 @@ def validate_launch(args):
         raise ValueError("invalid in-game video mode list")
     if getattr(args, "rotate_mode", None) not in (None, 0, 1, 2):
         raise ValueError("rotate mode must be 0, 1 or 2")
+    turns = getattr(args, "turns_per_second", None)
+    if turns is not None and not 1 <= turns <= 50:
+        raise ValueError("turns per second must be 1..50")
     startup = getattr(args, "startup_timeout", None)
     if startup is not None and not 30 <= startup <= 600:
         raise ValueError("startup timeout must be 30..600 seconds")
+
+
+def setting(text, key, value):
+    """Replace the configuration line, or add it when the file does not carry the key."""
+    text, count = re.subn(rf"^{key}\s*=.*$", f"{key}={value}", text, flags=re.M)
+    return text if count else text + f"\n{key}={value}\n"
 
 
 def prepare_session(args, work, engine, port):
     """Rewrite the cloned configuration for this session and return its descriptor."""
     config = work / "keeperfx.cfg"
     text = config.read_text().replace("API_ENABLED=FALSE", "API_ENABLED=TRUE")
-    text = re.sub(r"^API_PORT\s*=.*$", f"API_PORT={port}", text, flags=re.M)
-    modes = getattr(args, "ingame_res", None) or "640x480w32 DESKTOP 800x600w32"
-    text = re.sub(r"^INGAME_RES\s*=.*$", f"INGAME_RES={modes}", text, flags=re.M)
+    text = setting(text, "API_PORT", port)
+    text = setting(text, "INGAME_RES", getattr(args, "ingame_res", None) or "640x480w32 DESKTOP 800x600w32")
     if getattr(args, "language", None):
-        text = re.sub(r"^LANGUAGE\s*=.*$", f"LANGUAGE={args.language}", text, flags=re.M)
+        text = setting(text, "LANGUAGE", args.language)
+    if getattr(args, "turns_per_second", None):
+        text = setting(text, "TURNS_PER_SECOND", args.turns_per_second)
+    if getattr(args, "movie_scaling", None) is not None:
+        text = setting(text, "RESIZE_MOVIES", "ON" if args.movie_scaling else "OFF")
     config.write_text(text)
     if getattr(args, "rotate_mode", None) is not None:
         (work / "save/settings.toml").write_text(f"[video]\nrotate_mode = {args.rotate_mode}\n")
@@ -275,6 +287,8 @@ def main():
     launch_parser.add_argument("--language", help="three-letter language code written to the isolated configuration")
     launch_parser.add_argument("--rotate-mode", type=int, choices=(0, 1, 2), help="0 iso wibble, 1 iso straight, 2 front view")
     launch_parser.add_argument("--startup-timeout", type=int, help="seconds to wait for the control API; startup movies delay it")
+    launch_parser.add_argument("--turns-per-second", type=int, help="slow the simulation so short animations span drawn frames")
+    launch_parser.add_argument("--movie-scaling", type=int, choices=(0, 1), help="0 plays movies unscaled, which uses the movie draw kind")
     supervisor = sub.add_parser("_supervise", help=argparse.SUPPRESS)
     supervisor.add_argument("--session", type=Path, required=True)
     operations = ("state", "move", "click", "drag", "key", "chord", "cycle-mode", "wait", "resize",

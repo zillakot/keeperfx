@@ -153,7 +153,9 @@ SCENES = (
         ("key", dict(key="Up", frames=30)),
         ("snapshot", {}),
     ), families=("Smoothing",)),
-    dict(name="map-fade", launch=dict(level=BUSY_LEVEL, ingame_res="320x200w32"), steps=(
+    # The fade is eight game turns; under the drawing oracle the renderer would otherwise
+    # draw no frame inside it, so the simulation is slowed until the fade spans several frames.
+    dict(name="map-fade", launch=dict(level=BUSY_LEVEL, ingame_res="320x200w32", turns_per_second=2), steps=(
         ("wait", dict(frames=120, until=["frontend=0", "view=1", "presenter=wgpu"])),
         ("key", dict(key="M", until=["view=4"])),
         ("snapshot", {}),
@@ -170,7 +172,7 @@ SCENES = (
         ("snapshot", {}),
     ), families=("Landview zoom", "Huge bitmaps")),
     # The startup movies run before the API server exists, so the launch wait covers their length.
-    dict(name="movies", launch=dict(play_movies=True, startup_timeout=300), steps=(
+    dict(name="movies", launch=dict(play_movies=True, startup_timeout=300, movie_scaling=0), steps=(
         ("wait", dict(frames=30)),
         ("snapshot", {}),
         ("key", dict(key="Escape", frames=10)),
@@ -318,7 +320,8 @@ def run_scene(scene, args, work):
     options = dict(out=work, game_dir=args.game_dir, engine=args.engine, backend="wgpu", verify=False,
                    draw_backend="wgpu", draw_verify=True, copy_saves=False, lifetime=args.lifetime,
                    campaign=args.campaign, level=None, cheats=False, play_movies=False, smoothing=False,
-                   ingame_res=None, language=None, rotate_mode=None, startup_timeout=None)
+                   ingame_res=None, language=None, rotate_mode=None, startup_timeout=None,
+                   turns_per_second=None, movie_scaling=None)
     options.update(scene["launch"])
     launch = argparse.Namespace(**options)
     record = dict(scene=scene["name"], status="running", launch_args=None, operations=[])
