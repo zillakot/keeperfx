@@ -549,3 +549,9 @@ explicit dependencies.
 Use phase completion and behavioral coverage to measure progress, not translated
 line counts. Estimate components after inspecting their callers and fixtures, and use those
 results to refine the scope of later phases.
+
+Byte-packed arena delivery follows the upload rings with same-replay byte/copy
+instrumentation, byte-addressed family readers and GPU snapshot packing. Queue
+transport remains in place. Both formats run the native fixture matrix; the
+five-cell host comparison, snapshot/pass budgets and separate surface/drawing
+oracles gate performance acceptance. Reusable mapped staging is a later PR.

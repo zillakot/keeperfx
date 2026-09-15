@@ -108,7 +108,9 @@ impl DrawRenderer {
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("native minimap"),
-                    source: wgpu::ShaderSource::Wgsl(assets::shader(include_str!("draw_minimap.wgsl")).into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        assets::shader(include_str!("draw_minimap.wgsl")).into(),
+                    ),
                 });
             self.minimap = Some(MinimapState {
                 pipeline: self

@@ -846,7 +846,10 @@ mod tests {
             "three views and the root are one raster pass over the root"
         );
         assert_eq!(draw.counters().readback_bytes, 0);
-        assert_eq!(draw.counters().asset_upload_bytes, 24);
+        assert_eq!(
+            draw.counters().asset_upload_bytes,
+            6 * assets::STRIDE as u64
+        );
         assert_eq!(draw.frame_counters().validation_waits, 0);
         let mut expected = vec![7; 13 * 9];
         for y in 0..4 {

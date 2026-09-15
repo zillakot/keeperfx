@@ -117,7 +117,9 @@ impl DrawRenderer {
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("ordered native lens"),
-                    source: wgpu::ShaderSource::Wgsl(assets::shader(include_str!("draw_effects.wgsl")).into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        assets::shader(include_str!("draw_effects.wgsl")).into(),
+                    ),
                 });
             let pipeline = self
                 .device

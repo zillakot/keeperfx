@@ -233,7 +233,9 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("gpoly fixture pixels"),
-        source: wgpu::ShaderSource::Wgsl(keeperfx_frame_replay::draw::assets::shader(include_str!("gpoly_pixels.wgsl")).into()),
+        source: wgpu::ShaderSource::Wgsl(
+            keeperfx_frame_replay::draw::assets::shader(include_str!("gpoly_pixels.wgsl")).into(),
+        ),
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,

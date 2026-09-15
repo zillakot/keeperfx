@@ -5,7 +5,10 @@ pub const STRIDE: usize = if PACKED { 1 } else { 4 };
 pub type ByteOffset = u32;
 
 pub fn shader(source: &str) -> String {
-    format!("const PACKED_ASSETS: bool = {PACKED};\n{}\n{source}", include_str!("draw_asset_bytes.wgsl"))
+    format!(
+        "const PACKED_ASSETS: bool = {PACKED};\n{}\n{source}",
+        include_str!("draw_asset_bytes.wgsl")
+    )
 }
 
 pub(super) fn aligned(length: usize) -> usize {

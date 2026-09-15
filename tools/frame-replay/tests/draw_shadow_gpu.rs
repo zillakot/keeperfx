@@ -210,7 +210,11 @@ fn a_shadow_that_bins_to_nothing_still_records_its_mask() {
             .is_err()
         );
         let after = draw.counters();
-        let uploaded = if limit >= 32 << 20 { 240 } else { 0 };
+        let uploaded = if limit >= 32 << 20 {
+            60 * keeperfx_frame_replay::draw::assets::STRIDE as u64
+        } else {
+            0
+        };
         assert_eq!(
             after.asset_upload_bytes - before.asset_upload_bytes,
             uploaded
@@ -416,7 +420,10 @@ fn target_triangle_validation_and_resident_slots() {
     let before = draw.counters();
     draw.submit_target_triangles(target, &[c], 0, None).unwrap();
     let after = draw.counters();
-    assert_eq!(after.asset_upload_bytes - before.asset_upload_bytes, 60 * 4);
+    assert_eq!(
+        after.asset_upload_bytes - before.asset_upload_bytes,
+        60 * keeperfx_frame_replay::draw::assets::STRIDE as u64
+    );
     assert_eq!(
         after.target_trig_table_bytes - before.target_trig_table_bytes,
         0

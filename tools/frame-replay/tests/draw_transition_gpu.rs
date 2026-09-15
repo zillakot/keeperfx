@@ -99,7 +99,8 @@ fn actual_native_transitions() -> Result<()> {
             "transition readback"
         );
         ensure!(
-            after.asset_upload_bytes - before.asset_upload_bytes == n as u64 * 4,
+            after.asset_upload_bytes - before.asset_upload_bytes
+                == n as u64 * keeperfx_frame_replay::draw::assets::STRIDE as u64,
             "transition uploaded source pixels"
         );
         ensure!(

@@ -488,6 +488,9 @@ pub(crate) fn arena_transfer(bytes: usize) {
 pub(crate) fn initialized_bytes(bytes: usize) {
     count(|c| c.upload_init_bytes += bytes as u64);
 }
+pub(crate) fn snapshot_pack(bytes: u64) {
+    count(|c| c.snapshot_pack_bytes += bytes);
+}
 pub(crate) fn snapshot_copy(bytes: u64) {
     count(|c| c.snapshot_copy_bytes += bytes);
 }

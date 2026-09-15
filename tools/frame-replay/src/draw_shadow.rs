@@ -114,7 +114,9 @@ impl DrawRenderer {
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("native creature shadow mask"),
-                    source: wgpu::ShaderSource::Wgsl(assets::shader(include_str!("draw_shadow.wgsl")).into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        assets::shader(include_str!("draw_shadow.wgsl")).into(),
+                    ),
                 });
             self.shadow = Some(self.device.create_compute_pipeline(
                 &wgpu::ComputePipelineDescriptor {

@@ -8,7 +8,6 @@ pub(super) const PASS_MINIMAP: usize = 5;
 pub(super) const PASS_LENS: usize = 6;
 pub(super) const PASS_PRESENT: usize = 7;
 pub(super) const PASS_SNAPSHOT_RASTER: usize = 8;
-#[allow(dead_code)]
 pub(super) const PASS_SNAPSHOT_PACK: usize = 9;
 
 /// Reporting order of `Counters::pass_ns`; mirrored by `KfxWgpuDrawCounters`.

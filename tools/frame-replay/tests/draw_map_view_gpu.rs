@@ -86,7 +86,8 @@ fn actual_native_map_views() -> Result<()> {
             "map command read back pixels"
         );
         ensure!(
-            after.asset_upload_bytes - before.asset_upload_bytes == length as u64 * 4,
+            after.asset_upload_bytes - before.asset_upload_bytes
+                == length as u64 * keeperfx_frame_replay::draw::assets::STRIDE as u64,
             "map uploaded unexpected pixels"
         );
         let actual = drawing.readback(target)?;

@@ -11,6 +11,15 @@ permissions:
 
 jobs:
   replay:
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [expanded, packed]
+        include:
+          - format: expanded
+            asset-flags: --no-default-features
+          - format: packed
+            asset-flags: --no-default-features --features packed-arena
     runs-on: ubuntu-24.04
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/out/rust-target
@@ -36,8 +45,8 @@ jobs:
         run: |
           rustup update stable
           cargo fmt --manifest-path tools/frame-replay/Cargo.toml --check
-          cargo clippy --locked --manifest-path tools/frame-replay/Cargo.toml --all-targets -- -D warnings
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml
+          cargo clippy ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --all-targets -- -D warnings
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml
       - name: Check capture isolation and completeness
         run: python3 -m unittest discover -s scripts/tests -v
       - name: Check performance scope attribution
@@ -69,23 +78,23 @@ jobs:
           out/gpoly-tests/gpoly_capture_test "$KFX_GPOLY_FIXTURE"
           test -s "$KFX_GPOLY_TRIANGLE_FIXTURE"
       - name: Compare GPU triangle setup with native drawing
-        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test gpoly_gpu -- --ignored --nocapture --test-threads=1
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test gpoly_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare production GPU triangles with native drawing
-        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_triangles_gpu -- --ignored --nocapture --test-threads=1
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_triangles_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare general GPU triangles with native drawing
         run: |
           cmake -S tests/trig -B out/trig-tests \
             -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
           cmake --build out/trig-tests --parallel 2
           ctest --test-dir out/trig-tests --output-on-failure
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_trig_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_trig_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare GPU creature shadows with native drawing
         run: |
           cmake -S tests/shadows -B out/shadow-tests \
             -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
           cmake --build out/shadow-tests --parallel 2
           ctest --test-dir out/shadow-tests --output-on-failure
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_shadow_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_shadow_gpu -- --ignored --nocapture --test-threads=1
       - name: Generate native primitive drawing oracle
         run: |
           cmake -S tests/primitives -B out/primitive-tests -DKFX_PRIMITIVE_ASAN=ON \
@@ -99,51 +108,51 @@ jobs:
           cmake --build out/sprite-tests --parallel 2
           ctest --test-dir out/sprite-tests --output-on-failure
       - name: Compare ordered-sprite layers with the serial path
-        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_sprite_layers_gpu -- --ignored --nocapture --test-threads=1
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_sprite_layers_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare huge bitmap sprites and glyphs with native drawing
         run: |
           cmake -S tests/bitmaps -B out/bitmap-tests -DKFX_BITMAP_ASAN=ON \
             -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
           cmake --build out/bitmap-tests --parallel 2
           ctest --test-dir out/bitmap-tests --output-on-failure
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_bitmap_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_bitmap_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare minimap terrain with native drawing
         run: |
           cmake -S tests/minimap -B out/minimap-tests
           cmake --build out/minimap-tests --parallel 2
           ctest --test-dir out/minimap-tests --output-on-failure
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_minimap_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_minimap_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare map views with native drawing
         run: |
           cmake -S tests/map-views -B out/map-view-tests
           cmake --build out/map-view-tests --parallel 2
           ctest --test-dir out/map-view-tests --output-on-failure
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_map_view_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_map_view_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare transitions with native drawing
         run: |
           cmake -S tests/transitions -B out/transition-tests
           cmake --build out/transition-tests --parallel 2
           ctest --test-dir out/transition-tests --output-on-failure
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_transition_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_transition_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare movie frames with native drawing
         run: |
           cmake -S tests/movie-frames -B out/movie-frame-tests
           cmake --build out/movie-frame-tests --parallel 2
           ctest --test-dir out/movie-frame-tests --output-on-failure
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_movie_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_movie_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare raw images with native drawing
         run: |
           cmake -S tests/raw-images -B out/raw-image-tests -DKFX_RAW_IMAGE_ASAN=ON \
             -DKFX_SDL3_INCLUDE_DIR="$GITHUB_WORKSPACE/out/sdl-headers/include"
           cmake --build out/raw-image-tests --parallel 2
           ctest --test-dir out/raw-image-tests --output-on-failure
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_raw_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_raw_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare built-in lenses with native drawing
         run: |
           cmake -S tests/lens -B out/lens-tests
           cmake --build out/lens-tests --parallel 2
           ctest --test-dir out/lens-tests --output-on-failure
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_lenses_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_lenses_gpu -- --ignored --nocapture --test-threads=1
       - name: Build SDL3 surface runtime for native cursor oracle
         run: |
           cmake -S out/sdl-headers -B out/sdl-runtime -DCMAKE_BUILD_TYPE=Release \
@@ -155,9 +164,9 @@ jobs:
           cmake --install out/sdl-runtime
       - name: Compare native cursor lifecycle through the real drawing C ABI
         run: |
-          cargo clippy --locked --manifest-path tools/frame-replay/Cargo.toml --features live-surface --all-targets -- -D warnings
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --features live-surface --lib live::
-          cargo build --locked --manifest-path tools/frame-replay/Cargo.toml --features live-surface --lib
+          cargo clippy ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --features live-surface --all-targets -- -D warnings
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --features live-surface --lib live::
+          cargo build ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --features live-surface --lib
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/out/sdl-install/lib/pkgconfig"
           cmake -S tests/cursor -B out/cursor-tests \
             -DKFX_GPU_LIBRARY="$CARGO_TARGET_DIR/debug/libkeeperfx_frame_replay.a"
@@ -192,25 +201,27 @@ jobs:
           cmake --build out/target-resource-tests --parallel 2
           ctest --test-dir out/target-resource-tests --output-on-failure
       - name: Verify GPU target snapshots and ordered sampling
-        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_target_resources_gpu -- --ignored --nocapture --test-threads=1
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_target_resources_gpu -- --ignored --nocapture --test-threads=1
       - name: Compare nested views and interleaved families with the per-batch path
         run: |
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_views_gpu -- --ignored --nocapture --test-threads=1
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_frame_order_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_views_gpu -- --ignored --nocapture --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_frame_order_gpu -- --ignored --nocapture --test-threads=1
       - name: Check terrain tile binning, boundaries, degenerates and the compressed arena
-        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_terrain_binning_gpu -- --ignored --nocapture --test-threads=1
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_terrain_binning_gpu -- --ignored --nocapture --test-threads=1
       - name: Check tight sprite, triangle and bitmap bin boxes against the whole-target bounds
-        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_record_binning_gpu -- --ignored --nocapture --test-threads=1
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_record_binning_gpu -- --ignored --nocapture --test-threads=1
       - name: Check serialized replay host submission and GPU drain attribution
-        run: KFX_WGPU_GPU_TIMING=2 cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_replay_host_gpu -- --ignored --nocapture --test-threads=1
+        run: KFX_WGPU_GPU_TIMING=2 cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_replay_host_gpu -- --ignored --nocapture --test-threads=1
+      - name: Check packed byte accessors against expanded and native bytes
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_asset_bytes_gpu -- --ignored --test-threads=1
       - name: Check one encoder and one submit per frame
-        run: cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_one_submit_gpu -- --ignored --nocapture --test-threads=1
+        run: cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_one_submit_gpu -- --ignored --nocapture --test-threads=1
       - name: Replay synthetic frames and sequences
         run: |
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --lib -- --ignored --test-threads=1
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_limits_gpu -- --ignored --test-threads=1
-          cargo test --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_status_gpu -- --ignored --nocapture --test-threads=1
-          cargo build --locked --manifest-path tools/frame-replay/Cargo.toml
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --lib -- --ignored --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_limits_gpu -- --ignored --test-threads=1
+          cargo test ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml --test draw_status_gpu -- --ignored --nocapture --test-threads=1
+          cargo build ${{ matrix.asset-flags }} --locked --manifest-path tools/frame-replay/Cargo.toml
           python3 tools/frame-replay/tests/replay.py out/rust-target/debug/keeperfx-frame-replay out/synthetic-replay
       - uses: actions/upload-artifact@v4
         if: always()

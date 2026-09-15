@@ -760,7 +760,7 @@ mod tests {
                 last_used: 0,
             },
         );
-        arena.counters.live_bytes = 1024;
+        arena.counters.live_bytes = 256 * assets::STRIDE as u64;
         arena.lru.insert((0, 7));
         arena.pinned.insert(7);
         arena.hold();
@@ -768,7 +768,7 @@ mod tests {
         arena.discard();
         assert!(arena.residency.is_empty());
         assert!(arena.image.dirty.is_empty());
-        assert_eq!(arena.counters.retired_bytes, 1024);
+        assert_eq!(arena.counters.retired_bytes, 256 * assets::STRIDE as u64);
         arena.release_hold();
         assert_eq!(arena.free[0], [4]);
     }
@@ -1037,7 +1037,7 @@ mod tests {
             },
         );
         arena.lru.insert((0, 7));
-        arena.counters.live_bytes = 1024;
+        arena.counters.live_bytes = 256 * assets::STRIDE as u64;
         arena.pinned.insert(7);
         arena.begin_batch();
         assert!(arena.pinned.contains(&7));
@@ -1046,7 +1046,7 @@ mod tests {
         assert!(arena.residency.is_empty());
         assert!(arena.missing.is_empty());
         assert!(arena.free[0].is_empty());
-        assert_eq!(arena.counters().retired_bytes, 1024);
+        assert_eq!(arena.counters().retired_bytes, 256 * assets::STRIDE as u64);
         arena.release_hold();
         assert_eq!(arena.free[0], [4]);
         assert_eq!(arena.counters().retired_bytes, 0);
@@ -1080,7 +1080,7 @@ mod tests {
         };
         let offset = resolve(&mut arena, 1, 1, &[71; 60]);
         assert_eq!(resolve(&mut arena, 1, 1, &[71; 60]), offset);
-        assert_eq!(arena.counters().bytes_uploaded, 240);
+        assert_eq!(arena.counters().bytes_uploaded, 60 * assets::STRIDE as u64);
         arena.forget(1, false);
         assert_eq!(resolve(&mut arena, 1, 1, &[71; 60]), offset);
         let offset = resolve(&mut arena, 1, 1, &[93; 300]);
@@ -1102,24 +1102,35 @@ mod tests {
                 c.miss_size_class_bytes,
                 c.miss_generation_bytes
             ),
-            (240, 240, 1200, 1200)
+            (
+                60 * assets::STRIDE as u64,
+                60 * assets::STRIDE as u64,
+                300 * assets::STRIDE as u64,
+                300 * assets::STRIDE as u64
+            )
         );
         arena.grow_to(&device, &queue, &mut counters, u64::from(INITIAL_BYTES));
-        assert_eq!(arena.counters().capacity_bytes, 8 << 20);
-        assert_eq!(arena.counters().growth_peak_bytes, 12 << 20);
+        assert_eq!(
+            arena.counters().capacity_bytes,
+            (2 << 20) * assets::STRIDE as u64
+        );
+        assert_eq!(
+            arena.counters().growth_peak_bytes,
+            (3 << 20) * assets::STRIDE as u64
+        );
         let output = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: 1200,
+            size: 300 * assets::STRIDE as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&Default::default());
         encoder.copy_buffer_to_buffer(
             arena.buffer.as_ref().unwrap(),
-            u64::from(offset) * 4,
+            u64::from(offset) * assets::STRIDE as u64,
             &output,
             0,
-            1200,
+            300 * assets::STRIDE as u64,
         );
         let submission = queue.submit([encoder.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1134,9 +1145,7 @@ mod tests {
             .unwrap();
         rx.recv().unwrap().unwrap();
         let mapped = output.slice(..).get_mapped_range().unwrap();
-        for word in mapped.as_chunks::<4>().0 {
-            assert_eq!(*word, 117u32.to_le_bytes());
-        }
+        assert_eq!(&*mapped, assets::encode(&[117; 300]));
         drop(mapped);
         output.unmap();
         let mut small = Arena::new(32 << 20);
@@ -1175,7 +1184,10 @@ mod tests {
             .unwrap();
         assert_eq!(small.counters().evictions, 2);
         assert_eq!(small.counters().misses_eviction, 1);
-        assert_eq!(small.counters().miss_eviction_bytes, 1200);
+        assert_eq!(
+            small.counters().miss_eviction_bytes,
+            300 * assets::STRIDE as u64
+        );
         let c = small.counters();
         assert_eq!(
             c.bytes_uploaded,

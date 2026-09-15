@@ -297,6 +297,7 @@ pub struct DrawRenderer {
     targets: HashMap<u64, Target>,
     resources: HashMap<u64, Resource>,
     resource_bytes: usize,
+    snapshot_pack: Option<wgpu::ComputePipeline>,
     target_snapshots: HashMap<u64, target_resources::TargetSnapshot>,
     target_resource_counters: TargetResourceCounters,
     counters: Counters,
@@ -441,6 +442,7 @@ impl DrawRenderer {
             targets: HashMap::new(),
             resources: HashMap::new(),
             resource_bytes: 0,
+            snapshot_pack: None,
             target_snapshots: HashMap::new(),
             target_resource_counters: TargetResourceCounters::default(),
             counters: Counters::default(),
@@ -2169,7 +2171,7 @@ mod tests {
             packer.offset(2, &[23; 81920], ResourceKind::Other).unwrap(),
             table
         );
-        assert_eq!(packer.uploaded_bytes(), 328160);
+        assert_eq!(packer.uploaded_bytes(), 82040 * assets::STRIDE as u64);
         assert_eq!(packer.finish().unwrap().len(), 82040);
         let mut limited = AssetPacker::batch(327680);
         limited.offset(1, &[7; 60], ResourceKind::Other).unwrap();

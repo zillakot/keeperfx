@@ -857,3 +857,23 @@ snapshot packing have separate GPU categories. Optional `KFX_WGPU_PASS_TRACE`
 writes bounded pass-instance durations at renderer destruction; use it only for
 separate diagnostics, with zero dropped/untimed instances required for coverage.
 Instrumentation overhead and host parity remain host measurement gates.
+
+### Byte-packed arena format
+
+Packed assets keep source byte offsets in the 112-byte command record. WGSL reads
+four source bytes per storage word, including unaligned LE16/LE32 records. Targets,
+command/index/uniform rings, rows and shadow slots remain u32. Independent arena
+allocations own their aligned tail; GPU snapshots are packed into separate scratch
+words before sampling. Queue transport and the retained HostImage remain: one
+renderer copy plus wgpu's staging copy, with no direct staging pool.
+
+`arena_bytes_uploaded`, miss/family bytes and asset upload bytes count represented
+payload, excluding tail padding and coalesced gaps. Physical transfer, source bytes
+and representation metadata provide the comparison. The normal matched 32 MiB
+arena/image should become 8 MiB; this is not a process/GPU-memory measurement.
+The existing source-validation ceiling is retained. The `packed-arena` Cargo feature
+selects a complete renderer format; CI runs native fixtures with it both off and on.
+Performance, snapshot operation budgets and acquired-surface parity remain host gates.
+PR #43 is not included: its split descriptors must use these byte accessors and its
+physical cache budget must change from 9 MiB to 2.25 MiB if integrated, keeping logical
+admission and raw-source hashes unchanged in both controls.

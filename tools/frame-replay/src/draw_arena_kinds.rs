@@ -147,7 +147,10 @@ mod tests {
             (65, 1, 64, 1)
         );
         assert_eq!(c.source_bytes, (0..65).sum::<u64>());
-        assert_eq!(c.bytes, c.source_bytes * 4);
+        assert_eq!(
+            c.bytes,
+            c.source_bytes * super::super::assets::STRIDE as u64
+        );
         lengths.begin_frame();
         lengths.record(&mut counters, ResourceKind::Sprite, 64, true);
         let next = counters.arena_by_kind[ResourceKind::Sprite as usize];
