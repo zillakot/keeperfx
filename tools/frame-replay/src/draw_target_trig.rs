@@ -44,7 +44,7 @@ impl DrawRenderer {
                     .resources
                     .get(&id)
                     .context("unknown triangle or mask asset")?;
-                demand += self.arena.allocation_words(id, resource.bytes.len())?;
+                demand += self.arena.allocation_bytes(id, resource.bytes.len())?;
             }
         }
         self.arena_headroom(demand.saturating_sub(self.resource_bytes as u64))?;
@@ -166,9 +166,9 @@ impl DrawRenderer {
                 self.counters.target_trig_table_bytes += table_bytes;
                 self.counters.target_trig_table_hits += table_hits;
                 self.counters.target_trig_table_misses += table_misses;
-                self.counters.asset_upload_bytes += assets.len() as u64 * 4;
+                self.counters.asset_upload_bytes += assets.len() as u64 * assets::STRIDE as u64;
                 self.counters.target_trig_asset_buffers += 1;
-                buffer(
+                byte_buffer(
                     &self.device,
                     &mut self.counters,
                     "snapshot triangle fallback assets",

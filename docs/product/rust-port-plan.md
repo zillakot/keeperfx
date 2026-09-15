@@ -274,10 +274,12 @@ Next, in order:
    alias and oversized-input fallbacks, persistent offscreen scratch ownership.
    Reaching a frame-rate target does not complete the drawing goal.
 
-Minimap semantic/style byte reductions, sprite artwork interning and the
-[byte-packed arena](../architecture/wgpu-single-stream-renderer.md#migration-sequence)
-are deferred behind the ring/coalescing slice. Revisit lens/minimap pass folding
-separately from upload plumbing; do not combine those changes in its attribution run.
+Byte-packed arena delivery follows the upload rings with same-replay byte/copy
+instrumentation, byte-addressed family readers and GPU snapshot packing. Queue
+transport remains in place. Both formats run the native fixture matrix; the
+five-cell host comparison, snapshot/pass budgets and separate surface/drawing
+oracles gate performance acceptance. Reusable mapped staging is a later PR.
+Minimap residency and sprite interning remain separate from this format comparison.
 
 In parallel, work the tooling plan's
 [recommended order](development-tooling-plan.md#recommended-order), offscreen

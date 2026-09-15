@@ -65,7 +65,7 @@ struct KfxWgpuDrawCommand {
     uint32_t transparent, reserved[3];
 };
 
-#define KFX_WGPU_DRAW_PASS_KINDS 8
+#define KFX_WGPU_DRAW_PASS_KINDS 10
 #define KFX_WGPU_DRAW_BIN_KINDS 18
 
 struct KfxWgpuDrawCounters {

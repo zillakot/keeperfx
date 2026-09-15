@@ -95,7 +95,7 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     "tile_entries_transition", "tile_entries_terrain_tri",
     "gpu_raster_ns", "gpu_terrain_prepare_ns",
     "gpu_shadow_mask_ns", "gpu_target_trig_ns", "gpu_ordered_sprite_ns",
-    "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns",
+    "gpu_minimap_ns", "gpu_lens_ns", "gpu_present_ns", "gpu_snapshot_raster_ns", "gpu_snapshot_pack_ns",
     "gpu_timed_passes", "gpu_untimed_passes", "gpu_pass_union_ns",
     "target_trig_geometry_bytes",
     "target_trig_table_bytes",
@@ -251,7 +251,7 @@ void finish(Profile& p)
     FILE* info = std::fopen(path.c_str(), "wx");
     if (!info) { fail(p, "metadata already exists or cannot be created"); return; }
     std::fprintf(info,
-        "{\"format\":\"KFXPERF01\",\"complete\":true,\"draw_breakdown\":%s,\"start\":%s,\"end\":%s,"
+        "{\"format\":\"KFXPERF01\",\"schema_version\":2,\"complete\":true,\"draw_breakdown\":%s,\"start\":%s,\"end\":%s,"
         "\"scene\":\"%s\",\"view\":\"%s\",\"renderer\":%s,\"video_driver\":%s,\"renderer_details\":%s,"
         "\"width\":%d,\"height\":%d,\"output_width\":%d,\"output_height\":%d,"
         "\"vsync_actual\":%d,\"turns_per_second\":%ld,\"fps_limit\":%d,\"interpolation\":%s,"

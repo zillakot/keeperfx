@@ -838,3 +838,50 @@ its report is explicitly labelled headless. It is **not native window performanc
 and must not be compared to a live SDL/Metal or Rust surface baseline.
 CI runs redistributable checks without original game assets. Native performance
 runs remain local, and their results are not CI performance thresholds.
+
+### Packed-arena measurement schema
+
+Capture schema 2 records representation (`arena_representation`: 1 expanded_u32,
+2 packed_u8) and transport (`upload_transport`: 1 queue, 2 mapped_copy) as gauges.
+The same `presenter.replay` interval contains `arena_source_bytes`,
+`arena_logical_upload_bytes` and `arena_transfer_bytes`. Logical bytes exclude
+padding/gaps; transfer bytes include actual arena queue traffic. Snapshot GPU
+copies are separate. Physical staging reconciles as queue + explicit copy +
+initialized-buffer bytes. Older captures leave new measurements unavailable.
+
+`upload_cpu_copy_ns` includes expansion and renderer staging-copy submetrics;
+`upload_api_ns` measures wgpu calls. These are nested within Upload. CPU copy bytes
+count renderer writes; wgpu's hidden memcpy is not directly timed. Direct staging
+pool/copy counters remain zero on the queue baseline. Snapshot raster and future
+snapshot packing have separate GPU categories. Optional `KFX_WGPU_PASS_TRACE`
+writes bounded pass-instance durations at renderer destruction; use it only for
+separate diagnostics, with zero dropped/untimed instances required for coverage.
+Instrumentation overhead and host parity remain host measurement gates.
+
+### Byte-packed arena format
+
+Packed assets keep source byte offsets in the 112-byte command record. WGSL reads
+four source bytes per storage word, including unaligned LE16/LE32 records. Targets,
+command/index/uniform rings, rows and shadow slots remain u32. Independent arena
+allocations own their aligned tail; GPU snapshots are packed into separate scratch
+words before sampling. Queue transport and the retained HostImage remain: one
+renderer copy plus wgpu's staging copy, with no direct staging pool.
+
+`arena_bytes_uploaded`, miss/family bytes and asset upload bytes count represented
+payload, excluding tail padding and coalesced gaps. Physical transfer, source bytes
+and representation metadata provide the comparison. The normal matched 32 MiB
+arena/image should become 8 MiB; this is not a process/GPU-memory measurement.
+The existing source-validation ceiling is retained. The `packed-arena` Cargo feature
+is enabled by default after both complete fixture matrices passed.
+`--no-default-features` selects the expanded control; CI retains both builds.
+Performance, snapshot operation budgets and acquired-surface parity remain host gates.
+PR #43 is not included: its split descriptors must use these byte accessors and its
+physical cache budget must change from 9 MiB to 2.25 MiB if integrated, keeping logical
+admission and raw-source hashes unchanged in both controls.
+
+Packed LE16/LE32 reads fetch one storage word, or two when crossing a word
+boundary; sprite colour/coverage pairs share the LE16 fetch. Minimap dictionary
+inversion happens once per dispatch. Its private view is 144 bytes: four target
+words followed by 32 words holding eight four-bit dictionary indices each.
+Unknown background colours retain dictionary index zero. This uses the existing
+uniform ring and adds no GPU pass or barrier; raw minimap sources stay unchanged.

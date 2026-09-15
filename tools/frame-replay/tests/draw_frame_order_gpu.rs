@@ -157,7 +157,7 @@ fn interleaved_families_keep_their_order() {
     assert_eq!(after.shadow_pairs - before.shadow_pairs, shadows);
     assert_eq!(
         after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
-        shadows * 480
+        shadows * 120 * keeperfx_frame_replay::draw::assets::STRIDE as u64
     );
     assert_eq!(
         after.target_trig_table_bytes - before.target_trig_table_bytes,

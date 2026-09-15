@@ -1,9 +1,9 @@
 @group(0) @binding(0) var<storage,read_write> scratch:array<u32>;
-@group(0) @binding(1) var<storage,read> source:array<u32>;
+@group(0) @binding(1) var<storage,read> assets:array<u32>;
 @group(0) @binding(2) var<uniform> arena:vec4<u32>;
 @group(0) @binding(3) var<storage,read_write> slot:array<u32>;
-fn asset(at:u32)->u32 {return source[arena.x+at];}
-fn word(at:u32)->u32 {return asset(at)|(asset(at+1u)<<8u)|(asset(at+2u)<<16u)|(asset(at+3u)<<24u);}
+fn asset(at:u32)->u32 {return byte(arena.x+at);}
+fn word(at:u32)->u32 {return le32(arena.x+at);}
 // One invocation owns one address, so reading and writing the resident scratch needs no second buffer.
 @compute @workgroup_size(8,8)
 fn shadow_mask(@builtin(global_invocation_id) id:vec3<u32>) {

@@ -1,8 +1,8 @@
 struct TrigVertex { xy: vec2<i32>, attr: vec3<i32>, }
 fn trig_vertex(base: u32, n: u32) -> TrigVertex {
     let p = base + n * 20u;
-    return TrigVertex(vec2(i32(sprite_word(p)), i32(sprite_word(p + 4u))),
-        vec3(i32(sprite_word(p + 8u)), i32(sprite_word(p + 12u)), i32(sprite_word(p + 16u))));
+    return TrigVertex(vec2(i32(le32(p)), i32(le32(p + 4u))),
+        vec3(i32(le32(p + 8u)), i32(le32(p + 12u)), i32(le32(p + 16u))));
 }
 fn trig_fixed(a: i32, b: i32) -> i32 {
     let hi = mul_high(u32(a), u32(b)) - select(0u, u32(b), a < 0) - select(0u, u32(a), b < 0);
@@ -39,7 +39,7 @@ fn trig_shade(initial: i32, step: i32, count: u32, mode: u32) -> u32 {
 // A non-zero assets.w selects the resident mask slot (1-based) instead of the batch arena.
 fn trig_texel(command: Command, uv: u32) -> u32 {
     if command.assets.w != 0u { return shadow_slots[(command.assets.w - 1u) * 65536u + uv]; }
-    return assets[command.assets.x + 60u + uv];
+    return byte(command.assets.x + 60u + uv);
 }
 fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
     let p = trig_vertex(command.assets.x, 0u);
@@ -142,14 +142,14 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
     let ghost = fade + 16384u;
     if mode == 0u { return colour; }
     if mode == 1u { return (u32(value.z) >> 16u) & 255u; }
-    if mode == 14u { return assets[ghost + (colour << 8u) + destination]; }
-    if mode == 15u { return assets[ghost + (destination << 8u) + colour]; }
+    if mode == 14u { return byte(ghost + (colour << 8u) + destination); }
+    if mode == 15u { return byte(ghost + (destination << 8u) + colour); }
     if mode == 4u || mode == 16u || mode == 17u {
         let shade = (u32(value.z) >> 16u) & select(255u, 31u, mode == 16u);
         if shade >= 64u { return 257u; }
-        let source = assets[fade + (shade << 8u) + colour];
-        if mode == 16u { return assets[ghost + (source << 8u) + destination]; }
-        if mode == 17u { return assets[ghost + (destination << 8u) + source]; }
+        let source = byte(fade + (shade << 8u) + colour);
+        if mode == 16u { return byte(ghost + (source << 8u) + destination); }
+        if mode == 17u { return byte(ghost + (destination << 8u) + source); }
         return source;
     }
     let clipped = row_value + step * max(-left, 0);
@@ -162,8 +162,8 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
         let source = trig_texel(command, uv);
         let shade = ((u32(clipped.z >> 8u) + count * (u32(step.z >> 8u) & 65535u)) >> 8u) & 255u;
         if shade >= 64u { return 257u; }
-        let shaded = assets[fade + (shade << 8u) + source];
-        if mode == 26u && source <= 12u { return assets[ghost + (destination << 8u) + shaded]; }
+        let shaded = byte(fade + (shade << 8u) + source);
+        if mode == 26u && source <= 12u { return byte(ghost + (destination << 8u) + shaded); }
         return shaded;
     }
     let full_v = mode == 2u || mode == 3u || mode == 10u || ((mode == 7u || mode == 11u) && colour == 32u);
@@ -180,31 +180,31 @@ fn trig_sample(command: Command, pixel: vec2<i32>, destination: u32) -> u32 {
     if mode == 9u {
         if source == 0u { return destination; }
         if source >= 64u { return 257u; }
-        return assets[fade + (source << 8u) + destination];
+        return byte(fade + (source << 8u) + destination);
     }
     if mode == 6u || mode == 20u || mode == 21u || mode == 24u || mode == 25u {
         if (mode == 6u || mode == 24u || mode == 25u) && source == 0u { return destination; }
         let shade = trig_shade(clipped.z, step.z, count, mode);
         if shade >= 64u { return 257u; }
-        let shaded = assets[fade + (shade << 8u) + source];
+        let shaded = byte(fade + (shade << 8u) + source);
         if mode == 6u { return shaded; }
-        if mode == 20u || mode == 24u { return assets[ghost + (shaded << 8u) + destination]; }
-        return assets[ghost + (destination << 8u) + shaded];
+        if mode == 20u || mode == 24u { return byte(ghost + (shaded << 8u) + destination); }
+        return byte(ghost + (destination << 8u) + shaded);
     }
     if mode == 2u || ((mode == 7u || mode == 11u) && colour == 32u) { return source; }
     if mode == 10u {
         if source == 0u { return destination; }
-        return assets[fade + (colour << 8u) + destination];
+        return byte(fade + (colour << 8u) + destination);
     }
     if mode == 3u { return select(source, destination, source == 0u); }
     if mode == 7u || mode == 8u || mode == 11u {
         if mode == 8u && source == 0u { return destination; }
-        return assets[fade + (colour << 8u) + source];
+        return byte(fade + (colour << 8u) + source);
     }
-    if mode == 12u { return assets[ghost + (source << 8u) + colour]; }
-    if mode == 13u { return assets[ghost + (colour << 8u) + source]; }
+    if mode == 12u { return byte(ghost + (source << 8u) + colour); }
+    if mode == 13u { return byte(ghost + (colour << 8u) + source); }
     if (mode == 22u || mode == 23u) && source == 0u { return destination; }
-    if mode == 18u || mode == 22u { return assets[ghost + (source << 8u) + destination]; }
-    return assets[ghost + (destination << 8u) + source];
+    if mode == 18u || mode == 22u { return byte(ghost + (source << 8u) + destination); }
+    return byte(ghost + (destination << 8u) + source);
 }
 

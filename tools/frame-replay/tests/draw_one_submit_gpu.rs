@@ -214,7 +214,7 @@ fn a_production_frame_is_one_command_buffer() {
     );
     assert_eq!(
         after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
-        480
+        120 * keeperfx_frame_replay::draw::assets::STRIDE as u64
     );
     assert_eq!(
         after.target_trig_table_hits - before.target_trig_table_hits,
@@ -466,11 +466,11 @@ fn shadow_table_versions_survive_serial_release_and_recovery() {
         let after = draw.counters();
         assert_eq!(
             after.target_trig_table_bytes - before.target_trig_table_bytes,
-            3 * 327680
+            3 * 81920 * keeperfx_frame_replay::draw::assets::STRIDE as u64
         );
         assert_eq!(
             after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
-            3 * 480
+            3 * 120 * keeperfx_frame_replay::draw::assets::STRIDE as u64
         );
         assert_eq!(
             after.target_trig_table_hits - before.target_trig_table_hits,
@@ -522,7 +522,7 @@ fn shadow_table_versions_survive_serial_release_and_recovery() {
     assert_eq!(after.misses_generation - before.misses_generation, 2);
     assert_eq!(
         after.miss_generation_bytes - before.miss_generation_bytes,
-        327680 + 164 * 4
+        (81920 + 164) * keeperfx_frame_replay::draw::assets::STRIDE as u64
     );
     assert_eq!(draw.readback(root).unwrap(), expected);
     assert_eq!(draw.frame_status().1, 0);

@@ -56,7 +56,10 @@ int main(void)
     }
     struct KfxWgpuTargetResourceCounters counters;
     CHECK(kfx_wgpu_draw_target_resource_counters(draw, &counters, error, sizeof(error)) == 1);
-    CHECK(counters.snapshots == 1 && counters.snapshot_copy_bytes == 16 && counters.sampling_copy_bytes == 48);
+    struct KfxWgpuDrawCounters drawing;
+    CHECK(kfx_wgpu_draw_counters(draw, &drawing, error, sizeof(error)) == 1);
+    CHECK(counters.snapshots == 1 && counters.snapshot_copy_bytes == 16);
+    CHECK(counters.sampling_copy_bytes == (drawing.arena_representation == 2 ? 12 : 48));
     CHECK(kfx_wgpu_draw_submit_target_images(draw, target, images, 1, error, sizeof(error)) == -1);
     CHECK(kfx_wgpu_draw_target_release(draw, target, error, sizeof(error)) == 1);
     kfx_wgpu_draw_destroy(draw);

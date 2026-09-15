@@ -7,6 +7,20 @@ pub(super) struct MinimapState {
     pub(super) background: Option<(u64, u32)>,
 }
 
+fn background_colours(header: &[u32; 24], bytes: &[u8]) -> [u32; 32] {
+    let mut colours = [0; 32];
+    if header[0] == 0 {
+        let start = header[12] as usize;
+        for (index, &colour) in bytes[start..start + (header[15] / 38569) as usize]
+            .iter()
+            .enumerate()
+        {
+            colours[colour as usize / 8] |= (index as u32) << ((colour as u32 & 7) * 4);
+        }
+    }
+    colours
+}
+
 fn validate(c: &Command, b: &[u8], width: u32, height: u32) -> Result<[u32; 24]> {
     ensure!(b.len() >= HEADER, "short minimap header");
     let h: [u32; 24] =
@@ -95,6 +109,7 @@ impl DrawRenderer {
             .get(&c.source)
             .context("unknown minimap source")?;
         let h = validate(c, &source.bytes, width, height)?;
+        let colours = background_colours(&h, &source.bytes);
         ensure!(
             source.bytes.len() as u64 * 4 <= self.storage_limit(),
             "minimap source exceeds GPU storage"
@@ -108,7 +123,9 @@ impl DrawRenderer {
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("native minimap"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("draw_minimap.wgsl").into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        assets::shader(include_str!("draw_minimap.wgsl")).into(),
+                    ),
                 });
             self.minimap = Some(MinimapState {
                 pipeline: self
@@ -160,7 +177,7 @@ impl DrawRenderer {
         let base = packer.offset(c.source, bytes, ResourceKind::Minimap)?;
         let words = packer.finish();
         let assets = match &words {
-            Some(words) => buffer(
+            Some(words) => byte_buffer(
                 &self.device,
                 &mut self.counters,
                 "minimap semantic cells and styles",
@@ -180,12 +197,15 @@ impl DrawRenderer {
             &dummy
         };
         let target = &self.targets[&target_id];
+        let mut view_words = [0; 36];
+        view_words[..4].copy_from_slice(&[target.width, target.pitch, target.offset, base]);
+        view_words[4..].copy_from_slice(&colours);
         let view = upload::stage(
             &self.uploads,
             &self.device,
             &mut self.counters,
             "minimap target view",
-            &[target.width, target.pitch, target.offset, base],
+            &view_words,
             wgpu::BufferUsages::UNIFORM,
         );
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -214,7 +234,7 @@ impl DrawRenderer {
         self.counters.batches += 1;
         self.counters.commands += 1;
         if let Some(words) = &words {
-            self.counters.asset_upload_bytes += words.len() as u64 * 4;
+            self.counters.asset_upload_bytes += words.len() as u64 * assets::STRIDE as u64;
         }
         self.check_status()
     }

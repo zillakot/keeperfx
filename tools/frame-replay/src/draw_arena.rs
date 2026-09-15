@@ -1,11 +1,12 @@
 use super::ResourceKind;
+use super::assets::{self, ByteOffset};
 use super::host::{self, Phase, Scope};
 use anyhow::{Result, ensure};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-const ALIGN_WORDS: u32 = 4;
-const MIN_CLASS_WORDS: u32 = 256;
-const INITIAL_WORDS: u32 = 1 << 20;
+const ALIGN_BYTES: u32 = 4;
+const MIN_CLASS_BYTES: u32 = 256;
+const INITIAL_BYTES: u32 = 1 << 20;
 /// Below this the per-batch packing path stays in use.
 const MIN_LIMIT_BYTES: u64 = 32 << 20;
 pub(super) const OVERFLOW: &str = "asset batch exceeds storage limit";
@@ -46,14 +47,14 @@ enum MissReason {
 }
 
 struct Residency {
-    offset: u32,
+    offset: ByteOffset,
     class: usize,
     generation: u64,
     last_used: u64,
 }
 
 /// One persistent storage buffer holding every packed asset, suballocated in
-/// power-of-two word classes and reclaimed by LRU over whole frames.
+/// power-of-two byte classes and reclaimed by LRU over whole frames.
 pub(crate) struct Arena {
     buffer: Option<wgpu::Buffer>,
     capacity: u32,
@@ -65,7 +66,7 @@ pub(crate) struct Arena {
     lru: BTreeSet<(u64, u64)>,
     pinned: HashSet<u64>,
     scratch: Vec<(usize, u32)>,
-    scratch_words: u32,
+    scratch_bytes: u32,
     /// Regions released while a hold is open. A recorded pass may still read them, and
     /// a reuse would stage its upload at the head of that same submission.
     retired: Vec<(usize, u32)>,
@@ -84,13 +85,13 @@ pub(crate) struct Arena {
     pub(super) lengths: super::arena_kinds::SourceLengths,
 }
 
-fn class_words(class: usize) -> u32 {
-    MIN_CLASS_WORDS << class
+fn class_bytes(class: usize) -> u32 {
+    MIN_CLASS_BYTES << class
 }
 
-fn size_class(words: u32) -> usize {
+fn size_class(bytes: u32) -> usize {
     let mut class = 0;
-    while class_words(class) < words {
+    while class_bytes(class) < bytes {
         class += 1;
     }
     class
@@ -98,20 +99,20 @@ fn size_class(words: u32) -> usize {
 
 impl Arena {
     pub(super) fn new(limit_bytes: u64) -> Self {
-        let limit = (limit_bytes / 4).min(u64::from(u32::MAX)) as u32;
-        let classes = size_class(limit.max(MIN_CLASS_WORDS)) + 1;
+        let limit = (limit_bytes / assets::STRIDE as u64).min(1 << 31) as u32;
+        let classes = size_class(limit.max(MIN_CLASS_BYTES)) + 1;
         Self {
             buffer: None,
             capacity: 0,
             limit,
-            high_water: ALIGN_WORDS,
+            high_water: ALIGN_BYTES,
             free: (0..classes).map(|_| Vec::new()).collect(),
             residency: HashMap::new(),
             missing: HashMap::new(),
             lru: BTreeSet::new(),
             pinned: HashSet::new(),
             scratch: Vec::new(),
-            scratch_words: 0,
+            scratch_bytes: 0,
             retired: Vec::new(),
             image: HostImage::default(),
             generation: 0,
@@ -134,8 +135,8 @@ impl Arena {
     /// because the bump allocator never returns them.
     pub(super) fn counters(&self) -> ArenaCounters {
         ArenaCounters {
-            bytes_resident: u64::from(self.high_water) * 4,
-            capacity_bytes: u64::from(self.capacity) * 4,
+            bytes_resident: u64::from(self.high_water) * assets::STRIDE as u64,
+            capacity_bytes: u64::from(self.capacity) * assets::STRIDE as u64,
             ..self.counters
         }
     }
@@ -172,7 +173,7 @@ impl Arena {
         for (class, offset) in self.scratch.drain(..).chain(self.retired.drain(..)) {
             self.free[class].push(offset);
         }
-        self.scratch_words = 0;
+        self.scratch_bytes = 0;
         self.counters.retired_bytes = 0;
     }
 
@@ -182,19 +183,20 @@ impl Arena {
         self.locked = locked;
     }
 
-    /// Whether `words` more can be suballocated without growing. Conservative: it
+    /// Whether `bytes` more can be suballocated without growing. Conservative: it
     /// ignores the free lists, so a true answer is a guarantee and a false one only
     /// means growth is possible.
-    pub(super) fn fits(&self, words: u64) -> bool {
-        !self.enabled || u64::from(self.high_water) + words <= u64::from(self.capacity)
+    pub(super) fn fits(&self, bytes: u64) -> bool {
+        !self.enabled || u64::from(self.high_water) + bytes <= u64::from(self.capacity)
     }
 
-    pub(super) fn allocation_words(&self, id: u64, length: usize) -> Result<u64> {
+    pub(super) fn allocation_bytes(&self, id: u64, length: usize) -> Result<u64> {
         if !self.enabled {
             return Ok(0);
         }
-        let words = u32::try_from(length).map_err(|_| anyhow::anyhow!(OVERFLOW))?;
-        let class = size_class(words.max(ALIGN_WORDS));
+        let bytes = u32::try_from(length).map_err(|_| anyhow::anyhow!(OVERFLOW))?;
+        ensure!(bytes <= 1 << 31, OVERFLOW);
+        let class = size_class(bytes.max(ALIGN_BYTES));
         if self
             .residency
             .get(&id)
@@ -202,10 +204,10 @@ impl Arena {
         {
             return Ok(0);
         }
-        Ok(u64::from(class_words(class)))
+        Ok(u64::from(class_bytes(class)))
     }
 
-    /// Grows to hold `words` more past the high-water mark. The caller must have no
+    /// Grows to hold `bytes` more past the high-water mark. The caller must have no
     /// encoder open: growth replaces the buffer bind groups name and copies it
     /// forward through its own submission.
     pub(super) fn grow_to(
@@ -213,15 +215,15 @@ impl Arena {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         counters: &mut super::Counters,
-        words: u64,
+        bytes: u64,
     ) {
         if !self.enabled {
             return;
         }
-        let need = words.min(u64::from(u32::MAX)) as u32;
+        let need = bytes.min(1 << 31) as u32;
         let need = need
             .max(self.wanted.saturating_sub(self.high_water))
-            .max(ALIGN_WORDS);
+            .max(ALIGN_BYTES);
         self.reserve(device, queue, counters, need);
     }
 
@@ -243,7 +245,7 @@ impl Arena {
 
     fn remove(&mut self, id: u64) -> bool {
         if let Some(entry) = self.residency.remove(&id) {
-            let bytes = u64::from(class_words(entry.class)) * 4;
+            let bytes = u64::from(class_bytes(entry.class)) * assets::STRIDE as u64;
             self.counters.live_bytes -= bytes;
             self.lru.remove(&(entry.last_used, id));
             self.pinned.remove(&id);
@@ -264,7 +266,7 @@ impl Arena {
         queue: &wgpu::Queue,
         counters: &mut super::Counters,
     ) -> wgpu::Buffer {
-        self.reserve(device, queue, counters, ALIGN_WORDS);
+        self.reserve(device, queue, counters, ALIGN_BYTES);
         self.buffer.clone().unwrap()
     }
 
@@ -280,8 +282,9 @@ impl Arena {
         kind: ResourceKind,
     ) -> Result<u32> {
         let (id, generation) = identity;
-        let words = u32::try_from(bytes.len()).map_err(|_| anyhow::anyhow!(OVERFLOW))?;
-        let class = size_class(words.max(ALIGN_WORDS));
+        let length = u32::try_from(bytes.len()).map_err(|_| anyhow::anyhow!(OVERFLOW))?;
+        ensure!(length <= 1 << 31, OVERFLOW);
+        let class = size_class(length.max(ALIGN_BYTES));
         if let Some(entry) = self.residency.get(&id)
             && entry.class == class
         {
@@ -307,7 +310,7 @@ impl Arena {
         self.lengths.record(counters, kind, bytes.len(), false);
         self.record_miss(reason, bytes.len());
         self.upload(queue, counters, offset, bytes);
-        self.counters.live_bytes += u64::from(class_words(class)) * 4;
+        self.counters.live_bytes += u64::from(class_bytes(class)) * assets::STRIDE as u64;
         self.residency.insert(
             id,
             Residency {
@@ -332,7 +335,7 @@ impl Arena {
             MissReason::Eviction => (&mut c.misses_eviction, &mut c.miss_eviction_bytes),
         };
         *count += 1;
-        *bytes += length as u64 * 4;
+        *bytes += length as u64 * assets::STRIDE as u64;
     }
 
     /// Reserves a region for GPU-to-GPU copies, released at the next batch.
@@ -341,18 +344,21 @@ impl Arena {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         counters: &mut super::Counters,
-        words: u32,
+        bytes: u32,
     ) -> Result<u32> {
-        let class = size_class(words.max(ALIGN_WORDS));
+        ensure!(bytes <= 1 << 31, OVERFLOW);
+        let class = size_class(bytes.max(ALIGN_BYTES));
         let offset = self.allocate(device, queue, counters, class)?;
-        self.image
-            .invalidate(offset as usize * 4, class_words(class) as usize * 4);
+        self.image.invalidate(
+            offset as usize * assets::STRIDE,
+            class_bytes(class) as usize * assets::STRIDE,
+        );
         self.scratch.push((class, offset));
-        self.scratch_words = self.scratch_words.saturating_add(class_words(class));
+        self.scratch_bytes = self.scratch_bytes.saturating_add(class_bytes(class));
         self.counters.scratch_bytes_peak = self
             .counters
             .scratch_bytes_peak
-            .max(u64::from(self.scratch_words) * 4);
+            .max(u64::from(self.scratch_bytes) * assets::STRIDE as u64);
         Ok(offset)
     }
 
@@ -371,62 +377,52 @@ impl Arena {
         &mut self,
         queue: &wgpu::Queue,
         counters: &mut super::Counters,
-        offset: u32,
+        offset: ByteOffset,
         bytes: &[u8],
     ) {
         let _scope = Scope::new(Phase::Upload);
         if bytes.is_empty() {
             return;
         }
-        self.stage_expanded(queue, offset, bytes, "arena assets");
-        let uploaded = bytes.len() as u64 * 4;
+        self.stage_bytes(queue, offset, bytes, "arena assets");
+        let uploaded = bytes.len() as u64 * assets::STRIDE as u64;
         self.counters.bytes_uploaded += uploaded;
         counters.asset_upload_bytes += uploaded;
     }
 
-    pub(super) fn stage_expanded(
+    pub(super) fn stage_bytes(
         &mut self,
         queue: &wgpu::Queue,
-        offset: u32,
+        offset: ByteOffset,
         bytes: &[u8],
         label: &str,
     ) {
         let _scope = Scope::new(Phase::Upload);
-        if self.capacity as u64 * 4 > 32 << 20 {
+        let size = assets::aligned(bytes.len() * assets::STRIDE);
+        host::arena_payload(bytes.len(), bytes.len() * assets::STRIDE);
+        let start = offset as usize * assets::STRIDE;
+        if self.capacity as u64 * assets::STRIDE as u64 > 32 << 20 {
             self.flush(queue);
-            let expanded: Vec<_> = bytes
-                .iter()
-                .flat_map(|&b| u32::from(b).to_le_bytes())
-                .collect();
-            if !expanded.is_empty() {
-                queue.write_buffer(
-                    self.buffer.as_ref().unwrap(),
-                    u64::from(offset) * 4,
-                    &expanded,
-                );
-                host::staged_bytes(expanded.len());
+            let payload = assets::encode(bytes);
+            if !payload.is_empty() {
+                host::write_buffer(queue, self.buffer.as_ref().unwrap(), start as u64, &payload);
+                host::arena_transfer(payload.len());
+                host::staged_bytes(payload.len());
                 host::upload_event(label, 2, 1);
-                host::upload_event(label, 3, expanded.len() as u64);
+                host::upload_event(label, 3, (bytes.len() * assets::STRIDE) as u64);
                 host::upload_event(label, 4, 1);
-                host::upload_event(label, 5, expanded.len() as u64);
+                host::upload_event(label, 5, payload.len() as u64);
             }
             return;
         }
         if self.image.dirty.len() == super::MAX_COMMANDS {
             self.flush(queue);
         }
-        let start = offset as usize * 4;
-        for (dst, &byte) in self.image.bytes[start..start + bytes.len() * 4]
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(bytes)
-        {
-            dst.copy_from_slice(&u32::from(byte).to_le_bytes());
-        }
-        self.image.mark(start, bytes.len() * 4, self.generation);
+        assets::store(&mut self.image.bytes[start..start + size], bytes);
+        self.image.mark(start, size, self.generation);
+        host::upload_padding((size - bytes.len() * assets::STRIDE) as u64);
         host::upload_event(label, 2, 1);
-        host::upload_event(label, 3, bytes.len() as u64 * 4);
+        host::upload_event(label, 3, (bytes.len() * assets::STRIDE) as u64);
         if !self.coalesced {
             self.flush(queue);
         }
@@ -444,7 +440,13 @@ impl Arena {
         self.image.merge(self.generation);
         for dirty in self.image.dirty.drain(..) {
             let bytes = &self.image.bytes[dirty.start..dirty.end];
-            queue.write_buffer(self.buffer.as_ref().unwrap(), dirty.start as u64, bytes);
+            host::write_buffer(
+                queue,
+                self.buffer.as_ref().unwrap(),
+                dirty.start as u64,
+                bytes,
+            );
+            host::arena_transfer(bytes.len());
             host::upload_event("arena flush", 4, 1);
             host::upload_event("arena flush", 5, bytes.len() as u64);
             host::staged_bytes(bytes.len());
@@ -459,8 +461,8 @@ impl Arena {
             .residency
             .iter()
             .filter_map(|(&id, entry)| {
-                let start = entry.offset as usize * 4;
-                let end = start + class_words(entry.class) as usize * 4;
+                let start = entry.offset as usize * assets::STRIDE;
+                let end = start + class_bytes(entry.class) as usize * assets::STRIDE;
                 self.image
                     .dirty
                     .iter()
@@ -484,7 +486,7 @@ impl Arena {
         class: usize,
     ) -> Result<u32> {
         ensure!(class < self.free.len(), OVERFLOW);
-        let need = class_words(class);
+        let need = class_bytes(class);
         loop {
             if let Some(offset) = self.free[class].pop() {
                 return Ok(offset);
@@ -516,7 +518,7 @@ impl Arena {
         Some(offset)
     }
 
-    /// Grows to at least `need` free words past the high water mark, doubling
+    /// Grows to at least `need` free bytes past the high water mark, doubling
     /// from the initial size and copying the live contents forward.
     fn reserve(
         &mut self,
@@ -538,39 +540,50 @@ impl Arena {
             return false;
         }
         self.wanted = 0;
-        let mut capacity = self.capacity.max(INITIAL_WORDS.min(self.limit));
+        let mut capacity = self.capacity.max(INITIAL_BYTES.min(self.limit));
         while capacity < wanted {
             capacity = capacity.saturating_mul(2).min(self.limit);
         }
         self.counters.growth_peak_bytes = self
             .counters
             .growth_peak_bytes
-            .max((u64::from(self.capacity) + u64::from(capacity)) * 4);
+            .max((u64::from(self.capacity) + u64::from(capacity)) * assets::STRIDE as u64);
         let _scope = Scope::new(Phase::Upload);
         host::created_buffer();
         host::upload_event("persistent asset arena", 0, 1);
-        host::upload_event("persistent asset arena", 1, u64::from(capacity) * 4);
+        host::upload_event(
+            "persistent asset arena",
+            1,
+            u64::from(capacity) * assets::STRIDE as u64,
+        );
         let grown = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("persistent asset arena"),
-            size: u64::from(capacity) * 4,
+            size: u64::from(capacity) * assets::STRIDE as u64,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         counters.buffers += 1;
-        counters.buffer_bytes += u64::from(capacity) * 4;
+        counters.buffer_bytes += u64::from(capacity) * assets::STRIDE as u64;
         self.flush(queue);
         if let Some(previous) = self.buffer.take() {
             let mut encoder = device.create_command_encoder(&Default::default());
-            encoder.copy_buffer_to_buffer(&previous, 0, &grown, 0, u64::from(self.capacity) * 4);
+            encoder.copy_buffer_to_buffer(
+                &previous,
+                0,
+                &grown,
+                0,
+                u64::from(self.capacity) * assets::STRIDE as u64,
+            );
             counters.submits += 1;
             let _submit = Scope::new(Phase::SubmitWait);
             queue.submit([encoder.finish()]);
         }
         self.buffer = Some(grown);
         self.generation += 1;
-        self.image.resize((capacity as usize * 4).min(32 << 20));
+        self.image
+            .resize((capacity as usize * assets::STRIDE).min(32 << 20));
         self.capacity = capacity;
         true
     }
@@ -596,14 +609,14 @@ impl Arena {
         if !self.residency.is_empty()
             || !self.scratch.is_empty()
             || !self.retired.is_empty()
-            || self.high_water == ALIGN_WORDS
+            || self.high_water == ALIGN_BYTES
         {
             return false;
         }
         for class in &mut self.free {
             class.clear();
         }
-        self.high_water = ALIGN_WORDS;
+        self.high_water = ALIGN_BYTES;
         true
     }
 }
@@ -747,7 +760,7 @@ mod tests {
                 last_used: 0,
             },
         );
-        arena.counters.live_bytes = 1024;
+        arena.counters.live_bytes = 256 * assets::STRIDE as u64;
         arena.lru.insert((0, 7));
         arena.pinned.insert(7);
         arena.hold();
@@ -755,17 +768,46 @@ mod tests {
         arena.discard();
         assert!(arena.residency.is_empty());
         assert!(arena.image.dirty.is_empty());
-        assert_eq!(arena.counters.retired_bytes, 1024);
+        assert_eq!(arena.counters.retired_bytes, 256 * assets::STRIDE as u64);
         arena.release_hold();
         assert_eq!(arena.free[0], [4]);
     }
 
     #[test]
+    fn byte_class_boundaries_and_full_allocator() {
+        let mut arena = Arena::new(u64::MAX);
+        for (length, expected) in [
+            (0, 256),
+            (1, 256),
+            (255, 256),
+            (256, 256),
+            (257, 512),
+            (511, 512),
+            (512, 512),
+            (513, 1024),
+        ] {
+            assert_eq!(arena.allocation_bytes(1, length).unwrap(), expected);
+            assert_eq!(expected % 4, 0);
+        }
+        assert!(arena.allocation_bytes(1, u32::MAX as usize).is_err());
+        arena.capacity = ALIGN_BYTES + 4 * MIN_CLASS_BYTES;
+        for index in 0..4 {
+            assert_eq!(
+                arena.bump(MIN_CLASS_BYTES),
+                Some(ALIGN_BYTES + index * MIN_CLASS_BYTES)
+            );
+        }
+        assert_eq!(arena.high_water, arena.capacity);
+        assert_eq!(arena.bump(MIN_CLASS_BYTES), None);
+        assert_eq!(arena.high_water, arena.capacity);
+    }
+
+    #[test]
     fn allocation_demand_uses_classes_and_existing_residency() {
         let mut arena = Arena::new(32 << 20);
-        assert_eq!(arena.allocation_words(1, 60).unwrap(), 256);
-        assert_eq!(arena.allocation_words(2, 81920).unwrap(), 131072);
-        assert_eq!(arena.allocation_words(3, 176).unwrap(), 256);
+        assert_eq!(arena.allocation_bytes(1, 60).unwrap(), 256);
+        assert_eq!(arena.allocation_bytes(2, 81920).unwrap(), 131072);
+        assert_eq!(arena.allocation_bytes(3, 176).unwrap(), 256);
         arena.residency.insert(
             2,
             Residency {
@@ -775,10 +817,10 @@ mod tests {
                 last_used: 0,
             },
         );
-        assert_eq!(arena.allocation_words(2, 81920).unwrap(), 0);
-        assert_eq!(arena.allocation_words(2, 65536).unwrap(), 65536);
-        assert_eq!(Arena::new(16 << 20).allocation_words(1, 81920).unwrap(), 0);
-        assert!(arena.allocation_words(1, usize::MAX).is_err());
+        assert_eq!(arena.allocation_bytes(2, 81920).unwrap(), 0);
+        assert_eq!(arena.allocation_bytes(2, 65536).unwrap(), 65536);
+        assert_eq!(Arena::new(16 << 20).allocation_bytes(1, 81920).unwrap(), 0);
+        assert!(arena.allocation_bytes(1, usize::MAX).is_err());
     }
 
     #[test]
@@ -850,7 +892,7 @@ mod tests {
         )
         .unwrap();
         draw.arena = Arena::new(draw.storage_limit());
-        let count = (INITIAL_WORDS - 100000 - ALIGN_WORDS) / MIN_CLASS_WORDS;
+        let count = (INITIAL_BYTES - 100000 - ALIGN_BYTES) / MIN_CLASS_BYTES;
         for id in 1_000_000..1_000_000 + u64::from(count) {
             draw.arena
                 .offset_of(
@@ -866,7 +908,7 @@ mod tests {
         for id in 1_000_000..1_000_000 + u64::from(count) {
             draw.arena.release(id);
         }
-        assert_eq!(draw.arena.capacity, INITIAL_WORDS);
+        assert_eq!(draw.arena.capacity, INITIAL_BYTES);
         assert_eq!(draw.arena.free[0].len(), count as usize);
         assert!(draw.arena.free[size_class(81920)].is_empty());
         assert!(draw.arena.fits(draw.resource_bytes as u64));
@@ -877,16 +919,16 @@ mod tests {
         let before = draw.counters();
         draw.submit_target_triangles(target, &commands, 0, Some(mask))
             .unwrap();
-        assert_eq!(draw.arena.capacity, INITIAL_WORDS * 2);
+        assert_eq!(draw.arena.capacity, INITIAL_BYTES * 2);
         assert_eq!(draw.arena.counters().overflows, 0);
         assert_eq!(draw.arena.counters().evictions, 0);
         assert_eq!(
             draw.counters().target_trig_table_bytes - before.target_trig_table_bytes,
-            327680
+            81920 * assets::STRIDE as u64
         );
         assert_eq!(
             draw.counters().target_trig_geometry_bytes - before.target_trig_geometry_bytes,
-            480
+            120 * assets::STRIDE as u64
         );
         assert_eq!(
             draw.counters().target_trig_table_hits - before.target_trig_table_hits,
@@ -969,7 +1011,7 @@ mod tests {
         draw.arena = Arena::new(draw.storage_limit());
         draw.arena
             .grow_to(&draw.device, &draw.queue, &mut draw.counters, 1);
-        draw.arena.high_water = INITIAL_WORDS - 150_016;
+        draw.arena.high_water = INITIAL_BYTES - 150_016;
         assert!(draw.arena.fits(131_840));
         assert!(draw.arena.fits(draw.resource_bytes as u64));
         let other = draw.create_target(8, 8).unwrap();
@@ -979,7 +1021,7 @@ mod tests {
         let before = draw.counters();
         draw.submit_target_triangles(target, &commands, 0, Some(mask))
             .unwrap();
-        assert_eq!(draw.arena.capacity, INITIAL_WORDS * 2);
+        assert_eq!(draw.arena.capacity, INITIAL_BYTES * 2);
         assert_eq!(draw.counters().submits - before.submits, 2);
         assert_eq!(draw.counters().dispatches - before.dispatches, 2);
         assert!(draw.encoder.is_some());
@@ -1024,7 +1066,7 @@ mod tests {
             },
         );
         arena.lru.insert((0, 7));
-        arena.counters.live_bytes = 1024;
+        arena.counters.live_bytes = 256 * assets::STRIDE as u64;
         arena.pinned.insert(7);
         arena.begin_batch();
         assert!(arena.pinned.contains(&7));
@@ -1033,7 +1075,7 @@ mod tests {
         assert!(arena.residency.is_empty());
         assert!(arena.missing.is_empty());
         assert!(arena.free[0].is_empty());
-        assert_eq!(arena.counters().retired_bytes, 1024);
+        assert_eq!(arena.counters().retired_bytes, 256 * assets::STRIDE as u64);
         arena.release_hold();
         assert_eq!(arena.free[0], [4]);
         assert_eq!(arena.counters().retired_bytes, 0);
@@ -1067,7 +1109,7 @@ mod tests {
         };
         let offset = resolve(&mut arena, 1, 1, &[71; 60]);
         assert_eq!(resolve(&mut arena, 1, 1, &[71; 60]), offset);
-        assert_eq!(arena.counters().bytes_uploaded, 240);
+        assert_eq!(arena.counters().bytes_uploaded, 60 * assets::STRIDE as u64);
         arena.forget(1, false);
         assert_eq!(resolve(&mut arena, 1, 1, &[71; 60]), offset);
         let offset = resolve(&mut arena, 1, 1, &[93; 300]);
@@ -1089,24 +1131,35 @@ mod tests {
                 c.miss_size_class_bytes,
                 c.miss_generation_bytes
             ),
-            (240, 240, 1200, 1200)
+            (
+                60 * assets::STRIDE as u64,
+                60 * assets::STRIDE as u64,
+                300 * assets::STRIDE as u64,
+                300 * assets::STRIDE as u64
+            )
         );
-        arena.grow_to(&device, &queue, &mut counters, u64::from(INITIAL_WORDS));
-        assert_eq!(arena.counters().capacity_bytes, 8 << 20);
-        assert_eq!(arena.counters().growth_peak_bytes, 12 << 20);
+        arena.grow_to(&device, &queue, &mut counters, u64::from(INITIAL_BYTES));
+        assert_eq!(
+            arena.counters().capacity_bytes,
+            (2 << 20) * assets::STRIDE as u64
+        );
+        assert_eq!(
+            arena.counters().growth_peak_bytes,
+            (3 << 20) * assets::STRIDE as u64
+        );
         let output = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: 1200,
+            size: 300 * assets::STRIDE as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&Default::default());
         encoder.copy_buffer_to_buffer(
             arena.buffer.as_ref().unwrap(),
-            u64::from(offset) * 4,
+            u64::from(offset) * assets::STRIDE as u64,
             &output,
             0,
-            1200,
+            300 * assets::STRIDE as u64,
         );
         let submission = queue.submit([encoder.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1121,9 +1174,7 @@ mod tests {
             .unwrap();
         rx.recv().unwrap().unwrap();
         let mapped = output.slice(..).get_mapped_range().unwrap();
-        for word in mapped.as_chunks::<4>().0 {
-            assert_eq!(*word, 117u32.to_le_bytes());
-        }
+        assert_eq!(&*mapped, assets::encode(&[117; 300]));
         drop(mapped);
         output.unmap();
         let mut small = Arena::new(32 << 20);
@@ -1162,7 +1213,10 @@ mod tests {
             .unwrap();
         assert_eq!(small.counters().evictions, 2);
         assert_eq!(small.counters().misses_eviction, 1);
-        assert_eq!(small.counters().miss_eviction_bytes, 1200);
+        assert_eq!(
+            small.counters().miss_eviction_bytes,
+            300 * assets::STRIDE as u64
+        );
         let c = small.counters();
         assert_eq!(
             c.bytes_uploaded,

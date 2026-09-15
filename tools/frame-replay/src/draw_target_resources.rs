@@ -20,7 +20,7 @@ struct ImageBatch {
     words: Vec<u32>,
     snapshots: HashMap<u64, u32>,
     tables: HashMap<u64, u32>,
-    asset_words: usize,
+    asset_bytes: usize,
     /// Word positions holding a sampling-arena offset, rebased once the region
     /// is placed.
     offsets: Vec<usize>,
@@ -161,34 +161,37 @@ impl DrawRenderer {
             limit,
         )?;
         self.checkpoint_target(target)?;
-        self.arena_headroom(batch.asset_words as u64)?;
+        self.arena_headroom(batch.asset_bytes as u64)?;
         let (assets, base) = if self.arena.enabled() {
             self.arena.begin_batch();
-            let words =
-                u32::try_from(batch.asset_words).context("snapshot arena exceeds storage limit")?;
-            let base =
-                self.arena
-                    .reserve_scratch(&self.device, &self.queue, &mut self.counters, words)?;
+            let scratch_bytes =
+                u32::try_from(batch.asset_bytes).context("snapshot arena exceeds storage limit")?;
+            let base = self.arena.reserve_scratch(
+                &self.device,
+                &self.queue,
+                &mut self.counters,
+                scratch_bytes,
+            )?;
             (
                 self.arena
                     .binding(&self.device, &self.queue, &mut self.counters),
                 base,
             )
         } else {
-            let mut words = vec![0u32; batch.asset_words.max(1)];
+            let mut bytes = vec![0u8; batch.asset_bytes.max(1)];
             let _scope = Scope::new(Phase::Upload);
             for (&id, &offset) in &batch.tables {
                 let offset = offset as usize;
-                for (at, &byte) in self.resources[&id].bytes.iter().enumerate() {
-                    words[offset + at] = u32::from(byte);
-                }
+                let source = &self.resources[&id].bytes;
+                let _copy = host::UploadTimer::new(host::UploadPart::Copy, source.len());
+                bytes[offset..offset + source.len()].copy_from_slice(source);
             }
             (
-                buffer(
+                byte_buffer(
                     &self.device,
                     &mut self.counters,
                     "GPU snapshot sampling arena",
-                    &words,
+                    &bytes,
                     wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 ),
                 0,
@@ -225,8 +228,8 @@ impl DrawRenderer {
                 let source = &self.target_snapshots[&id];
                 (
                     source.indices.clone(),
-                    u64::from(base + offset) * 4,
-                    u64::from(source.pitch) * u64::from(source.height) * 4,
+                    u64::from(base + offset) * assets::STRIDE as u64,
+                    u64::from(source.pitch) * u64::from(source.height),
                 )
             })
             .collect();
@@ -238,14 +241,14 @@ impl DrawRenderer {
             for (&id, &offset) in &batch.tables {
                 let bytes = &self.resources[&id].bytes;
                 self.arena
-                    .stage_expanded(&self.queue, base + offset, bytes, "snapshot tables");
-                uploaded += bytes.len() as u64 * 4;
+                    .stage_bytes(&self.queue, base + offset, bytes, "snapshot tables");
+                uploaded += bytes.len() as u64 * assets::STRIDE as u64;
             }
         } else {
             uploaded = batch
                 .tables
                 .keys()
-                .map(|id| self.resources[id].bytes.len() as u64 * 4)
+                .map(|id| self.resources[id].bytes.len() as u64 * assets::STRIDE as u64)
                 .sum();
         }
         let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -264,16 +267,29 @@ impl DrawRenderer {
         });
         let compute = self.compute.clone();
         let mut copied = 0;
-        {
-            let _scope = Scope::new(Phase::Encode);
-            let encoder = self.frame_encoder();
-            for (source, offset, size) in &copies {
-                encoder.copy_buffer_to_buffer(source, 0, &assets, *offset, *size);
-                copied += *size;
+        for (source, offset, pixels) in &copies {
+            if assets::PACKED {
+                self.pack_snapshot(source, &assets, *offset, *pixels as u32)?;
+                copied += assets::aligned(*pixels as usize) as u64;
+            } else {
+                let _scope = Scope::new(Phase::Encode);
+                self.frame_encoder().copy_buffer_to_buffer(
+                    source,
+                    0,
+                    &assets,
+                    *offset,
+                    *pixels * 4,
+                );
+                copied += *pixels * 4;
+                host::snapshot_copy(*pixels * 4);
             }
+        }
+        let stamp = self.stamp(timing::PASS_SNAPSHOT_RASTER);
+        {
+            let encoder = self.frame_encoder();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("immutable source overlapping destination images"),
-                timestamp_writes: None,
+                timestamp_writes: stamp.compute(),
             });
             pass.set_pipeline(&compute);
             pass.set_bind_group(0, &binding, &[]);
@@ -291,6 +307,73 @@ impl DrawRenderer {
         Ok(())
     }
 
+    fn pack_snapshot(
+        &mut self,
+        source: &wgpu::Buffer,
+        destination: &wgpu::Buffer,
+        offset: u64,
+        pixels: u32,
+    ) -> Result<()> {
+        if self.snapshot_pack.is_none() {
+            let shader = self
+                .device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("pack snapshot bytes"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        include_str!("draw_snapshot_pack.wgsl").into(),
+                    ),
+                });
+            self.snapshot_pack = Some(self.device.create_compute_pipeline(
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("pack snapshot bytes"),
+                    layout: None,
+                    module: &shader,
+                    entry_point: Some("pack_snapshot"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                },
+            ));
+        }
+        let limit = self.device.limits().max_compute_workgroups_per_dimension;
+        let groups = pixels.div_ceil(4).div_ceil(64);
+        let columns = groups.min(limit).max(1);
+        let rows = groups.div_ceil(columns);
+        ensure!(
+            rows <= limit && offset.is_multiple_of(4),
+            "snapshot pack dispatch exceeds limit"
+        );
+        let parameters = upload::stage(
+            &self.uploads,
+            &self.device,
+            &mut self.counters,
+            "snapshot pack dimensions",
+            &[pixels, (offset / 4) as u32, columns * 64, 0],
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let pipeline = self.snapshot_pack.as_ref().unwrap().clone();
+        let binding = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("snapshot pack"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[entry(0, source), entry(1, destination), parameters.entry(2)],
+        });
+        let stamp = self.stamp(timing::PASS_SNAPSHOT_PACK);
+        {
+            let mut pass = self
+                .frame_encoder()
+                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("snapshot pack"),
+                    timestamp_writes: stamp.compute(),
+                });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &binding, &[]);
+            pass.dispatch_workgroups(columns, rows, 1);
+        }
+        host::snapshot_pack(assets::aligned(pixels as usize) as u64);
+        self.counters.dispatches += 1;
+        self.pass_boundary();
+        Ok(())
+    }
+
     fn pack_target_images(&self, commands: &[Command]) -> Result<ImageBatch> {
         let limit = self.storage_limit() as usize;
         ensure!(
@@ -301,7 +384,7 @@ impl DrawRenderer {
             words: Vec::with_capacity(commands.len() * RECORD_WORDS),
             snapshots: HashMap::new(),
             tables: HashMap::new(),
-            asset_words: 0,
+            asset_bytes: 0,
             offsets: Vec::new(),
         };
         for c in commands {
@@ -339,14 +422,14 @@ impl DrawRenderer {
                     c.source,
                     source.pitch as usize * source.height as usize,
                     &mut batch.snapshots,
-                    &mut batch.asset_words,
+                    &mut batch.asset_bytes,
                     limit,
                 )?;
                 let table_offset = reserve(
                     c.table,
                     table.bytes.len(),
                     &mut batch.tables,
-                    &mut batch.asset_words,
+                    &mut batch.asset_bytes,
                     limit,
                 )?;
                 let mut second_offset = 0;
@@ -378,7 +461,7 @@ impl DrawRenderer {
                             second_id,
                             second.pitch as usize * second.height as usize,
                             &mut batch.snapshots,
-                            &mut batch.asset_words,
+                            &mut batch.asset_bytes,
                             limit,
                         )?;
                         second_pitch = second.pitch;
@@ -427,7 +510,7 @@ impl DrawRenderer {
                 c.source,
                 source.pitch as usize * source.height as usize,
                 &mut batch.snapshots,
-                &mut batch.asset_words,
+                &mut batch.asset_bytes,
                 limit,
             )?;
             let mut table_offset = 0;
@@ -444,7 +527,7 @@ impl DrawRenderer {
                     c.table,
                     table.bytes.len(),
                     &mut batch.tables,
-                    &mut batch.asset_words,
+                    &mut batch.asset_bytes,
                     limit,
                 )?;
             }
@@ -479,6 +562,11 @@ fn reserve(
     if let Some(&offset) = offsets.get(&id) {
         return Ok(offset);
     }
+    let length = if assets::PACKED {
+        assets::aligned(length)
+    } else {
+        length
+    };
     let next = total
         .checked_add(length)
         .context("snapshot arena length overflow")?;

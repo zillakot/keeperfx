@@ -88,7 +88,7 @@ impl SourceLengths {
         } else {
             c.misses += 1;
             c.source_bytes += length as u64;
-            c.bytes += length as u64 * 4;
+            c.bytes += length as u64 * super::assets::STRIDE as u64;
             if kind == ResourceKind::Trig {
                 counters.arena_trig_texture_source_bytes += length.saturating_sub(60) as u64;
             }
@@ -147,7 +147,10 @@ mod tests {
             (65, 1, 64, 1)
         );
         assert_eq!(c.source_bytes, (0..65).sum::<u64>());
-        assert_eq!(c.bytes, c.source_bytes * 4);
+        assert_eq!(
+            c.bytes,
+            c.source_bytes * super::super::assets::STRIDE as u64
+        );
         lengths.begin_frame();
         lengths.record(&mut counters, ResourceKind::Sprite, 64, true);
         let next = counters.arena_by_kind[ResourceKind::Sprite as usize];
@@ -212,7 +215,7 @@ mod tests {
             assert_eq!(
                 c,
                 ArenaKindCounters {
-                    bytes: (60 + index as u64) * 4,
+                    bytes: (60 + index as u64) * super::super::assets::STRIDE as u64,
                     source_bytes: 60 + index as u64,
                     hits: 1,
                     misses: 1,
@@ -237,7 +240,7 @@ mod tests {
         assert!(packer.finish().is_none());
         assert_eq!(
             counters.arena_by_kind[3].bytes - before.arena_by_kind[3].bytes,
-            252
+            63 * super::super::assets::STRIDE as u64
         );
         assert_eq!(
             counters.arena_by_kind[3].distinct_lengths - before.arena_by_kind[3].distinct_lengths,

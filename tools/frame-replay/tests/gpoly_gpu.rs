@@ -44,7 +44,7 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     let height = word(&mut data);
     let pitch = word(&mut data);
     let count = word(&mut data);
-    let assets: Vec<u32> = data[..7968 + 16384].iter().map(|&v| u32::from(v)).collect();
+    let assets = keeperfx_frame_replay::draw::assets::encode(&data[..7968 + 16384]);
     data = &data[7968 + 16384..];
     let mut triangles = Vec::new();
     let mut expected_spans = Vec::new();
@@ -233,7 +233,9 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("gpoly fixture pixels"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("gpoly_pixels.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(
+            keeperfx_frame_replay::draw::assets::shader(include_str!("gpoly_pixels.wgsl")).into(),
+        ),
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
@@ -245,7 +247,7 @@ fn native_triangles_match_gpu_setup_and_pixels() -> Result<()> {
     });
     let asset_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
-        contents: &bytes(&assets),
+        contents: &assets,
         usage: wgpu::BufferUsages::STORAGE,
     });
     let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

@@ -151,7 +151,11 @@ fn snapshots_preserve_order_regions_pitch_versions_and_queued_lifetimes() {
     );
     assert_eq!(
         draw.target_resource_counters().sampling_copy_bytes,
-        (119 + 27 + 91) * 4
+        if keeperfx_frame_replay::draw::assets::PACKED {
+            120 + 28 + 92
+        } else {
+            (119 + 27 + 91) * 4
+        }
     );
     draw.check_status().unwrap();
 }
@@ -217,10 +221,13 @@ fn overlapping_images_use_immutable_sources_and_ordered_blend_destinations() {
         .unwrap();
     draw.release_target_snapshot(after).unwrap();
     assert_eq!(draw.counters().readback_bytes, 0);
-    assert_eq!(draw.counters().asset_upload_bytes, 65536 * 4);
+    assert_eq!(
+        draw.counters().asset_upload_bytes,
+        65536 * keeperfx_frame_replay::draw::assets::STRIDE as u64
+    );
     assert_eq!(
         draw.target_resource_counters().sampling_copy_bytes,
-        64 * 4 * 2
+        64 * keeperfx_frame_replay::draw::assets::STRIDE as u64 * 2
     );
     assert_eq!(draw.readback(target).unwrap(), expected);
 }

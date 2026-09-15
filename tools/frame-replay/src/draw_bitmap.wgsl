@@ -41,7 +41,7 @@ fn bitmap_sample(c: Command, pixel: vec2<u32>) -> u32 {
         } else {
             bit=u32(local.y)*((c.source.z+7u)/8u)*8u+u32(local.x);
         }
-        let ink=(assets[base+12u+bit/8u] & (128u>>(bit&7u)))!=0u;
+        let ink=(byte(base+12u+bit/8u) & (128u>>(bit&7u)))!=0u;
         if layer==0u {
             if ink { result=sprite_word(base+8u); }
         } else {

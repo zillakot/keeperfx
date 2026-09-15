@@ -130,8 +130,9 @@ mod tests {
 
     #[test]
     fn shared_shader_validates_without_gpu() {
-        let module = wgpu::naga::front::wgsl::parse_str(super::super::DRAW_SHADER)
-            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(super::super::DRAW_SHADER)));
+        let source = super::super::assets::shader(super::super::DRAW_SHADER);
+        let module = wgpu::naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
             wgpu::naga::valid::Capabilities::all(),

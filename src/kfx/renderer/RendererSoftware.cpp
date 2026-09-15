@@ -300,7 +300,7 @@ void RendererSoftware::report_drawing()
          gpu.tile_entries_by_kind[12], gpu.tile_entries_by_kind[13], gpu.tile_entries_by_kind[14],
          gpu.tile_entries_by_kind[15], gpu.tile_entries_by_kind[16], gpu.tile_entries_by_kind[17]},
         gpu.pass_ns[0], gpu.pass_ns[1], gpu.pass_ns[2], gpu.pass_ns[3],
-        gpu.pass_ns[4], gpu.pass_ns[5], gpu.pass_ns[6], gpu.pass_ns[7],
+        gpu.pass_ns[4], gpu.pass_ns[5], gpu.pass_ns[6], gpu.pass_ns[7], gpu.pass_ns[8], gpu.pass_ns[9],
         gpu.timed_passes, gpu.untimed_passes, gpu.gpu_pass_union_ns,
         gpu.target_trig_geometry_bytes,
         gpu.target_trig_table_bytes,

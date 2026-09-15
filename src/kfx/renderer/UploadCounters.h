@@ -18,7 +18,31 @@
     X(upload_uniforms_capacity) \
     X(upload_uniforms_used) \
     X(upload_uniforms_high_water) \
-    X(upload_arena_dirty_bytes)
+    X(upload_arena_dirty_bytes) \
+    X(capture_schema) \
+    X(arena_representation) \
+    X(upload_transport) \
+    X(arena_source_bytes) \
+    X(arena_logical_upload_bytes) \
+    X(arena_transfer_bytes) \
+    X(upload_cpu_copy_bytes) \
+    X(upload_cpu_copy_ns) \
+    X(upload_expand_ns) \
+    X(upload_staging_copy_ns) \
+    X(upload_api_ns) \
+    X(upload_copy_encode_ns) \
+    X(upload_copy_commands) \
+    X(upload_copy_bytes) \
+    X(upload_init_bytes) \
+    X(staging_buffers_created) \
+    X(staging_capacity_bytes) \
+    X(staging_inflight_bytes) \
+    X(staging_peak_bytes) \
+    X(staging_map_wait_ns) \
+    X(staging_fallbacks) \
+    X(staging_padding_bytes) \
+    X(snapshot_copy_bytes) \
+    X(snapshot_pack_bytes)
 
 #define KFX_UPLOAD_ROUTES(X) \
     X(record_ring) \
@@ -74,8 +98,14 @@
     X(upload_indices_high_water) \
     X(upload_uniforms_capacity) \
     X(upload_uniforms_used) \
-    X(upload_uniforms_high_water)
+    X(upload_uniforms_high_water) \
+    X(capture_schema) \
+    X(arena_representation) \
+    X(upload_transport) \
+    X(staging_capacity_bytes) \
+    X(staging_inflight_bytes) \
+    X(staging_peak_bytes)
 
-#define KFX_UPLOAD_COUNTER_COUNT 215
+#define KFX_UPLOAD_COUNTER_COUNT 239
 
 #endif

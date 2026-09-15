@@ -15,4 +15,6 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "metal
 crate-type = ["rlib", "staticlib"]
 
 [features]
+default = ["packed-arena"]
 live-surface = []
+packed-arena = []

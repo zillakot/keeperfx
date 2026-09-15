@@ -1,4 +1,4 @@
-pub const PASS_KINDS: usize = 8;
+pub const PASS_KINDS: usize = 10;
 pub(super) const PASS_RASTER: usize = 0;
 pub(super) const PASS_TERRAIN_PREPARE: usize = 1;
 pub(super) const PASS_SHADOW_MASK: usize = 2;
@@ -7,6 +7,8 @@ pub(super) const PASS_ORDERED_SPRITES: usize = 4;
 pub(super) const PASS_MINIMAP: usize = 5;
 pub(super) const PASS_LENS: usize = 6;
 pub(super) const PASS_PRESENT: usize = 7;
+pub(super) const PASS_SNAPSHOT_RASTER: usize = 8;
+pub(super) const PASS_SNAPSHOT_PACK: usize = 9;
 
 /// Reporting order of `Counters::pass_ns`; mirrored by `KfxWgpuDrawCounters`.
 pub const PASS_NAMES: [&str; PASS_KINDS] = [
@@ -18,6 +20,8 @@ pub const PASS_NAMES: [&str; PASS_KINDS] = [
     "minimap",
     "lens",
     "present",
+    "snapshot_raster",
+    "snapshot_pack",
 ];
 
 /// One shared query set; a submission takes a contiguous run of pairs from it and
@@ -57,6 +61,8 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     descriptor
 }
 
+type PassTrace = (std::path::PathBuf, Vec<(u8, u64)>, u64);
+
 struct Slot {
     resolve: wgpu::Buffer,
     staging: wgpu::Buffer,
@@ -80,6 +86,7 @@ pub(super) struct PassTimings {
     /// Scratch for the union below, kept to avoid a per-drain allocation.
     spans: Vec<(u64, u64)>,
     pub(super) union_ns: u64,
+    trace: Option<PassTrace>,
 }
 
 impl PassTimings {
@@ -123,6 +130,7 @@ impl PassTimings {
             dropped: 0,
             spans: Vec::new(),
             union_ns: 0,
+            trace: std::env::var_os("KFX_WGPU_PASS_TRACE").map(|path| (path.into(), Vec::new(), 0)),
         })
     }
 
@@ -247,6 +255,16 @@ impl PassTimings {
                             if end > begin {
                                 self.ns[usize::from(*kind)] +=
                                     ((end - begin) as f64 * self.period) as u64;
+                                if let Some((_, records, dropped)) = &mut self.trace {
+                                    if records.len() < 262144 {
+                                        records.push((
+                                            *kind,
+                                            ((end - begin) as f64 * self.period) as u64,
+                                        ));
+                                    } else {
+                                        *dropped += 1;
+                                    }
+                                }
                                 self.passes += 1;
                                 self.spans.push((begin, end));
                             }
@@ -261,6 +279,17 @@ impl PassTimings {
         }
         if self.spans.len() >= Self::SPAN_LIMIT {
             self.settle();
+        }
+    }
+}
+
+impl Drop for PassTimings {
+    fn drop(&mut self) {
+        if let Some((path, records, dropped)) = &self.trace {
+            let report = serde_json::json!({"pass_names": PASS_NAMES, "instances": records, "dropped": dropped, "untimed": self.dropped, "serialized": serialized()});
+            if let Err(error) = std::fs::write(path, report.to_string()) {
+                eprintln!("GPU pass trace: {error}");
+            }
         }
     }
 }
