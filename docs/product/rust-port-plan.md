@@ -299,8 +299,13 @@ above and must preserve `presentation_cpu` at most 1.0 ms and simulation cadence
 comparisons. Reusable mapped staging is a later PR.
 
 In parallel, work the tooling plan's
-[recommended order](development-tooling-plan.md#recommended-order), offscreen
-measurement first: it unblocks every other measurement.
+[recommended order](development-tooling-plan.md#recommended-order) from its first
+undelivered item: the bounds-superset property test, then command-stream capture with
+offline replay, then the per-suite frame-replay CI matrix, which today splits only the
+two arena formats. Control tooling has one open fault: `scripts/game-control.py
+cycle-mode` leaves the control API unresponsive after the video-mode switch — the game
+stays alive in fullscreen desktop mode and later operations time out — so oracle
+sessions skip the mode round trip until it is fixed.
 
 ### Inventory and measurement
 
