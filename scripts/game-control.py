@@ -144,6 +144,9 @@ def validate_launch(args):
         raise ValueError("invalid in-game video mode list")
     if getattr(args, "rotate_mode", None) not in (None, 0, 1, 2):
         raise ValueError("rotate mode must be 0, 1 or 2")
+    startup = getattr(args, "startup_timeout", None)
+    if startup is not None and not 30 <= startup <= 600:
+        raise ValueError("startup timeout must be 30..600 seconds")
 
 
 def prepare_session(args, work, engine, port):
@@ -201,7 +204,7 @@ def launch(args):
     with (work / "supervisor.log").open("w") as log:
         subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_supervise", "--session", str(descriptor)],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + (getattr(args, "startup_timeout", None) or 60)
     while time.monotonic() < deadline:
         if (work / "exit.json").exists():
             raise RuntimeError(f"game exited during startup; inspect {work / 'keeperfx.log'}")
@@ -271,6 +274,7 @@ def main():
     launch_parser.add_argument("--ingame-res", help="replace the in-game video mode list, e.g. 320x200w32")
     launch_parser.add_argument("--language", help="three-letter language code written to the isolated configuration")
     launch_parser.add_argument("--rotate-mode", type=int, choices=(0, 1, 2), help="0 iso wibble, 1 iso straight, 2 front view")
+    launch_parser.add_argument("--startup-timeout", type=int, help="seconds to wait for the control API; startup movies delay it")
     supervisor = sub.add_parser("_supervise", help=argparse.SUPPRESS)
     supervisor.add_argument("--session", type=Path, required=True)
     operations = ("state", "move", "click", "drag", "key", "chord", "cycle-mode", "wait", "resize",

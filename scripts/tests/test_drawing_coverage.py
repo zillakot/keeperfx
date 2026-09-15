@@ -150,7 +150,7 @@ class LaunchOptionTests(unittest.TestCase):
     def options(self, **changes):
         values = dict(backend="wgpu", verify=False, draw_backend="wgpu", draw_verify=True, lifetime=600,
                       campaign="keeporig", level=None, cheats=False, play_movies=False, smoothing=False,
-                      ingame_res=None, language=None, rotate_mode=None)
+                      ingame_res=None, language=None, rotate_mode=None, startup_timeout=None)
         values.update(changes)
         return argparse.Namespace(**values)
 
@@ -192,6 +192,7 @@ class LaunchOptionTests(unittest.TestCase):
         for changes, message in ((dict(language="CHINESE"), "three-letter"),
                                  (dict(ingame_res="320x200"), "video mode"),
                                  (dict(rotate_mode=5), "rotate mode"),
+                                 (dict(startup_timeout=5), "startup timeout"),
                                  (dict(lifetime=10), "lifetime")):
             with self.assertRaisesRegex(ValueError, message):
                 CONTROL.validate_launch(self.options(**changes))
