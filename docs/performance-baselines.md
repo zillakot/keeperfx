@@ -872,7 +872,8 @@ payload, excluding tail padding and coalesced gaps. Physical transfer, source by
 and representation metadata provide the comparison. The normal matched 32 MiB
 arena/image should become 8 MiB; this is not a process/GPU-memory measurement.
 The existing source-validation ceiling is retained. The `packed-arena` Cargo feature
-selects a complete renderer format; CI runs native fixtures with it both off and on.
+is enabled by default after both complete fixture matrices passed.
+`--no-default-features` selects the expanded control; CI retains both builds.
 Performance, snapshot operation budgets and acquired-surface parity remain host gates.
 PR #43 is not included: its split descriptors must use these byte accessors and its
 physical cache budget must change from 9 MiB to 2.25 MiB if integrated, keeping logical
