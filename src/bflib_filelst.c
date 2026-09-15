@@ -23,6 +23,7 @@
 #include "bflib_basics.h"
 #include "bflib_fileio.h"
 #include "bflib_dernc.h"
+#include "kfx/renderer/GpolyCapture.h"
 #include "post_inc.h"
 
 #ifdef __cplusplus
@@ -53,6 +54,9 @@ short LbDataFree(struct TbLoadFiles *load_file)
 //#ifdef __DEBUG
         LbJustLog("LbDataFree: freeing \"%s\"...",load_file->FName);
 //#endif
+        // A later allocation can land on this address, so the name dies with the bytes.
+        kfx_render_asset_range_forget(*data);
+        kfx_render_assets_changed();
         free(*data);
         (*data) = NULL;
 //#ifdef __DEBUG

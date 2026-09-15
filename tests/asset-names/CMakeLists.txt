@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.20)
+project(asset_name_fixture C)
+set(CMAKE_C_STANDARD 11)
+enable_testing()
+get_filename_component(KFX_ROOT "../.." ABSOLUTE)
+add_executable(asset_name_fixture fixture.c
+    "${KFX_ROOT}/src/bflib_filelst.c"
+    "${KFX_ROOT}/src/kfx/renderer/GpolyCapture.c")
+target_include_directories(asset_name_fixture PRIVATE "${KFX_ROOT}/src")
+target_compile_definitions(asset_name_fixture PRIVATE BFDEBUG_LEVEL=0)
+target_compile_options(asset_name_fixture PRIVATE -Wall -Wextra -Werror -fwrapv)
+option(KFX_ASSET_NAME_ASAN "Enable address sanitizer" ON)
+if(KFX_ASSET_NAME_ASAN)
+    target_compile_options(asset_name_fixture PRIVATE -fsanitize=address -fno-omit-frame-pointer)
+    target_link_options(asset_name_fixture PRIVATE -fsanitize=address)
+endif()
+add_test(NAME asset_name_fixture COMMAND asset_name_fixture)

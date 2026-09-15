@@ -114,7 +114,7 @@ decline:
 int kfx_wgpu_bitmap_font(const struct KfxGpolyTarget *target, int wx, int wy,
     int ww, int wh, int x, int y, const uint8_t *bits, int sw, int sh,
     int dw, int dh, int scaled, int foreground, int background, int shadow,
-    KfxWgpuNativeOracle oracle, void *context)
+    uint64_t glyph_id, KfxWgpuNativeOracle oracle, void *context)
 {
     if (!kfx_wgpu_native_enabled()) return 0;
     kfx_wgpu_native_flush();
@@ -128,9 +128,12 @@ int kfx_wgpu_bitmap_font(const struct KfxGpolyTarget *target, int wx, int wy,
     if (!kfx_wgpu_native_read_barrier(bits, bytes)) return 0;
     uint8_t *asset = malloc(bytes + 12);
     if (!asset) return 0;
-    word(asset, (foreground & 0xff00) ? 256 : foreground);
-    word(asset + 4, (background & 0xff00) ? 256 : background);
-    word(asset + 8, shadow < 0 ? 256 : shadow);
+    uint32_t fore = (foreground & 0xff00) ? 256 : (uint32_t)foreground;
+    uint32_t back = (background & 0xff00) ? 256 : (uint32_t)background;
+    uint32_t shad = shadow < 0 ? 256 : (uint32_t)shadow;
+    word(asset, fore);
+    word(asset + 4, back);
+    word(asset + 8, shad);
     memcpy(asset + 12, bits, bytes);
     struct KfxWgpuDrawCommand c = {0};
     c.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
@@ -144,7 +147,13 @@ int kfx_wgpu_bitmap_font(const struct KfxGpolyTarget *target, int wx, int wy,
     c.step_low = dw; c.step_high = dh;
     c.transparent = KFX_WGPU_DRAW_OPAQUE;
     struct KfxWgpuNativeResource source = {asset, bytes + 12, 1, 1, 1, NULL, 0, 0};
-    int accepted = kfx_wgpu_native_draw(target, &c, &source, NULL, oracle, context);
+    /* The glyph asset is the three colour words and the character's own bits; position,
+     * window and scale live in the record, so only those four names key it. */
+    struct KfxWgpuNativeKey name = {KFX_WGPU_DRAW_KEY_GLYPH, glyph_id,
+        fore | (uint64_t)back << 9 | (uint64_t)shad << 18, kfx_render_asset_generation};
+    int named = glyph_id != 0 && fore <= 256 && back <= 256 && shad <= 256;
+    int accepted = kfx_wgpu_native_draw_named(target, &c, &source, named ? &name : NULL, NULL,
+        oracle, context);
     free(asset);
     return accepted;
 }

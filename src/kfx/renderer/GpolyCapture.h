@@ -50,8 +50,14 @@ extern uint64_t kfx_render_sprite_generation;
 void kfx_render_sprites_changed(void);
 /* Registers storage whose bytes only change with a generation bump. At most
  * KFX_RENDER_ASSET_RANGES ranges; re-registering the same base replaces it. */
-enum { KFX_RENDER_ASSET_RANGES = 4 };
+enum { KFX_RENDER_ASSET_RANGES = 8 };
 void kfx_render_asset_range(const void *base, size_t length);
+/* Registrations refused because every slot was taken. Losing a name is safe — the asset
+ * falls back to a per-call resource — but it is silent, so it is counted. */
+extern uint64_t kfx_render_asset_range_drops;
+/* Drops a registration before its storage is freed, so a later allocation at the same
+ * address is not mistaken for the asset that used to live there. */
+void kfx_render_asset_range_forget(const void *base);
 int kfx_render_asset_stable(const void *bytes, size_t length);
 
 void kfx_gpoly_set_sink(KfxGpolySink sink, void *context);

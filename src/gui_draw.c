@@ -155,6 +155,8 @@ void draw_slab64k_background_immediate(long pos_x, long pos_y, long width, long 
     if (scr_y + scr_h > i)
         scr_h = i - scr_y;
     struct SlabOracle oracle = {pos_x, pos_y, width, height};
+    // The loader frees and reloads the tile, which drops its name, so it is named here.
+    kfx_render_asset_range(gui_slab, GUI_SLAB_DIMENSION * GUI_SLAB_DIMENSION);
     if (scr_x >= 0 && scr_y >= 0 && scr_w > 0 && scr_h > 0 &&
         scr_x <= 8192 && scr_y <= 8192 && scr_w <= 8192 && scr_h <= 8192 &&
         kfx_wgpu_raw_tile(lbDisplay.WScreen, lbDisplay.GraphicsScreenWidth, MyScreenHeight,

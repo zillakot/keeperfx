@@ -28,6 +28,7 @@
 #include "map_blocks.h"
 #include "map_utils.h"
 #include "room_util.h"
+#include "kfx/renderer/GpolyCapture.h"
 #include "post_inc.h"
 
 #ifdef __cplusplus
@@ -545,6 +546,9 @@ void clear_mapwho(void)
 
 void clear_mapmap(void)
 {
+    // game.map doubles as the front-end background buffer, so its name dies with its bytes.
+    kfx_render_asset_range_forget(game.map);
+    kfx_render_assets_changed();
     for (unsigned long y = 0; y < (game.map_subtiles_y + 1); y++)
     {
         for (unsigned long x = 0; x < (game.map_subtiles_x + 1); x++)

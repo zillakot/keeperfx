@@ -17,7 +17,8 @@ file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/SDL3_mixer")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/SDL3_mixer/SDL_mixer.h" "#pragma once\n")
 add_executable(bitmap_fixture fixture.c
     "${KFX_ROOT}/src/kfx/renderer/software/SwDrawTarget.c"
-    "${KFX_ROOT}/src/kfx/renderer/software/WgpuBitmap.c")
+    "${KFX_ROOT}/src/kfx/renderer/software/WgpuBitmap.c"
+    "${KFX_ROOT}/src/kfx/renderer/GpolyCapture.c")
 target_include_directories(bitmap_fixture PRIVATE "${KFX_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}" ${KFX_SDL3_INCLUDE_DIR})
 if(NOT WIN32)
     target_link_libraries(bitmap_fixture PRIVATE m)

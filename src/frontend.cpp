@@ -18,6 +18,7 @@
 /******************************************************************************/
 #include "pre_inc.h"
 #include "kfx/renderer/RendererManager.h"
+#include "kfx/renderer/GpolyCapture.h"
 #include "frontend.h"
 
 #include <string.h>
@@ -770,9 +771,14 @@ TbResult frontend_load_data(void)
 #else
     fname = prepare_file_path(FGrp_LoData,"front.raw");
 #endif
+    // Bumped on both sides of the load so a resource cached mid-write is invalidated too.
+    kfx_render_assets_changed();
     len = LbFileLoadAt(fname, frontend_background);
+    kfx_render_assets_changed();
     if (len < 307200) {
         ret = Lb_FAIL;
+    } else {
+        kfx_render_asset_range(frontend_background, 640 * 480);
     }
     if (len > sizeof(game.map)) {
         WARNLOG("Reused memory area exceeded for frontend background.");

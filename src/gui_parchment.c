@@ -63,6 +63,7 @@
 #include "player_instances.h"
 
 #include "keeperfx.hpp"
+#include "kfx/renderer/GpolyCapture.h"
 #include "post_inc.h"
 
 /******************************************************************************/
@@ -82,6 +83,8 @@ void load_parchment_file(void)
 void reload_parchment_file(TbBool hires)
 {
   char *fname;
+  // Bumped on both sides of the load so a resource cached mid-write is invalidated too.
+  kfx_render_assets_changed();
   if (hires)
   {
 #ifdef SPRITE_FORMAT_V2
@@ -90,6 +93,7 @@ void reload_parchment_file(TbBool hires)
       fname = prepare_file_path(FGrp_StdData,"gmap64.raw");
 #endif
       LbFileLoadAt(fname, hires_parchment);
+      kfx_render_asset_range(hires_parchment, 640 * 480);
   } else
   {
 #ifdef SPRITE_FORMAT_V2
@@ -99,6 +103,7 @@ void reload_parchment_file(TbBool hires)
 #endif
       LbFileLoadAt(fname, poly_pool);
   }
+  kfx_render_assets_changed();
   parchment_loaded = 1;
 }
 

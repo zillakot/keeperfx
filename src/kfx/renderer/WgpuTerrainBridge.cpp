@@ -58,8 +58,18 @@ extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget* target,
     const KfxWgpuDrawCommand* command, const KfxWgpuNativeResource* source,
     const KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context)
 {
+    return kfx_wgpu_native_draw_named(target, command, source, nullptr, table, oracle,
+        oracle_context);
+}
+
+extern "C" int kfx_wgpu_native_draw_named(const KfxGpolyTarget* target,
+    const KfxWgpuDrawCommand* command, const KfxWgpuNativeResource* source,
+    const KfxWgpuNativeKey* name, const KfxWgpuNativeResource* table,
+    KfxWgpuNativeOracle oracle, void* oracle_context)
+{
     if (active_bridge == nullptr || active_bridge->IsOracleActive() || target == nullptr || command == nullptr) return 0;
-    return active_bridge->SubmitNative(*target, *command, source, table, oracle, oracle_context);
+    return active_bridge->SubmitNative(*target, *command, source, table, oracle, oracle_context,
+        nullptr, name);
 }
 
 extern "C" int kfx_wgpu_native_draw_sprite(const KfxGpolyTarget* target,
@@ -533,8 +543,6 @@ const void* WgpuTerrainBridge::StableKey(const void* bytes, size_t length)
     return kfx_render_asset_stable(bytes, length) ? bytes : nullptr;
 }
 
-/* One resource per key: the snapshot the CPU replay needs is taken with the handle and
- * released with it, so resolving a resident key copies and counts nothing. */
 uint64_t WgpuTerrainBridge::KeyedResource(uint32_t kind, const void* key, const void* tail_key,
     uint64_t generation, const uint8_t* bytes, const Extent& extent)
 {
@@ -1173,7 +1181,7 @@ void WgpuTerrainBridge::EmitterBoundary()
 int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
     const KfxWgpuDrawCommand& command, const KfxWgpuNativeResource* source,
     const KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context,
-    const KfxWgpuSpriteAssets* sprite)
+    const KfxWgpuSpriteAssets* sprite, const KfxWgpuNativeKey* name)
 {
     const KfxWgpuNativeResource* ranges = sprite != nullptr ? sprite->ranges : nullptr;
     const KfxWgpuNativeResource* remap = sprite != nullptr ? sprite->remap : nullptr;
@@ -1244,6 +1252,12 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
                     (static_cast<uint64_t>(command.source_width) << 32) | command.source_height,
                     static_cast<uint64_t>(reinterpret_cast<uintptr_t>(sprite->identity)),
                     sprite->generation, source->bytes,
+                    {source->length, source->width, source->height, source->pitch});
+                if (source_handle == 0) return Fail(nullptr);
+            } else if (name != nullptr && source->tail == nullptr) {
+                // A keyed handle outlives the run that named it, so the record owns nothing.
+                source_handle = KeyedResourceRaw(name->kind, name->hi, name->lo, name->generation,
+                    source->bytes,
                     {source->length, source->width, source->height, source->pitch});
                 if (source_handle == 0) return Fail(nullptr);
             } else {
@@ -1324,6 +1338,9 @@ extern "C" void kfx_wgpu_native_invalidate_frame(void) {}
 extern "C" void kfx_wgpu_terrain_boundary(int) {}
 extern "C" int kfx_wgpu_native_draw(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
     const KfxWgpuNativeResource*, const KfxWgpuNativeResource*, KfxWgpuNativeOracle, void*) { return 0; }
+extern "C" int kfx_wgpu_native_draw_named(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
+    const KfxWgpuNativeResource*, const KfxWgpuNativeKey*, const KfxWgpuNativeResource*,
+    KfxWgpuNativeOracle, void*) { return 0; }
 extern "C" int kfx_wgpu_native_draw_sprite(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
     const KfxWgpuSpriteAssets*, KfxWgpuNativeOracle, void*) { return 0; }
 #endif

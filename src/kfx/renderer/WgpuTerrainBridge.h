@@ -24,6 +24,14 @@ struct KfxWgpuNativeResource {
     size_t tail_length;
     int cursor;
 };
+/* Names a source asset for kfx_wgpu_draw_resource_create_keyed, so the drawing context
+ * keeps one handle for it instead of one per command. Everything the bytes depend on
+ * must be in the key: the lookup never compares content, and the bytes behind a key may
+ * only change with the generation. */
+struct KfxWgpuNativeKey {
+    uint32_t kind;
+    uint64_t hi, lo, generation;
+};
 typedef void (*KfxWgpuNativeOracle)(uint8_t* pixels, uint32_t pitch, void* context);
 uint64_t kfx_wgpu_native_snapshot(const struct KfxGpolyTarget* target,
     uint32_t width, uint32_t height, uint32_t pitch, uint8_t* checkpoint);
@@ -31,6 +39,11 @@ void kfx_wgpu_native_snapshot_release(uint64_t snapshot);
 int kfx_wgpu_native_draw(const struct KfxGpolyTarget* target,
     const struct KfxWgpuDrawCommand* command, const struct KfxWgpuNativeResource* source,
     const struct KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context);
+/* As above, with the source asset named; a null name draws unnamed. */
+int kfx_wgpu_native_draw_named(const struct KfxGpolyTarget* target,
+    const struct KfxWgpuDrawCommand* command, const struct KfxWgpuNativeResource* source,
+    const struct KfxWgpuNativeKey* name, const struct KfxWgpuNativeResource* table,
+    KfxWgpuNativeOracle oracle, void* oracle_context);
 /* A sprite's three resources: artwork of 2*w*h index/coverage pairs, per-call scaling
  * ranges and a 256-byte remap. identity is a stable address naming the artwork, under
  * which the drawing context keeps it resident instead of re-uploading it per command;
@@ -114,7 +127,7 @@ public:
     int SubmitNative(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table,
         KfxWgpuNativeOracle oracle, void* oracle_context,
-        const KfxWgpuSpriteAssets* sprite = nullptr);
+        const KfxWgpuSpriteAssets* sprite = nullptr, const KfxWgpuNativeKey* name = nullptr);
     int SubmitShadow(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table, uint8_t* scratch,
         KfxWgpuNativeOracle oracle, void* oracle_context);

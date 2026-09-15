@@ -59,6 +59,11 @@ jobs:
           cmake -S tests/api -B out/api-tests
           cmake --build out/api-tests --parallel 2
           ctest --test-dir out/api-tests --output-on-failure
+      - name: Check asset name lifetime across the file-list loader
+        run: |
+          cmake -S tests/asset-names -B out/asset-name-tests
+          cmake --build out/asset-name-tests --parallel 2
+          ctest --test-dir out/asset-name-tests --output-on-failure
       - name: Check native drawing bridge ordering, batching and recovery
         run: |
           cmake -S tests/terrain-bridge -B out/terrain-bridge-tests

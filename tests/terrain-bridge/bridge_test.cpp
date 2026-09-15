@@ -986,6 +986,99 @@ int main()
             assert(bridge.GetCounters().failures == 0);
         }
         {
+            // A named image source takes one resident handle across commands, a bump
+            // renames it without disturbing the run that named the old bytes, an unnamed
+            // source stays per-call, and the name with another shape is refused.
+            std::vector<uint8_t> run(24 * 10, 0x6a);
+            KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+            WgpuTerrainBridge bridge(0, false, false);
+            std::vector<uint8_t> image(200, 19);
+            KfxWgpuDrawCommand picture = {};
+            picture.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+            picture.kind = KFX_WGPU_DRAW_IMAGE;
+            picture.width = picture.clip_width = picture.source_width = 20;
+            picture.height = picture.clip_height = picture.source_height = 10;
+            picture.transparent = KFX_WGPU_DRAW_OPAQUE;
+            KfxWgpuNativeResource picture_source = {image.data(), image.size(), 20, 10, 20,
+                nullptr, 0, 0};
+            KfxWgpuNativeKey name = {KFX_WGPU_DRAW_KEY_RAW_IMAGE, 0, 0x5eed, 1};
+            const uint64_t created = keyed_creates, live = live_resources;
+            for (unsigned i = 0; i < 4; ++i)
+                assert(bridge.SubmitNative(run_target, picture, &picture_source, nullptr,
+                    nullptr, nullptr, nullptr, &name) == 1);
+            assert(keyed_creates == created + 1 && live_resources == live + 1);
+            name.generation = 2;
+            assert(bridge.SubmitNative(run_target, picture, &picture_source, nullptr, nullptr,
+                nullptr, nullptr, &name) == 1);
+            assert(keyed_creates == created + 2 && live_resources == live + 1);
+            assert(bridge.SubmitNative(run_target, picture, &picture_source, nullptr, nullptr,
+                nullptr) == 1);
+            assert(keyed_creates == created + 2 && live_resources == live + 1);
+            KfxWgpuNativeResource reshaped = picture_source;
+            reshaped.length = image.size() / 2;
+            reshaped.height = 5;
+            assert(bridge.SubmitNative(run_target, picture, &reshaped, nullptr, nullptr,
+                nullptr, nullptr, &name) == 0);
+            assert(bridge.Failed() && std::strstr(bridge.GetError(), "shape") != nullptr);
+        }
+        {
+            // Free-then-reuse: the address a name vouched for is released and a different
+            // buffer lands on it. The forget takes the name away and the bump renames what
+            // is registered next, so the second buffer can never resolve the first's handle.
+            std::vector<uint8_t> run(24 * 10, 0x6a);
+            KfxGpolyTarget run_target = {run.data(), 20, 10, 24};
+            WgpuTerrainBridge bridge(0, false, false);
+            KfxWgpuDrawCommand picture = {};
+            picture.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
+            picture.kind = KFX_WGPU_DRAW_IMAGE;
+            picture.width = picture.clip_width = picture.source_width = 20;
+            picture.height = picture.clip_height = picture.source_height = 10;
+            picture.transparent = KFX_WGPU_DRAW_OPAQUE;
+            std::vector<uint8_t> storage(200, 19);
+            KfxWgpuNativeResource asset = {storage.data(), storage.size(), 20, 10, 20,
+                nullptr, 0, 0};
+            kfx_render_asset_range(storage.data(), storage.size());
+            assert(kfx_render_asset_stable(storage.data(), storage.size()));
+            KfxWgpuNativeKey name = {KFX_WGPU_DRAW_KEY_RAW_IMAGE, 0,
+                static_cast<uint64_t>(reinterpret_cast<uintptr_t>(storage.data())),
+                kfx_render_asset_generation};
+            const uint64_t created = keyed_creates;
+            assert(bridge.SubmitNative(run_target, picture, &asset, nullptr, nullptr,
+                nullptr, nullptr, &name) == 1);
+            assert(bridge.SubmitNative(run_target, picture, &asset, nullptr, nullptr,
+                nullptr, nullptr, &name) == 1);
+            assert(keyed_creates == created + 1);
+            // The release: LbDataFree forgets the range and bumps before free().
+            const uint64_t before = kfx_render_asset_generation;
+            kfx_render_asset_range_forget(storage.data());
+            kfx_render_assets_changed();
+            assert(!kfx_render_asset_stable(storage.data(), storage.size()));
+            assert(kfx_render_asset_generation == before + 1);
+            // The reuse: another asset at the same address, registered again.
+            std::fill(storage.begin(), storage.end(), 0x5b);
+            kfx_render_asset_range(storage.data(), storage.size());
+            KfxWgpuNativeKey reused = {KFX_WGPU_DRAW_KEY_RAW_IMAGE, 0, name.lo,
+                kfx_render_asset_generation};
+            assert(reused.lo == name.lo && reused.generation != name.generation);
+            assert(bridge.SubmitNative(run_target, picture, &asset, nullptr, nullptr,
+                nullptr, nullptr, &reused) == 1);
+            assert(keyed_creates == created + 2);
+            kfx_render_asset_range_forget(storage.data());
+            assert(bridge.GetCounters().failures == 0);
+        }
+        {
+            // A name the table cannot hold is refused, and the refusal is counted rather
+            // than silent: one more registration than there are slots must drop the last.
+            std::vector<uint8_t> slots(KFX_RENDER_ASSET_RANGES + 1, 0);
+            const uint64_t dropped = kfx_render_asset_range_drops;
+            for (int i = 0; i <= KFX_RENDER_ASSET_RANGES; ++i)
+                kfx_render_asset_range(&slots[i], 1);
+            assert(kfx_render_asset_range_drops > dropped);
+            assert(!kfx_render_asset_stable(&slots[KFX_RENDER_ASSET_RANGES], 1));
+            for (int i = 0; i <= KFX_RENDER_ASSET_RANGES; ++i)
+                kfx_render_asset_range_forget(&slots[i]);
+        }
+        {
             // A key names one extent: the same pointer with another shape is refused, not
             // served with the first shape's resource.
             std::vector<uint8_t> run(24 * 10, 0x6a);
@@ -1026,6 +1119,17 @@ int main()
         assert(kfx_render_asset_stable(first.data(), first.size()));
         std::vector<uint8_t> unregistered(KFX_GPOLY_TEXTURE_BYTES, 0x21);
         assert(!kfx_render_asset_stable(unregistered.data(), unregistered.size()));
+        {
+            // Registrations nest: the land map and the front-end background share storage.
+            // A range that ends inside the queried bytes must not hide one that covers them.
+            std::vector<uint8_t> nested(4096, 0);
+            kfx_render_asset_range(nested.data(), nested.size());
+            kfx_render_asset_range(nested.data() + 1024, 16);
+            assert(kfx_render_asset_stable(nested.data() + 1024, 2048));
+            kfx_render_asset_range_forget(nested.data() + 1024);
+            kfx_render_asset_range_forget(nested.data());
+            assert(!kfx_render_asset_stable(nested.data(), 16));
+        }
         {
             WgpuTerrainBridge bridge(0, false, false);
             kfx_wgpu_terrain_boundary(1);
