@@ -485,11 +485,11 @@ fn the_whole_chain_in_one_encoder_matches_the_per_submit_replay() {
             assert_eq!(after.shadow_pairs - before.shadow_pairs, pairs);
             assert_eq!(
                 after.target_trig_geometry_bytes - before.target_trig_geometry_bytes,
-                pairs * 480
+                pairs * 120 * keeperfx_frame_replay::draw::assets::STRIDE as u64
             );
             assert_eq!(
                 after.target_trig_table_bytes - before.target_trig_table_bytes,
-                misses * 327680
+                misses * 81920 * keeperfx_frame_replay::draw::assets::STRIDE as u64
             );
             assert_eq!(
                 after.target_trig_table_misses - before.target_trig_table_misses,

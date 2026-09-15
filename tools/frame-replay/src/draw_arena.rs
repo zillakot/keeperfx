@@ -895,11 +895,11 @@ mod tests {
         assert_eq!(draw.arena.counters().evictions, 0);
         assert_eq!(
             draw.counters().target_trig_table_bytes - before.target_trig_table_bytes,
-            327680
+            81920 * assets::STRIDE as u64
         );
         assert_eq!(
             draw.counters().target_trig_geometry_bytes - before.target_trig_geometry_bytes,
-            480
+            120 * assets::STRIDE as u64
         );
         assert_eq!(
             draw.counters().target_trig_table_hits - before.target_trig_table_hits,

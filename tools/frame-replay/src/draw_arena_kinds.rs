@@ -240,7 +240,7 @@ mod tests {
         assert!(packer.finish().is_none());
         assert_eq!(
             counters.arena_by_kind[3].bytes - before.arena_by_kind[3].bytes,
-            252
+            63 * super::super::assets::STRIDE as u64
         );
         assert_eq!(
             counters.arena_by_kind[3].distinct_lengths - before.arena_by_kind[3].distinct_lengths,

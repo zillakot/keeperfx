@@ -226,5 +226,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: synthetic-frame-reports
+          name: synthetic-frame-reports-${{ matrix.format }}
           path: out/synthetic-replay

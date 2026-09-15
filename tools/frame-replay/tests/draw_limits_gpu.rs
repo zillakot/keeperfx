@@ -196,7 +196,7 @@ fn arena_residency_reuse_eviction_and_generations() {
     assert_eq!(stale.bytes_uploaded, 2 * first.bytes_uploaded);
     assert_eq!(stale.bytes_resident, first.bytes_resident);
 
-    let bulk: Vec<_> = (0..40)
+    let bulk: Vec<_> = (0..(160 / keeperfx_frame_replay::draw::assets::STRIDE as u32))
         .map(|i: u32| {
             drawing
                 .create_resource(&tile(7 * i + 1, 512), 512, 512, 512)
@@ -222,7 +222,7 @@ fn arena_overflow_reports_the_storage_limit_and_recovers() {
     drawing.submit(target, &[blit(odd, 3)]).unwrap();
     let aligned = drawing.readback(target).unwrap();
 
-    let batch: Vec<_> = (0..140)
+    let batch: Vec<_> = (0..(560 / keeperfx_frame_replay::draw::assets::STRIDE as u32))
         .map(|i: u32| {
             let source = drawing
                 .create_resource(&tile(3 * i + 1, 256), 256, 256, 256)
