@@ -76,7 +76,7 @@ static int wgpu_trig(struct PolyPoint *a, struct PolyPoint *b, struct PolyPoint 
     const struct KfxGpolyTarget target = {poly_screen + vec_screen_width,
         vec_window_width, vec_window_height, vec_screen_width};
     struct KfxWgpuDrawCommand command = {0};
-    command.abi_version = 1;
+    command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
     command.kind = KFX_WGPU_DRAW_TRIG;
     command.colour = vec_colour;
     command.width = command.clip_width = target.width;

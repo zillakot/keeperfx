@@ -1,6 +1,8 @@
 use super::*;
 
 pub const ARENA_KINDS: usize = 19;
+/// Index of the sprite kind in `Counters::arena_by_kind`, mirroring `ArenaKindCounters.h`.
+pub const SPRITE_KIND: usize = ResourceKind::Sprite as usize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]

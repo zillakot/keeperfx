@@ -187,7 +187,7 @@ bool Gpu(Effect& e)
         if (e.kind == 1) std::memcpy(packed.data() + 64 + sl + al, e.fade, 33 * 256);
         KfxGpolyTarget target = {e.dst, static_cast<uint32_t>(e.width), static_cast<uint32_t>(e.height), static_cast<uint32_t>(e.dp)};
         KfxWgpuDrawCommand command = {};
-        command.abi_version = 1;
+        command.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
         command.kind = 10;
         command.width = command.clip_width = e.width;
         command.height = command.clip_height = e.height;

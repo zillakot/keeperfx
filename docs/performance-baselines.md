@@ -337,6 +337,94 @@ gain. All samples retain one submit, zero waits/checkpoints/errors and 32 MiB ar
 capacity; uncapped reaches 256.321 FPS at 20.002772 turns/s. These are offscreen
 observations, not acquired-surface performance or whole-process memory proof.
 
+### Sprite asset interning, counters measured 2026-09-15
+
+Branch binary SHA256
+`82d7e6c516e350d7e855c2423dcf8a1aabe25a8d203d3fef69225e6a1782f163`, built with
+`-DKFX_RUST_PRESENTER=ON` — the same binary the timing cells below ran — against the
+reference run of source `c8687e108`, binary SHA256
+`3359fe9a45a81a867e1cf48a274b795c9c6984acd00676764a2fd509b22ec0b4`
+(`out/wgpu-migration/minimap-split-runs/drawing-coverage/`), which is master with the
+minimap split and without this change. Identities are in
+`out/wgpu-migration/sprite-interning-runs/sprite-interning-binaries.json`. Apple M5/Metal,
+windowed control sessions under `scripts/drawing-coverage.py` with the drawing oracle on,
+the timing lock held, packed arena. **Counters only: this run measures arena bytes and
+residency, not frame time.** Both runs are 180 frames of `dungeon-busy`.
+
+Per frame, `dungeon-busy`, reference → branch:
+
+| Counter | Reference | Branch |
+| --- | ---: | ---: |
+| `gpu_sprite_commands` | 203.0 | 201.5 |
+| `arena_sprite_hits` | 0 | 393.5 |
+| `arena_sprite_misses` | 200.7 | 204.1 |
+| `arena_sprite_bytes` | 481,176 | **97,654** |
+| `arena_ordered_sprite_bytes` | 3,122 | 986 |
+| `arena_cursor_bytes` | 2,119 | 2,119 |
+| `arena_native_table_bytes` | 728 | 728 |
+| `arena_bytes_uploaded` | 546,550 | 160,893 |
+| `resource_snapshot_bytes` | 997,003 | 611,345 |
+| `arena_bytes_resident` (gauge) | 27,166 | 33,727 |
+
+Sprite arena bytes fall 4.93x, and total arena uploads fall 71% now that the minimap
+split has already taken its own share out. A sprite command resolves two interned
+resources, the artwork and the remap, and one per-call resource, the scaling ranges. Over
+the run, **70,832 of 71,303 interned lookups hit, 99.3%**; counted instead against two
+interned lookups for every one of the 36,271 sprite commands, 97.6%. The 36,742 misses are
+36,271 per-call ranges plus 471 artwork and remap misses. `arena_misses_generation`,
+`arena_misses_eviction`, `arena_misses_size_class`, `arena_evictions` and
+`arena_overflows` are zero here and in the `front-view` and `dbc-text` scenes.
+`arena_sprite_bytes` is 91,546 per frame in `front-view` (203.6 commands) and 9,259.5 in
+`dbc-text` (7.6 commands).
+
+`resource_snapshot_bytes` falls to 0.613 of the reference. That matches the prediction of
+the slice's own spec, 0.605; the 0.35 acceptance bar contradicts it and was the figure
+that was wrong. The drop, 385,657 bytes per frame, is this slice:
+`arena_sprite_source_bytes` falls 383,521 over the same run. Subtracting every arena
+kind's source bytes from the branch figure (160,893) leaves 450,453 per frame of host
+copies that reach no arena kind at all, which nothing here touches.
+`arena_bytes_resident` rises by the interned artwork, 4.89 → 6.07 MB against a 128 MiB
+arena.
+
+Parity: `scripts/drawing-coverage.py` on `dungeon-busy`, `front-view` and `dbc-text` is
+complete with every gate counter zero — `failures`, `invalid_frames`,
+`frame_flagged_invalid`, `verification_flagged_shades`, `rejected_commands`,
+`rejected_spans`, `rejected_triangles`, `frame_rejected_checkpoints`,
+`missing_cpu_barriers` — and 82,692 of 82,693 batches CPU-verified in `dungeon-busy`,
+50,399 of 50,399 in `front-view` and 7,048 of 7,048 in `dbc-text`. No scene in the harness
+draws a keepersprite with `water_source_cutoff != 0`, so the clipped-height key is covered
+by the fixtures and not by a live scene: `tests/sprites/fixture.c` draws one identity at
+decoded heights 5 and 3, asserts the two expansions differ in length and that the shorter
+is the taller's row prefix, and writes both to the oracle, which replays them against the
+legacy kernels like every other case. Run outputs are under
+`out/wgpu-migration/sprite-interning-runs/drawing-coverage/`.
+
+Timing, binary SHA256
+`82d7e6c516e350d7e855c2423dcf8a1aabe25a8d203d3fef69225e6a1782f163` against a build of
+master `66c8e8764`, binary SHA256
+`4463b2ff847f5a842ba832caee19b680c07f18caba225f8618dba87128fccffc`, recorded in
+`out/wgpu-migration/sprite-interning-runs/timing-a2217496b.md` with a first run on the
+preceding head in `timing-3eb39f0d1.md`. Offscreen busy 1920x1080, capped and uncapped,
+two matched pairs per cap mode with the order alternated, guards on, timing lock held by
+the schedule, VSync off, interpolation on, 20 turns/s, 40 warmup and 200 measured turns,
+600 replay-host frames per cell, GPU timing on, cycle gate skipped. Eight of eight cells
+complete, both surface gates verified, drawing gate passed; waits, arena overflows and
+generation misses zero in every cell.
+
+Both capped pairs hold 60.00 FPS. `arena_sprite_bytes` falls from 531–558 KB to 70–71 KB
+per frame and `arena_bytes_uploaded` by 61% capped and 79% uncapped, with 183–189 sprite
+hits per frame. The replay upload phase is lower in every cell, 0.14 and 0.29 ms capped
+and 0.04 and 0.09 ms uncapped.
+
+The GPU and FPS readings go both ways and are not claimed either direction. Capped pass
+union 9.19 and 8.95 → 9.25 and 9.47 ms; uncapped union 3.33 and 3.33 → 3.50 and 3.31 ms;
+uncapped FPS 288.7 and 288.7 → 275.6 and 290.9, so pair 1 reads −13 FPS with +0.17 ms of
+union while pair 2 reads +2 FPS with −0.02 ms, against +2 and +26 FPS in the first run.
+All of that is inside the recorded pair spread: **no regression is shown and no FPS gain
+is claimed**, and the slice lands on the byte and parity gates rather than on frame time.
+The one pass-level figure that is consistent across both pairs of both runs is the ordered
+sprite pass, 1.03 → 1.01 ms.
+
 ### Minimap dispatch box, measured 2026-09-15
 
 [PR #50](https://github.com/zillakot/keeperfx/pull/50), source `5ee89a7e9`, binary SHA256

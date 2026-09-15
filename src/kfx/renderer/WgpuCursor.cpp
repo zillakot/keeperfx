@@ -88,7 +88,8 @@ struct Oracle { const TbSprite* sprite; const int32_t* xs; const int32_t* ys; ui
 void oracle(uint8_t* pixels, uint32_t pitch, void* context)
 {
     const auto& o = *static_cast<Oracle*>(context);
-    const TbSourceBuffer source = {o.sprite->Data, o.sprite->SWidth, o.sprite->SHeight, o.sprite->SWidth};
+    const TbSourceBuffer source = {o.sprite->Data, o.sprite->SWidth, o.sprite->SHeight,
+        o.sprite->SWidth, o.sprite->Data};
     LbSpriteDrawUsingScalingUpDataSolidLR(pixels + o.xs[0] + pitch * o.ys[0], pitch,
         o.height, const_cast<int32_t*>(o.xs), const_cast<int32_t*>(o.ys), &source);
 }

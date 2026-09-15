@@ -42,6 +42,12 @@ typedef int (*KfxGpolySink)(void *context, const struct KfxGpolyTarget *target,
  * still compares content. */
 extern uint64_t kfx_render_asset_generation;
 void kfx_render_assets_changed(void);
+/* Identity generation for sprite artwork, separate so that adding one Lua sprite does
+ * not drop every terrain texture and fade table. Bump it whenever expanded artwork
+ * behind a live sprite name can change: a sheet or font loaded, freed or extended, a
+ * keepersprite frame loaded into the graphics heap, a heap reset, or a level load. */
+extern uint64_t kfx_render_sprite_generation;
+void kfx_render_sprites_changed(void);
 /* Registers storage whose bytes only change with a generation bump. At most
  * KFX_RENDER_ASSET_RANGES ranges; re-registering the same base replaces it. */
 enum { KFX_RENDER_ASSET_RANGES = 4 };

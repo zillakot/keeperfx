@@ -1682,6 +1682,7 @@ TbResult LbSpriteDrawScaledImmediate(long xpos, long ypos, const struct TbSprite
         sprite->SWidth,
         sprite->SHeight,
         sprite->SWidth,
+        sprite->Data,
     };
     return LbSpriteDrawUsingScalingData(0, 0, &buffer);
 }
@@ -1710,6 +1711,7 @@ int LbSpriteDrawScaledRemapImmediate(long xpos, long ypos, const struct TbSprite
         sprite->SWidth,
         sprite->SHeight,
         sprite->SWidth,
+        sprite->Data,
     };
     return LbSpriteDrawRemapUsingScalingData(0, 0, &buffer, cmap);
 }

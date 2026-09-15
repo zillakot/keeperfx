@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, TriangleCommand};
+use keeperfx_frame_replay::draw::{ABI_VERSION, CLEAR, Command, DrawRenderer, TriangleCommand};
 use keeperfx_frame_replay::gpoly::Vertex;
 
 const FRAME_FLAG: u32 = 1;
@@ -8,7 +8,7 @@ const RING_SLOTS: u64 = 8;
 
 fn triangle(source: u64, table: u64, shade: i64) -> TriangleCommand {
     TriangleCommand {
-        abi_version: 1,
+        abi_version: ABI_VERSION,
         reserved: 0,
         source,
         table,

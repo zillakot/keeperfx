@@ -1,4 +1,4 @@
-use keeperfx_frame_replay::draw::{CLEAR, Command, DrawRenderer, IMAGE, RECT};
+use keeperfx_frame_replay::draw::{ABI_VERSION, CLEAR, Command, DrawRenderer, IMAGE, RECT};
 
 fn drawing(limits: wgpu::Limits) -> DrawRenderer {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -284,7 +284,7 @@ fn invalid_snapshot_batches_are_atomic_and_context_scoped() {
             ..image(source, 8, 8)
         },
         Command {
-            abi_version: 2,
+            abi_version: ABI_VERSION + 1,
             ..image(source, 8, 8)
         },
         Command {

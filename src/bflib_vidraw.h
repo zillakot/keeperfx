@@ -156,6 +156,11 @@ struct TbSourceBuffer {
         unsigned long width;
         unsigned long height;
         unsigned long pitch;
+        /* A stable address naming this artwork, which the renderer may keep expanded
+         * across frames under kfx_render_sprite_generation. NULL where data itself can
+         * be rewritten or reused, which is the safe default for an aggregate that does
+         * not set it. */
+        const void * identity;
 };
 
 /******************************************************************************/

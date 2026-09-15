@@ -20,10 +20,19 @@ int kfx_wgpu_native_read_barrier(const void* bytes, size_t length) { (void)bytes
 void kfx_wgpu_native_flush(void) { kfx_wgpu_terrain_boundary(0); }
 int kfx_wgpu_native_cpu_barrier(void) { return 1; }
 void kfx_wgpu_terrain_boundary(int allow) { require(!allow, "terrain boundary"); }
-int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
-    const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
-    const struct KfxWgpuNativeResource *table, KfxWgpuNativeOracle oracle, void *context)
+static void write_resource(const struct KfxWgpuNativeResource *resource)
 {
+    uint32_t length = resource->length;
+    fwrite(&length, 4, 1, fixture);
+    fwrite(resource->bytes, length, 1, fixture);
+}
+
+int kfx_wgpu_native_draw_sprite(const struct KfxGpolyTarget *target,
+    const struct KfxWgpuDrawCommand *command, const struct KfxWgpuSpriteAssets *assets,
+    KfxWgpuNativeOracle oracle, void *context)
+{
+    const struct KfxWgpuNativeResource *source = assets->artwork, *ranges = assets->ranges;
+    const struct KfxWgpuNativeResource *remap = assets->remap, *table = assets->table;
     require(target->pixels == target_pixels && target->pitch == WIDTH, "target mismatch");
     require(!table && (command->source_x & 8), "expected solid ordered sprite");
     require(command->source_y == ((uintptr_t)target_pixels & 3), "alignment metadata");
@@ -31,10 +40,10 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
     oracle(oracle_pixels, WIDTH, context);
     require(!memcmp(oracle_pixels, native_pixels, SIZE), "unaligned verification oracle mismatch");
     require(lbDisplay.WScreen == target_pixels && !memcmp(target_pixels, initial, SIZE), "oracle side effects");
-    uint32_t length = source->length;
     fwrite(command, sizeof(*command), 1, fixture);
-    fwrite(&length, 4, 1, fixture);
-    fwrite(source->bytes, length, 1, fixture);
+    write_resource(source);
+    write_resource(ranges);
+    write_resource(remap);
     fwrite(native_pixels, SIZE, 1, fixture);
     count++;
     return 1;
@@ -45,7 +54,7 @@ int main(int argc, char **argv)
     if (argc != 2) return 1;
     fixture = fopen(argv[1], "wb+");
     require(fixture != NULL, "cannot open fixture");
-    uint32_t header[] = {0x3353464b, 0, WIDTH, HEIGHT, sizeof(struct KfxWgpuDrawCommand)};
+    uint32_t header[] = {0x3453464b, 0, WIDTH, HEIGHT, sizeof(struct KfxWgpuDrawCommand)};
     fwrite(header, sizeof(header), 1, fixture);
     for (unsigned i = 0; i < SIZE; i++) initial[i] = (i * 19 + i / WIDTH * 13) & 255;
     for (unsigned i = 0; i < 256; i++) remap[i] = (i * 17 + 53) & 255;
@@ -64,7 +73,7 @@ int main(int argc, char **argv)
         memcpy(native_pixels, initial, SIZE);
         unsigned width = pattern == 2 ? 5 : 3;
         struct TbSprite sprite = {artwork[pattern], width, 1};
-        struct TbSourceBuffer source = {artwork[pattern], width, 1, width};
+        struct TbSourceBuffer source = {artwork[pattern], width, 1, width, artwork[pattern]};
         flags = Lb_SPRITE_FLIP_HORIZ | (vertical ? Lb_SPRITE_FLIP_VERTIC : 0);
         LbSpriteSetScalingData(0, y, width, 1, WIDTH, duplicates);
         unsigned before = count;
@@ -91,7 +100,8 @@ int main(int argc, char **argv)
             uint8_t *pixels = enabled ? target_pixels : native_pixels;
             lbDisplay.WScreen = lbDisplay.GraphicsWindowPtr = pixels;
             render_ghost = pixels;
-            struct TbSourceBuffer source = {alias == 0 ? pixels + 45 : data, 3, 1, 3};
+            // Mutable bytes, so no identity: a target alias must never be kept resident.
+            struct TbSourceBuffer source = {alias == 0 ? pixels + 45 : data, 3, 1, 3, NULL};
             if (alias == 1) LbSpriteDrawRemapUsingScalingData(0, 0, &source, pixels);
             else LbSpriteDrawUsingScalingData(0, 0, &source);
         }

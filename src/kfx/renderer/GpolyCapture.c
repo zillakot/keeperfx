@@ -9,12 +9,18 @@ KfxGpolySink kfx_gpoly_sink;
 void *kfx_gpoly_sink_context;
 
 uint64_t kfx_render_asset_generation = 1;
+uint64_t kfx_render_sprite_generation = 1;
 
 static struct { const unsigned char *base; size_t length; } asset_ranges[KFX_RENDER_ASSET_RANGES];
 
 void kfx_render_assets_changed(void)
 {
     ++kfx_render_asset_generation;
+}
+
+void kfx_render_sprites_changed(void)
+{
+    ++kfx_render_sprite_generation;
 }
 
 void kfx_render_asset_range(const void *base, size_t length)

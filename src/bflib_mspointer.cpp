@@ -121,6 +121,7 @@ static long PointerDraw(long x, long y, const struct TbSprite *spr, TbPixel *out
         spr->SWidth,
         spr->SHeight,
         spr->SWidth,
+        spr->Data,
     };
     kfx_wgpu_cursor_software(CursorSoftwareSprite);
     return LbSpriteDrawUsingScalingUpDataSolidLR(outbuf, scanline, lbDisplay.MouseWindowHeight, xstep, ystep, &buffer);

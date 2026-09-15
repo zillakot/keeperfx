@@ -1,5 +1,5 @@
 use anyhow::{Result, ensure};
-use keeperfx_frame_replay::draw::{Command, DrawRenderer, IMAGE, TRANSITION};
+use keeperfx_frame_replay::draw::{ABI_VERSION, Command, DrawRenderer, IMAGE, TRANSITION};
 
 fn word(data: &mut &[u8]) -> u32 {
     let value = u32::from_le_bytes(data[..4].try_into().unwrap());
@@ -139,7 +139,7 @@ fn actual_native_transitions() -> Result<()> {
             let mut invalid = command;
             match change {
                 0 => invalid.blend = 1,
-                1 => invalid.abi_version = 2,
+                1 => invalid.abi_version = ABI_VERSION + 1,
                 2 => invalid.table = a,
                 3 => invalid.transparent = 0,
                 4 => invalid.reserved[1] = 1,

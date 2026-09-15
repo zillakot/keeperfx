@@ -19,7 +19,7 @@ int main()
     std::vector<uint8_t> texture(7968), fade(16384);
     for (size_t i = 0; i < texture.size(); ++i) texture[i] = i*17+i/256*3;
     for (size_t i = 0; i < fade.size(); ++i) fade[i] = i*7+i/256*19;
-    KfxWgpuTriangle triangle = {1, 0, 0, 0, {{-13,-5,0,0,31*65536}, {75,8,31*65536,0,47*65536}, {16,70,0,31*65536,18*65536}}};
+    KfxWgpuTriangle triangle = {KFX_WGPU_DRAW_ABI_VERSION, 0, 0, 0, {{-13,-5,0,0,31*65536}, {75,8,31*65536,0,47*65536}, {16,70,0,31*65536,18*65536}}};
     for (int fault = 0; fault < 3; ++fault) {
         std::vector<uint8_t> actual(83*61+32, 167), expected = actual;
         KfxGpolyTarget target = {actual.data()+16,79,61,83};
@@ -136,7 +136,7 @@ int main()
             uint8_t source_pixels[4] = {static_cast<uint8_t>(batch), 11, 21, 31};
             KfxWgpuNativeResource source = {source_pixels, 4, 2, 2, 2, nullptr, 0, 0};
             KfxWgpuDrawCommand hud = {};
-            hud.abi_version = 1;
+            hud.abi_version = KFX_WGPU_DRAW_ABI_VERSION;
             hud.kind = KFX_WGPU_DRAW_IMAGE;
             hud.width = hud.clip_width = hud.source_width = 2;
             hud.height = hud.clip_height = hud.source_height = 2;
