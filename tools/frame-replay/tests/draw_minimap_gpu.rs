@@ -169,6 +169,18 @@ fn dictionary_reordering_missing_colours_and_partial_workgroups() {
         clip_height: width,
         ..Default::default()
     };
+    let disc: Vec<_> = (0..diameter)
+        .flat_map(|y| (0..diameter).map(move |x| (y, x)))
+        .filter(|&(y, x)| {
+            let n = 25 - (5 - y as i32 - 1).pow(2);
+            let s = (0..=5).filter(|v| v * v <= n).max().unwrap();
+            (x as i32) >= 5 - s && (x as i32) < 5 + s
+        })
+        .collect();
+    let lanes = disc.iter().fold(0u32, |lanes, &(y, x)| {
+        lanes | 1 << (initial[((y + 2) * width + x + 2) as usize] >> 5)
+    });
+    assert_eq!(lanes, 0xff);
     for (count, reverse) in [
         (1usize, false),
         (2, false),
@@ -221,25 +233,15 @@ fn dictionary_reordering_missing_colours_and_partial_workgroups() {
         .unwrap();
         draw.release_resource(resource).unwrap();
         let mut expected = initial.clone();
-        let mut lanes = 0u32;
-        for y in 0..diameter {
-            for x in 0..diameter {
-                let n = 25 - (5 - y as i32 - 1).pow(2);
-                let s = (0..=5).filter(|v| v * v <= n).max().unwrap();
-                if (x as i32) < 5 - s || x as i32 >= 5 + s {
-                    continue;
-                }
-                let dst = ((y + 2) * width + x + 2) as usize;
-                let colour = dictionary
-                    .iter()
-                    .position(|&c| c == initial[dst])
-                    .unwrap_or(0);
-                let cell = cells[(y * (diameter + 1) + x) as usize] as usize;
-                expected[dst] = (colour * 11 + cell * 7) as u8;
-                lanes |= 1 << (initial[dst] >> 5);
-            }
+        for &(y, x) in &disc {
+            let dst = ((y + 2) * width + x + 2) as usize;
+            let colour = dictionary
+                .iter()
+                .position(|&c| c == initial[dst])
+                .unwrap_or(0);
+            let cell = cells[(y * (diameter + 1) + x) as usize] as usize;
+            expected[dst] = (colour * 11 + cell * 7) as u8;
         }
-        assert_eq!(lanes, 0xff);
         assert_eq!(
             draw.readback(target).unwrap(),
             expected,
