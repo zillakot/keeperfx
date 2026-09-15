@@ -717,7 +717,9 @@ mod tests {
         let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
             Ok(adapter) => adapter,
             Err(error) => {
-                eprintln!("skipping {test}: no wgpu adapter on this host: {error}");
+                // Own line: libtest leaves "test … ... " unterminated, and CI
+                // anchors the stand-down at the start of a line.
+                eprintln!("\nskipping {test}: no wgpu adapter on this host: {error}");
                 return None;
             }
         };

@@ -4,8 +4,9 @@
 # stopping the job at the first failure. Exits non-zero if any suite failed.
 #
 # A row is `pass` only when the suite exited 0, reported a non-zero passed count and
-# printed no stand-down; a suite that exits 0 having run nothing is `skip`, which is a
-# gap in the matrix rather than evidence of a working backend.
+# printed no stand-down. A suite that exits 0 having run nothing is `skip`, which is a
+# gap in the matrix rather than evidence of a working backend, so it is annotated and
+# fails the job: a leg that proved nothing about its backend must not report success.
 set -u
 
 : "${ASSET_FLAGS:=--no-default-features --features packed-arena}"
@@ -20,25 +21,38 @@ row() {
   echo "| \`$1\` | $2 | $3 |" >> "$results"
 }
 
+# A stray pipe in a wgpu error string would otherwise break the table row.
+cell() {
+  printf '%s' "$1" | tr -d '\r' | sed 's/|/\\|/g'
+}
+
 suite() {
   local name=$1
   shift
   local log="$logs/$name.log"
   local code=0
   echo "::group::$name"
-  "$@" > "$log" 2>&1 || code=$?
-  cat "$log"
+  # Streamed rather than captured and dumped, so a slow suite shows progress.
+  "$@" 2>&1 | tee "$log"
+  code=${PIPESTATUS[0]}
   echo "::endgroup::"
   local passed
   passed=$(grep -oE 'test result: ok\. [0-9]+ passed' "$log" |
     grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' | awk '{total += $1} END {print total + 0}')
+  # Anchored to the guards' own format, so build chatter cannot reclassify a suite.
+  local stood_down
+  stood_down=$(grep -m 1 -E '^skipping[ :]' "$log")
   if [ "$code" -ne 0 ]; then
     row "$name" fail "exited $code; see the \`$name\` group in this job's log"
     status=1
-  elif grep -q "skipping" "$log"; then
-    row "$name" skip "$(grep -m 1 -o "skipping.*" "$log")"
+  elif [ -n "$stood_down" ]; then
+    echo "::error::$name stood down: $stood_down"
+    row "$name" skip "$(cell "$stood_down")"
+    status=1
   elif [ "$passed" -eq 0 ]; then
+    echo "::error::$name exited 0 without running a test"
     row "$name" skip "exited 0 without running a test"
+    status=1
   else
     row "$name" pass "$passed passed"
   fi

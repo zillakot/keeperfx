@@ -290,17 +290,26 @@ jobs:
         with:
           name: native-oracle-fixtures
           path: out
+      - name: Update Rust
+        run: |
+          rustup update stable
+          echo "RUSTC_VERSION=$(rustc -V | tr ' ()' '-')" >> "$GITHUB_ENV"
+      # Keyed on the toolchain as well as the lockfile, so a stable bump does not
+      # restore and re-upload a target directory cargo will rebuild anyway. Not keyed
+      # per run: one cache per toolchain and lockfile keeps this inside the repository's
+      # shared cache budget, at the cost of rebuilding first-party code each run.
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             out/rust-target
-          key: windows-frame-replay-${{ hashFiles('tools/frame-replay/Cargo.lock') }}
-          restore-keys: windows-frame-replay-
+          key: ${{ runner.os }}-frame-replay-${{ env.RUSTC_VERSION }}-${{ hashFiles('tools/frame-replay/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-frame-replay-${{ env.RUSTC_VERSION }}-
+            ${{ runner.os }}-frame-replay-
       - name: Check Rust
         run: |
-          rustup update stable
           cargo clippy --no-default-features --features packed-arena --locked --manifest-path tools/frame-replay/Cargo.toml --all-targets -- -D warnings
           cargo test --no-default-features --features packed-arena --locked --manifest-path tools/frame-replay/Cargo.toml
       - name: Replay the GPU suites on the software adapter

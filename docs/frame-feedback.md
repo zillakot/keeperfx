@@ -248,7 +248,10 @@ adapter, since the packed and expanded accessors differ in host code, not in sub
 GPU work. Both CI columns refresh on every pull request and every push to `master`.
 
 A row is `pass` only when the suite exited zero, reported a non-zero passed count and
-printed no stand-down; a suite that exits zero having run nothing is `skip`. The
+printed no stand-down. A suite that exits zero having run nothing is `skip`, which is
+annotated and fails the job: a leg that proved nothing about its backend must not
+report success — a runner image that stopped exposing a DX12 adapter would otherwise
+finish green in a minute. The
 Windows job runs one suite per log group and reports every failure in one pass, so a
 backend difference is attributed rather than hidden behind the first failure; its
 `windows-suite-results` artifact carries the table and each suite's captured output.
