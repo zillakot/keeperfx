@@ -417,7 +417,9 @@ impl Arena {
         }
         let start = offset as usize * 4;
         for (dst, &byte) in self.image.bytes[start..start + bytes.len() * 4]
-            .chunks_exact_mut(4)
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
             .zip(bytes)
         {
             dst.copy_from_slice(&u32::from(byte).to_le_bytes());

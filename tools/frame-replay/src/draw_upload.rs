@@ -161,7 +161,12 @@ impl Ring {
         self.high_water = self.high_water.max(start + size);
         host::upload_padding(start - prior);
         self.image.resize((start + size) as usize, 0);
-        for (dst, word) in self.image[start as usize..].chunks_exact_mut(4).zip(words) {
+        for (dst, word) in self.image[start as usize..]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(words)
+        {
             dst.copy_from_slice(&word.to_le_bytes());
         }
         self.dirty.get_or_insert(start);
