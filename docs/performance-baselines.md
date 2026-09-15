@@ -419,6 +419,88 @@ mode cycle, which the control-tooling fault in
 `out/wgpu-migration/minimap-box-runs/`. These are offscreen observations and establish no
 windowed ceiling.
 
+### Minimap payload split, oracle sessions measured 2026-09-15
+
+[PR #54](https://github.com/zillakot/keeperfx/pull/54), branch
+`perf/minimap-residency-split`, binary SHA256
+`3359fe9a45a81a867e1cf48a274b795c9c6984acd00676764a2fd509b22ec0b4`, against the PR #50 head
+`5ee89a7e9173f25e249b650415f3d9620401e55e`, binary SHA256
+`97088818a726beab08d860b17e52a020778d0fd36fbbb996afd5934f4e075aa0`. Apple M5, macOS 26.6.2.
+
+These are `scripts/drawing-coverage.py` control sessions with `KFX_WGPU_DRAW_VERIFY=1`,
+one per binary, over the `dungeon-busy` and `front-view` scenes. Windowed, `VSYNC=ON`,
+`TURNS_PER_SECOND=20`, `FRAMES_PER_SECOND=0` so draws interpolate between turns, smoothing
+off, campaign `keeporig` level 20 in both scenes, `front-view` additionally launched with
+`rotate_mode=2`. `dungeon-busy` runs at 640x480 and resizes through 800x600 and back;
+`front-view` stays at 640x480. Both use `KFX_SCHEDULE_SKIP_CYCLE=1` and
+`KFX_TIMING_LOCK_HELD=1` under a parent-held `/private/tmp/keeperfx-timing.lock`. They are
+parity and upload-volume observations, **not timing runs**: no FPS, replay or per-pass
+figure is established here.
+
+Arena counters per presented frame, reference → branch:
+
+| Scene | Frames | `arena_minimap_bytes` | `arena_minimap_misses` | `arena_minimap_hits` | `arena_bytes_uploaded` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| dungeon-busy | 179 → 180 | 475,046.3 → 12,079.7 | 8.497 → 5.261 | 0.000 → 14.294 | 1,004,132.5 → 546,549.8 |
+| front-view | 129 → 130 | 485,707.0 → 16,442.2 | 8.690 → 6.546 | 0.000 → 13.454 | 990,895.7 → 521,475.6 |
+
+**The miss and hit columns change unit between the two binaries and are not comparable.**
+On the reference one minimap resolution is one command; on the branch it is one segment,
+between 1 and 19 per command, so the reference could never hit — each command carried a
+fresh `malloc` identity — and the branch's miss count has a different denominator. Only
+the byte columns are unit-stable. Minimap is now the only arena kind whose resolutions are
+renderer-private identities rather than public resources, so the per-kind description
+below does not otherwise cover it.
+
+Both sessions pass their gate on both binaries: 83,016 and 50,399 verified batches on
+the branch, 0 failures, invalid frames, flagged shades and rejected commands, 0 arena
+overflows and 0 arena evictions, with the documented single `shadow_prior_divergence`
+event in `dungeon-busy` on both binaries. Arena capacity is
+8,388,608 B on the branch against 4,194,304 B on the reference, live bytes 3,711,232
+against 688,128, growth peak 12,582,912 against 6,291,456 — inside the 32 MiB capacity and
+48 MiB growth-overlap gates.
+
+Cache-memory scope. The split keeps a renderer-private content cache of immutable minimap
+segments: one dictionary version, one cell version, 16 prefix versions and 4 versions per
+style table. It is bounded in two dimensions — **5 MiB of arena source classes and 8 MiB
+of the GPU bytes those classes occupy** — and the smaller of the two binds, so the packed
+asset format runs against the 5 MiB source bound and the expanded format against the 8 MiB
+GPU bound, which is 2 MiB of source classes and retains fewer style versions. Either way
+the cache is at most 8 MiB of GPU bytes, a quarter of the arena's 32 MiB capacity gate;
+both bounds are asserted at compile time. The source bound holds the full retention at the
+validated maximum of 16 background colours **over a standard 256-subtile cell grid**; a
+larger grid spends the budget on cells and retains fewer style versions until the split
+gate keeps the command on the contiguous payload entirely. The budget is soft for the
+single-version base roles: the dictionary and the cells are admitted even when they push
+the total past it, so that table pressure cannot evict the base the next command needs, and
+the overshoot is bounded by that base plus one segment.
+
+Each entry also owns one host copy of its bytes, bounded by the same class budget, which is
+separate from the whole-source copies C, the bridge and the renderer already stage per
+command and separate from the arena's own host image. Three Rust-side gauges report the
+cache — `minimap_cache_class_bytes` (live GPU bytes), `minimap_cache_cpu_bytes` (the owning
+host copies) and `minimap_cache_evictions` (retirements the byte budget forced, not routine
+version rotation) — and they are asserted in the drawing tests. Unlike PR #43's equivalents
+they are **not** in the C counter ABI, so they do not appear in `KFX_WGPU_DRAW_STATS`
+output: adding them there would touch the `DrawCounters` layout that PR #55 is changing.
+The figures in this section are therefore a computed bound with test assertions behind it,
+not a session measurement, and neither figure is process or driver memory.
+
+Identity is complete byte equality, narrowed by role, layout, length and 16-byte samples at
+each end of the segment. The samples reject a **changed** segment without reading it — the
+routine style update rewrites entries 3, 4 and 10 of every table — but a **hit** still
+compares the whole segment, and hits are the steady state: about 170 KB of comparison per
+world command on exactly the frames that upload nothing. Whether that host cost is repaid
+is what the deferred timing cells have to answer; these sessions do not.
+
+The per-command minimap uniform grows from 40 to 60 words, so
+`upload_minimap_target_view_payload_bytes` is 240 B per dispatched command rather than the
+160 B recorded above for PR #50 — about 680 B/frame more at the busy scene's command rate.
+
+The two sessions are separate control runs over the same scene scripts, so the frame counts
+are not identical and these are matched scenes rather than matched frames. Run outputs are
+under `out/wgpu-migration/minimap-split-runs/`.
+
 ## Presenter host attribution
 
 Rust-presenter runs include one `presenter.per_frame` sample per presentation;
