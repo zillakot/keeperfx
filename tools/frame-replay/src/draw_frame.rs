@@ -458,6 +458,13 @@ impl DrawRenderer {
     /// Replays whatever the frame has queued into the open encoder. It is no longer a
     /// submission boundary, so a checkpoint costs a replay and nothing else.
     pub fn frame_flush(&mut self) -> Result<()> {
+        let replay = host::Replay::begin();
+        let result = self.frame_flush_inner();
+        self.counters.replay.accumulate(replay.finish());
+        result
+    }
+
+    fn frame_flush_inner(&mut self) -> Result<()> {
         let Some(mut frame) = self.frame.take() else {
             return Ok(());
         };
@@ -518,6 +525,7 @@ impl DrawRenderer {
         views: &[ViewSpace],
         serials: &mut Vec<(usize, Serial)>,
     ) -> Result<()> {
+        let _scope = Scope::new(Phase::Pack);
         self.check_status()?;
         let limit = self.storage_limit() as usize;
         let target = self
@@ -897,6 +905,60 @@ mod tests {
                 v: 0,
                 shade,
             }),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter"]
+    fn gpu_queued_replay_host_partition_and_counts() {
+        let mut draw = DrawRenderer::headless().unwrap();
+        let root = draw.create_target(16, 16).unwrap();
+        for colour in [17, 29] {
+            draw.frame_begin(root).unwrap();
+            draw.submit(
+                root,
+                &[Command {
+                    kind: CLEAR,
+                    colour,
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+            let before = draw.counters();
+            let start = std::time::Instant::now();
+            draw.frame_flush().unwrap();
+            let elapsed = start.elapsed().as_nanos() as u64;
+            let after = draw.counters();
+            let accounted = after.replay.total_ns() - before.replay.total_ns();
+            assert!(accounted <= elapsed);
+            assert!(
+                accounted as f64 >= elapsed as f64 * 0.95,
+                "{accounted} / {elapsed}"
+            );
+            assert!(after.replay.replay_pack_ns > before.replay.replay_pack_ns);
+            assert!(after.replay.replay_upload_ns > before.replay.replay_upload_ns);
+            assert!(after.replay.replay_bind_ns > before.replay.replay_bind_ns);
+            assert!(after.replay.replay_encode_ns > before.replay.replay_encode_ns);
+            assert!(after.replay.replay_tile_index_ns > before.replay.replay_tile_index_ns);
+            assert!(after.replay.replay_other_ns > before.replay.replay_other_ns);
+            assert_eq!(
+                after.replay.replay_bind_groups - before.replay.replay_bind_groups,
+                1
+            );
+            assert_eq!(
+                after.replay.replay_passes - before.replay.replay_passes,
+                after.dispatches - before.dispatches
+            );
+            assert_eq!(
+                after.replay.replay_buffers - before.replay.replay_buffers,
+                after.buffers - before.buffers
+            );
+            assert!(
+                after.replay.replay_staged_bytes - before.replay.replay_staged_bytes
+                    >= after.command_upload_bytes - before.command_upload_bytes
+            );
+            draw.frame_end().unwrap();
+            assert_eq!(draw.readback(root).unwrap(), vec![colour as u8; 256]);
         }
     }
 

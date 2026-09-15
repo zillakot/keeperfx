@@ -25,6 +25,10 @@ _spec.loader.exec_module(capture)
 KINDS = ("simulation", "draw", "presentation", "present_wait", "frame_interval")
 PRESENTER_COUNTERS = ("acquire_ns", "acquire_block_ns", "reconfigure_count", "present_record_ns",
                       "submit_ns", "replay_ns", "allocations", "allocated_bytes")
+REPLAY_PHASES = ("replay_pack_ns", "replay_upload_ns", "replay_bind_ns", "replay_encode_ns",
+                 "replay_tile_index_ns", "replay_other_ns")
+REPLAY_COUNTS = ("replay_bind_groups", "replay_buffers", "replay_passes", "replay_staged_bytes")
+REPLAY_COUNTERS = REPLAY_PHASES + REPLAY_COUNTS
 DRAW_KINDS = ("draw_scene", "draw_raster", "draw_front_raster", "draw_overlays")
 ARENA_RESOURCE_KINDS = ('sprite', 'ordered_sprite', 'cursor', 'trig', 'terrain_tile', 'terrain_fade', 'native_table', 'minimap', 'shadow', 'target_trig_geometry', 'target_trig_table', 'image', 'raw_image', 'tiled_image', 'movie', 'map_view', 'bitmap', 'lens', 'other')
 ARENA_KIND_METRICS = ('bytes', 'misses', 'hits', 'source_bytes', 'distinct_lengths', 'length_overflows')
@@ -68,7 +72,7 @@ DRAWING_COUNTERS = ("submits", "dispatches", "waits", "wait_ns", "checkpoints",
                     "arena_miss_generation_bytes",
                     "arena_miss_eviction_bytes",
                     "arena_explicit_forgets",
-                    *ARENA_KIND_COUNTERS, "arena_trig_texture_source_bytes",
+                    *ARENA_KIND_COUNTERS, "arena_trig_texture_source_bytes", *REPLAY_COUNTERS,
                     "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
                     "arena_capacity_bytes",
                     "arena_live_bytes",
@@ -425,6 +429,11 @@ def summarize(output, args):
         ]
     presenter_report = summarize_presenter(metadata.get("presenter"), samples,
                                            required=metadata.get("replay_scope") is True and args.backend == "rust")
+    replay_report = summarize_replay(metadata.get("drawing"), samples)
+    if replay_report:
+        limitations.append("Replay host phases are exclusive wall-clock intervals inside frame_flush, including scheduling; they are not GPU time. Other covers status, release and orchestration work. Drawing deltas exclude the first presentation; the replay comparison uses the same frames. Staged bytes count API payload bytes, including uniform and parameter buffers, not GPU allocation capacity.")
+        if not replay_report["within_5_percent"]:
+            limitations.append("Replay host attribution differs from the outer replay scope by more than 5% on one or more frames; inspect the signed residual before choosing an optimization.")
     wall_ms = {kind: distribution(values) for kind, values in samples.items()}
     window_ms = resource_report.get("wall_ms")
     observed = {"frames_per_second": 1000 / wall_ms["frame_interval"]["mean"],
@@ -432,7 +441,7 @@ def summarize(output, args):
                 "frame_cap": cap["label"]}
     return {"engine": metadata, "frame_cap": cap, "observed": observed, "wall_ms": wall_ms,
             "presentation_mode": "offscreen" if offscreen(args) else "swapchain",
-            "resources": resource_report, "drawing": drawing_report, "presenter": presenter_report,
+            "resources": resource_report, "drawing": drawing_report, "presenter": presenter_report, "replay_host": replay_report,
             "percentile_method": "linear interpolation at (sample_count - 1) * percentile / 100",
             "limitations": limitations + (["HEADLESS SOFTWARE SMOKE TEST: not a native presentation baseline."] if args.headless else [])}
 
@@ -468,6 +477,32 @@ def summarize_presenter(presenter, samples, required=False):
             "residual_fraction": sum(residual) / sum(samples["presentation"])}
 
 
+
+def summarize_replay(drawing, samples):
+    if not drawing or not drawing.get("available") or "replay" not in samples:
+        return None
+    names = drawing["counters"]
+    if not all(name in names for name in REPLAY_COUNTERS):
+        return None
+    rows = drawing["per_frame"]
+    replay = samples["replay"][1:]
+    if not rows or len(rows) != len(replay):
+        raise RuntimeError("replay attribution must cover every presentation but the first")
+    phases = {name: [row[names.index(name)] for row in rows] for name in REPLAY_PHASES}
+    totals = [sum(values) for values in zip(*phases.values())]
+    residual = [outer - total for outer, total in zip(replay, totals)]
+    outside = sum(abs(value) > outer * 0.05 for value, outer in zip(residual, replay))
+    return {"frames": len(rows), "phases_ms": {name: distribution(values) for name, values in phases.items()},
+            "counts": {name: drawing_distribution([row[names.index(name)] for row in rows])
+                       for name in REPLAY_COUNTS},
+            "total_ms": distribution(totals), "replay_ms": distribution(replay),
+            "residual_ms": distribution(residual),
+            "residual_fraction": sum(residual) / sum(replay) if sum(replay) else None,
+            "max_absolute_residual_fraction": max((abs(value) / outer for value, outer in
+                                                   zip(residual, replay) if outer), default=None),
+            "frames_outside_5_percent": outside, "within_5_percent": outside == 0}
+
+
 def drawing_distribution(values, gauge=False):
     ordered = sorted(values)
     if not ordered:
@@ -495,6 +530,7 @@ def summarize_drawing(drawing, presentations):
                                additions | {"asset_upload_bytes", "command_upload_bytes"})]
     arena_additions = set(ARENA_KIND_COUNTERS) | {"arena_trig_texture_source_bytes"}
     schemas += [tuple(name for name in schema if name not in arena_additions) for schema in schemas]
+    schemas += [tuple(name for name in schema if name not in REPLAY_COUNTERS) for schema in schemas]
     if names not in schemas:
         raise RuntimeError("drawing counter names do not match this profiler")
     rows = drawing.get("per_frame")
@@ -627,6 +663,20 @@ def write_report(output, report):
             lines.append(f"| {name} | {stats['mean']:.2f} | {stats['p95']:.2f} | {stats['max']} |")
         lines += ["", f"Unattributed presentation residual: {presenter['residual_ms']['mean']:.4f} ms "
                   f"({presenter['residual_fraction']:.2%}); acquire + present record + submit, excluding replay."]
+    replay = report.get("replay_host")
+    if replay:
+        lines += ["", "## Replay host attribution", "",
+                  f"Exclusive host intervals over {replay['frames']} frames; the first presentation is excluded.", "",
+                  "| Phase (ms/frame) | Mean | p95 | Max |", "| --- | ---: | ---: | ---: |"]
+        for name, stats in {**replay["phases_ms"], "Phase sum": replay["total_ms"],
+                            "Replay scope": replay["replay_ms"], "Residual against replay": replay["residual_ms"]}.items():
+            lines.append(f"| {name} | {stats['mean']:.6f} | {stats['p95']:.6f} | {stats['max']:.6f} |")
+        fraction = replay["residual_fraction"]
+        label = "unavailable (zero replay)" if fraction is None else f"{fraction:.2%}"
+        lines += ["", f"Signed residual / replay: {label}; frames outside ±5%: {replay['frames_outside_5_percent']}.", "",
+                  "| Count per frame | Mean | p95 | Max |", "| --- | ---: | ---: | ---: |"]
+        for name, stats in replay["counts"].items():
+            lines.append(f"| {name} | {stats['mean']:.2f} | {stats['p95']:.2f} | {stats['max']} |")
     drawing = report.get("drawing")
     if drawing:
         lines += ["", f"Active drawing backend: {drawing['backend']}."]
@@ -653,8 +703,8 @@ def write_report(output, report):
                 lines += ["", f"General TRIG packed texture source bytes/frame: {values['arena_trig_texture_source_bytes']['mean']:.2f}."]
             waits = drawing["per_frame"]["wait_ns"]
             lines += ["", f"Blocking host wait: {waits['mean'] / 1_000_000:.3f} ms mean, "
-                      f"{waits['p95'] / 1_000_000:.3f} ms p95 per frame. No GPU execution time is "
-                      "collected; every column above is host-side."]
+                      f"{waits['p95'] / 1_000_000:.3f} ms p95 per frame. This wait is host wall time; "
+                      "gpu_*_ns counters are separate GPU timestamp measurements when enabled."]
     lines += ["", *[f"- {item}" for item in report["limitations"]], "",
               f"Engine SHA256: `{report['engine_sha256']}`", f"Asset content SHA256: `{report['assets']['sha256']}`", "",
               "Exact request, platform, content identities, seeds and actual settings: report.json. Samples: raw.csv."]

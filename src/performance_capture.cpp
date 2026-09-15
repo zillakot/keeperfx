@@ -121,6 +121,17 @@ const char* const drawing_counter_names[DrawingCounterCount] = {
     KFX_ARENA_KINDS(KFX_ARENA_FIELDS)
 #undef KFX_ARENA_FIELDS
     "arena_trig_texture_source_bytes",
+    "replay_pack_ns",
+    "replay_upload_ns",
+    "replay_bind_ns",
+    "replay_encode_ns",
+    "replay_tile_index_ns",
+    "replay_other_ns",
+    "replay_bind_groups",
+    "replay_buffers",
+    "replay_passes",
+    "replay_staged_bytes",
+
     "host_staged_asset_bytes", "arena_bytes_resident", "arena_scratch_bytes_peak",
     "arena_capacity_bytes",
     "arena_live_bytes",

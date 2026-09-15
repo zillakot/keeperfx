@@ -1,4 +1,5 @@
 use super::ResourceKind;
+use super::host::{self, Phase, Scope};
 use anyhow::{Result, ensure};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -367,12 +368,14 @@ impl Arena {
         offset: u32,
         bytes: &[u8],
     ) {
+        let _scope = Scope::new(Phase::Upload);
         self.staging.clear();
         self.staging
             .extend(bytes.iter().flat_map(|&b| u32::from(b).to_le_bytes()));
         if self.staging.is_empty() {
             return;
         }
+        host::staged_bytes(self.staging.len());
         queue.write_buffer(
             self.buffer.as_ref().unwrap(),
             u64::from(offset) * 4,
@@ -453,6 +456,8 @@ impl Arena {
             .counters
             .growth_peak_bytes
             .max((u64::from(self.capacity) + u64::from(capacity)) * 4);
+        let _scope = Scope::new(Phase::Upload);
+        host::created_buffer();
         let grown = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("persistent asset arena"),
             size: u64::from(capacity) * 4,

@@ -1,3 +1,4 @@
+use crate::draw::host::{self, Phase, Scope};
 use anyhow::{Result, ensure};
 use wgpu::util::DeviceExt;
 
@@ -67,6 +68,7 @@ fn bytes(words: &[u32]) -> Vec<u8> {
 
 impl GpolyPreparer {
     pub fn new(device: &wgpu::Device) -> Self {
+        let _scope = Scope::new(Phase::Bind);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("gpoly triangle preparation"),
             source: wgpu::ShaderSource::Wgsl(include_str!("gpoly_prepare.wgsl").into()),
@@ -141,16 +143,22 @@ impl GpolyPreparer {
                 }
             }
         }
+        let upload = Scope::new(Phase::Upload);
+        host::created_buffer();
+        host::staged_bytes(words.len() * 4);
         let input = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("immutable gpoly vertices"),
             contents: &bytes(&words),
             usage: wgpu::BufferUsages::STORAGE,
         });
+        host::created_buffer();
+        host::staged_bytes(16);
         let parameters = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gpoly viewport"),
             contents: &bytes(&[count, 0, 0, 0]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        drop(upload);
         let mut layout_words = Vec::with_capacity(layout.len() * 5);
         for entry in layout {
             layout_words.extend([
@@ -161,11 +169,17 @@ impl GpolyPreparer {
                 entry.height,
             ]);
         }
+        let upload = Scope::new(Phase::Upload);
+        host::created_buffer();
+        host::staged_bytes(layout_words.len() * 4);
         let layout_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gpoly row layout"),
             contents: &bytes(&layout_words),
             usage: wgpu::BufferUsages::STORAGE,
         });
+        drop(upload);
+        let bind = Scope::new(Phase::Bind);
+        host::created_bind_group();
         let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gpoly preparation"),
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -188,7 +202,10 @@ impl GpolyPreparer {
                 },
             ],
         });
+        drop(bind);
         {
+            let _scope = Scope::new(Phase::Encode);
+            host::recorded_pass();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("gpoly triangle preparation"),
                 timestamp_writes: stamp,
