@@ -184,7 +184,6 @@ fn dictionary_reordering_missing_colours_and_partial_workgroups() {
                 }],
             )
             .unwrap();
-            draw.frame_begin(target).unwrap();
             draw.submit(target, &[command]).unwrap();
             header[0] = 0;
             header[7] = 65536;
@@ -215,7 +214,6 @@ fn dictionary_reordering_missing_colours_and_partial_workgroups() {
             )
             .unwrap();
             draw.release_resource(resource).unwrap();
-            draw.frame_end().unwrap();
             let mut expected = initial.clone();
             for y in 0..diameter {
                 for x in 0..diameter {
