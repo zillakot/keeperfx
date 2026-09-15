@@ -260,6 +260,48 @@ no replay attribution table. These are host wall times, including scheduling and
 and are distinct from GPU timestamps. No frame-time file I/O is added. Offscreen cells
 work on a locked console and must be identified as offscreen when reporting results.
 
+### Replay floor, measured 2026-09-15
+
+[PR #44](https://github.com/zillakot/keeperfx/pull/44), source `15f8266ef`, binary
+SHA256 `4dd145a150f02774ddd47579e5fed6187813591da1a8cbba7f8a3230b5927052`:
+five Apple M5/Metal offscreen cells, locked console, guards enabled, Rust/wgpu,
+VSync off, interpolation, 40 warmup/200 measured turns, nonserialized GPU timing.
+This binary excludes PR #43. Means below are ms per presentation; capped cells have
+600 samples, uncapped 2,563. Submit/wait within replay is zero in every cell.
+
+| Cell | Replay | Upload | Pack | Tile index | Bind | Encode | Other | Residual |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| capped busy 640×480 | 2.504804 | 2.047045 | 0.318643 | 0.036235 | 0.054500 | 0.021620 | 0.026337 | 0.000425 |
+| capped quiet 640×480 | 2.420650 | 1.945508 | 0.339768 | 0.038949 | 0.052044 | 0.020229 | 0.023545 | 0.000607 |
+| capped busy 1920×1080 | 2.491032 | 1.964538 | 0.304512 | 0.108250 | 0.055521 | 0.031928 | 0.025863 | 0.000420 |
+| capped quiet 1920×1080 | 2.487940 | 1.950395 | 0.315638 | 0.113182 | 0.053654 | 0.032553 | 0.022099 | 0.000419 |
+| uncapped busy 1920×1080 | 1.736788 | 1.361645 | 0.208590 | 0.075169 | 0.040525 | 0.031014 | 0.019564 | 0.000281 |
+
+Upload dominates replay at **78.39–81.72%**. Mean replay residual is 0.016–0.025%;
+every frame is within 5%. Presentation residual is separate: 0.136–0.637%.
+Busy HD replay buffers average **80.16**, with **93 at p95**; bind groups/passes
+average 45.54, with 54 at p95. Staged payload is 5.260 MB mean, 6.104 MB p95.
+The older drawing buffers counter omits three preparer buffers and is sampled
+before the current replay; its 599 rows must not define replay residuals.
+
+The code and counters reconcile about 12 raster uniforms, 10 shadow chains
+(four buffers each), 2.6 ordered runs, 10 minimap calls (two buffers each), and
+three preparer buffers in busy HD, plus roughly **138 queue writes per frame**.
+The existing stream rings already avoid large command/tile allocations; small
+serial inputs and uniforms still use create_buffer_init. Per-call buffer/staging
+overhead is therefore the primary optimization target rather than more byte
+reduction: earlier byte cuts did not produce proportional replay gains. This is
+a code-supported inference, not an isolated allocation measurement; upload also
+includes conversion and memcpy. Upload divided by buffers is 24.5–26.8 us capped,
+17.0 us uncapped, an upper-bound attribution rather than a cost for each call.
+
+Next: shared command/tile/uniform rings with coalesced writes, safe arena
+coalescing, then bounded bind caching. Preserve byte contents to measure that
+change; defer minimap/sprite byte work. One run per cell establishes no optimization
+gain. All samples retain one submit, zero waits/checkpoints/errors and 32 MiB arena
+capacity; uncapped reaches 256.321 FPS at 20.002772 turns/s. These are offscreen
+observations, not acquired-surface performance or whole-process memory proof.
+
 ## Presenter host attribution
 
 Rust-presenter runs include one `presenter.per_frame` sample per presentation;
