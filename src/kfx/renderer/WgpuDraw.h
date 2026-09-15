@@ -123,6 +123,9 @@ struct KfxWgpuDrawCounters {
     uint64_t arena_miss_generation_bytes;
     uint64_t arena_miss_eviction_bytes;
     uint64_t arena_explicit_forgets;
+    /* Resources the drawing context holds under a key, a gauge. Keys are never reused
+     * for other bytes, so this is the number of distinct named assets kept resident. */
+    uint64_t keyed_resources;
     uint64_t arena_capacity_bytes;
     uint64_t arena_live_bytes;
     uint64_t arena_retired_bytes;
@@ -175,7 +178,11 @@ uint64_t kfx_wgpu_draw_resource_create(void *drawing, const uint8_t *bytes, size
  * asset. *previous receives the handle the key resolved to before the call: equal to
  * the returned handle when the bytes were already resident, 0 when the key was new,
  * and otherwise a superseded handle the caller releases once every command naming it
- * has been submitted. Callers must only key bytes that change with the generation. */
+ * has been submitted.
+ * A key names one immutable byte range of one extent for one generation: the bytes behind
+ * it may only change with the generation, and length, width, height and pitch must be the
+ * same on every call that resolves it. Reusing a key for another extent under the same
+ * generation is refused, not served. */
 uint64_t kfx_wgpu_draw_resource_create_keyed(void *drawing, uint32_t kind, uint64_t key_hi,
     uint64_t key_lo, uint64_t generation, const uint8_t *bytes, size_t length,
     uint32_t width, uint32_t height, uint32_t pitch, uint64_t *previous,

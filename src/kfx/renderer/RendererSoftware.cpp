@@ -407,6 +407,8 @@ void RendererSoftware::report_drawing()
                 "\"arena_live_bytes\":%llu,"
                 "\"arena_retired_bytes\":%llu,"
                 "\"arena_growth_peak_bytes\":%llu,"
+                "\"keyed_resources\":%llu,"
+                "\"resource_purge_failures\":%llu,"
                 "\"rejected_commands\":%llu,\"rejected_spans\":%llu}\n",
                 m_drawing_frames, static_cast<unsigned long long>(counts.gpu_batches),
                 static_cast<unsigned long long>(counts.gpu_spans), static_cast<unsigned long long>(counts.gpu_pixels),
@@ -500,6 +502,8 @@ void RendererSoftware::report_drawing()
                 static_cast<unsigned long long>(gpu.arena_live_bytes),
                 static_cast<unsigned long long>(gpu.arena_retired_bytes),
                 static_cast<unsigned long long>(gpu.arena_growth_peak_bytes),
+                static_cast<unsigned long long>(gpu.keyed_resources),
+                static_cast<unsigned long long>(counts.resource_purge_failures),
                 static_cast<unsigned long long>(counts.rejected_commands),
                 static_cast<unsigned long long>(counts.rejected_spans));
             fclose(output);

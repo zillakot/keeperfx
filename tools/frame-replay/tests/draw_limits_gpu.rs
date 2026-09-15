@@ -346,3 +346,58 @@ fn keyed_resources_hold_one_arena_id_until_the_generation_changes() {
         0
     );
 }
+
+#[test]
+#[ignore = "requires GPU adapter"]
+fn keyed_handles_survive_eviction_and_defer_their_release_inside_a_frame() {
+    let mut drawing = arena_drawing(32 << 20).unwrap();
+    let target = drawing.create_target(64, 64).unwrap();
+    let key = (9, 0, 1);
+    let bytes = tile(3, 64);
+    let (handle, previous) = drawing
+        .create_resource_keyed(key, 1, &bytes, 64, 64, 64)
+        .unwrap();
+    assert_eq!(previous, 0);
+    drawing.submit(target, &[blit(handle, 64)]).unwrap();
+    let expected = drawing.readback(target).unwrap();
+    let resident = drawing.arena_counters();
+
+    // Eviction drops the residency, not the key: the same handle re-uploads its own bytes.
+    for i in 0..(160 / keeperfx_frame_replay::draw::assets::STRIDE as u32) {
+        let source = drawing
+            .create_resource(&tile(7 * i + 1, 512), 512, 512, 512)
+            .unwrap();
+        drawing.submit(target, &[blit(source, 64)]).unwrap();
+    }
+    assert!(drawing.arena_counters().evictions > resident.evictions);
+    assert_eq!(
+        drawing
+            .create_resource_keyed(key, 1, &bytes, 64, 64, 64)
+            .unwrap(),
+        (handle, handle)
+    );
+    drawing.submit(target, &[blit(handle, 64)]).unwrap();
+    assert_eq!(drawing.readback(target).unwrap(), expected);
+    assert!(drawing.arena_counters().misses_eviction > resident.misses_eviction);
+
+    // Inside a frame the key is forgotten at once but the resource is held until the frame
+    // retires, so a command already queued against the handle still reads its bytes.
+    let root = drawing.create_target(64, 64).unwrap();
+    drawing.frame_begin(root).unwrap();
+    drawing.submit(root, &[blit(handle, 64)]).unwrap();
+    drawing.release_resource(handle).unwrap();
+    let (fresh, previous) = drawing
+        .create_resource_keyed(key, 1, &bytes, 64, 64, 64)
+        .unwrap();
+    assert_eq!(previous, 0, "a deferred release forgets the key");
+    assert_ne!(fresh, handle);
+    drawing.frame_end().unwrap();
+    assert_eq!(drawing.readback(root).unwrap(), expected);
+    assert!(
+        drawing.release_resource(handle).is_err(),
+        "the deferred release completed at frame end"
+    );
+    assert_eq!(drawing.keyed_resources(), 1);
+    drawing.purge_keyed_resources().unwrap();
+    assert_eq!(drawing.keyed_resources(), 0);
+}

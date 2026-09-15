@@ -848,13 +848,28 @@ impl DrawRenderer {
         Ok((id, previous))
     }
 
+    /// Resources held under a key. Keys are caller-held names of immutable ranges, so
+    /// this grows with the number of distinct named assets drawn, not with commands.
+    pub fn keyed_resources(&self) -> u64 {
+        self.keyed.len() as u64
+    }
+
     /// Releases every keyed resource and forgets the keys, for a caller whose frame was
-    /// discarded before the residency behind those handles was proven.
+    /// discarded before the residency behind those handles was proven. Every handle is
+    /// released even when one refuses, so none is left resident with its key forgotten.
     pub fn purge_keyed_resources(&mut self) -> Result<()> {
+        let mut failure = None;
         for (handle, _) in std::mem::take(&mut self.keyed).into_values() {
-            self.release_resource(handle)?;
+            if let Err(error) = self.release_resource(handle)
+                && failure.is_none()
+            {
+                failure = Some(error);
+            }
         }
-        Ok(())
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     fn create_resource_inner(
