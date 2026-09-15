@@ -211,36 +211,39 @@ they lacked when they skip.
 
 | Suite | Metal (host) | Vulkan lavapipe (Linux CI) | DX12 software (Windows CI) |
 | --- | --- | --- | --- |
-| `lib` (`--lib --ignored`) | pass | pass | see the PR's run |
-| `gpoly_gpu` | pass | pass | see the PR's run |
-| `draw_triangles_gpu` | pass | pass | see the PR's run |
-| `draw_trig_gpu` | pass | pass | see the PR's run |
-| `draw_shadow_gpu` | pass | pass | see the PR's run |
-| `draw_sprite_layers_gpu` | pass | pass | see the PR's run |
-| `draw_bitmap_gpu` | pass | pass | see the PR's run |
-| `draw_minimap_gpu` | pass | pass | see the PR's run |
-| `draw_map_view_gpu` | pass | pass | see the PR's run |
-| `draw_transition_gpu` | pass | pass | see the PR's run |
-| `draw_movie_gpu` | pass | pass | see the PR's run |
-| `draw_raw_gpu` | pass | pass | see the PR's run |
-| `draw_lenses_gpu` | pass | pass | see the PR's run |
-| `draw_target_resources_gpu` | pass | pass | see the PR's run |
-| `draw_views_gpu` | pass | pass | see the PR's run |
-| `draw_frame_order_gpu` | pass | pass | see the PR's run |
-| `draw_terrain_binning_gpu` | pass | pass | see the PR's run |
-| `draw_record_binning_gpu` | pass | pass | see the PR's run |
-| `draw_asset_bytes_gpu` | pass | pass | see the PR's run |
-| `draw_one_submit_gpu` | pass | pass | see the PR's run |
-| `draw_limits_gpu` | pass | pass | see the PR's run |
-| `draw_status_gpu` | pass | pass | see the PR's run |
-| `draw_replay_host_gpu` | pass | pass | see the PR's run |
+| `lib` (`--lib --ignored`) | pass | pass | pass |
+| `gpoly_gpu` | pass | pass | pass |
+| `draw_triangles_gpu` | pass | pass | pass |
+| `draw_trig_gpu` | pass | pass | pass |
+| `draw_shadow_gpu` | pass | pass | pass |
+| `draw_sprite_layers_gpu` | pass | pass | pass |
+| `draw_bitmap_gpu` | pass | pass | pass |
+| `draw_minimap_gpu` | pass | pass | pass |
+| `draw_map_view_gpu` | pass | pass | pass |
+| `draw_transition_gpu` | pass | pass | pass |
+| `draw_movie_gpu` | pass | pass | pass |
+| `draw_raw_gpu` | pass | pass | pass |
+| `draw_lenses_gpu` | pass | pass | pass |
+| `draw_target_resources_gpu` | pass | pass | pass |
+| `draw_views_gpu` | pass | pass | pass |
+| `draw_frame_order_gpu` | pass | pass | pass |
+| `draw_terrain_binning_gpu` | pass | pass | pass |
+| `draw_record_binning_gpu` | pass | pass | pass |
+| `draw_asset_bytes_gpu` | pass | pass | pass |
+| `draw_one_submit_gpu` | pass | pass | pass |
+| `draw_limits_gpu` | pass | pass | pass |
+| `draw_status_gpu` | pass | pass | pass |
+| `draw_replay_host_gpu` | pass | pass | pass |
 
 Metal is an Apple M5 host over both arena formats; Linux is the `replay` job over
-both formats; Windows is the `windows` job over the packed arena only, since the
-packed and expanded accessors differ in host code, not in submitted GPU work. The
-Windows job runs one suite per log group and reports every failure in one pass, so
-a backend difference is attributed rather than hidden behind the first failure; its
-`windows-suite-results` artifact carries the same table for that run.
+both formats on lavapipe; Windows is the `windows` job over the packed arena only,
+on the runner's `Microsoft Basic Render Driver` DX12 software adapter, since the
+packed and expanded accessors differ in host code, not in submitted GPU work. No
+suite needed a limit beyond `wgpu::Limits::default()` on any of the three, and no
+test skipped. The Windows job runs one suite per log group and reports every failure
+in one pass, so a backend difference is attributed rather than hidden behind the
+first failure; its `windows-suite-results` artifact carries the same table for that
+run.
 
 The C oracle generators are cmake/POSIX targets built only on the Linux job, which
 publishes their fixtures as `native-oracle-fixtures` for the Windows job to replay
