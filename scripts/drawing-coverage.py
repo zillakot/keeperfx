@@ -64,8 +64,9 @@ FAMILIES = (
     dict(name="Minimap", counters=("arena_minimap_misses",), exclusive=True),
     dict(name="Movies", counters=("arena_movie_bytes", "arena_movie_misses"), exclusive=True),
     dict(name="Built-in lenses", counters=("arena_lens_bytes", "arena_lens_misses"), exclusive=True),
-    dict(name="Lua lenses, Lua pixel/batch API", counters=("cpu_barriers",), exclusive=False,
-         note="CPU path with no arena kind; a Lua-lens command counter would be needed to separate it"),
+    dict(name="Lua lenses, Lua pixel/batch API", counters=(), exclusive=False, expect="none",
+         note="no counter: the Lua callback runs behind a CPU barrier that possession itself also "
+              "takes, so cpu_barriers does not separate it; a Lua-lens command counter would"),
     dict(name="Possession lens offscreen target", counters=("target_alias_barriers",), exclusive=True),
     dict(name="Map fades / transitions",
          counters=("transition_checkpoint_bytes", "transition_snapshot_copy_bytes", "transition_commands"),
@@ -153,13 +154,19 @@ SCENES = (
         ("key", dict(key="Up", frames=30)),
         ("snapshot", {}),
     ), families=("Smoothing",)),
-    # The fade is eight game turns; under the drawing oracle the renderer would otherwise
-    # draw no frame inside it, so the simulation is slowed until the fade spans several frames.
+    # The fade is eight game turns, which the drawing oracle can step over without drawing a
+    # frame, so the simulation is slowed; the key is held long enough for a slow turn to see it.
     dict(name="map-fade", launch=dict(level=BUSY_LEVEL, ingame_res="320x200w32", turns_per_second=2), steps=(
         ("wait", dict(frames=120, until=["frontend=0", "view=1", "presenter=wgpu"])),
-        ("key", dict(key="M", until=["view=4"])),
+        ("key", dict(key="M", frames=30)),
+        ("state", {}),
+        ("wait", dict(frames=5)),
+        ("state", {}),
+        ("wait", dict(frames=30, until=["view=4"])),
         ("snapshot", {}),
-        ("key", dict(key="M", until=["view=1"])),
+        ("key", dict(key="M", frames=30)),
+        ("state", {}),
+        ("wait", dict(frames=30, until=["view=1"])),
         ("snapshot", {}),
     ), families=("Map fades / transitions",)),
     # Main menu 1, campaign selection 31, land view 3; the campaign list starts at y=167.
@@ -260,7 +267,7 @@ def summarize(scenes, results):
         row["measured_in"] = (row["nonzero_in"] if family["exclusive"]
                               else [name for name in row["nonzero_in"] if name in row["targeted_by"]])
         if row["expect"] == "none":
-            row["status"] = "no counter"
+            row["status"] = "exercised, no counter" if row["targeted_by"] else "no counter"
         elif row["expect"] == "zero":
             row["status"] = "zero as expected" if not row["nonzero_in"] else "unexpectedly non-zero"
         elif row["measured_in"]:

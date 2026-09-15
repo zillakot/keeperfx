@@ -76,6 +76,7 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(rows["Movies"]["status"], "not reached")
         self.assertEqual(rows["Legacy gpoly span sink"]["status"], "zero as expected")
         self.assertEqual(rows["General lines"]["status"], "no counter")
+        self.assertEqual(rows["Lua lenses, Lua pixel/batch API"]["status"], "no counter")
         self.assertEqual(rows["Dungeon terrain (gpoly)"]["scenes"]["busy"]["value"], 99)
 
     def test_shared_counters_are_attributed_by_scene(self):
@@ -112,6 +113,12 @@ class MatrixTests(unittest.TestCase):
         summary = COVERAGE.summarize(scenes, results)
         self.assertFalse(summary["binaries_agree"])
         self.assertIn("did not all run the same binary", COVERAGE.markdown(summary))
+
+    def test_a_family_without_a_counter_still_names_its_scene(self):
+        scenes = [scene("lua-lens", ("Lua lenses, Lua pixel/batch API",))]
+        rows = {row["family"]: row for row in
+                COVERAGE.summarize(scenes, {"lua-lens": result("lua-lens", counters())})["families"]}
+        self.assertEqual(rows["Lua lenses, Lua pixel/batch API"]["status"], "exercised, no counter")
 
     def test_scene_selection(self):
         self.assertEqual([entry["name"] for entry in COVERAGE.selected("dungeon-busy,lua-*")],
@@ -199,6 +206,7 @@ class LaunchOptionTests(unittest.TestCase):
         directory, _ = self.prepare(turns_per_second=2, movie_scaling=0)
         config = (directory / "keeperfx.cfg").read_text()
         self.assertIn("TURNS_PER_SECOND=2", config)
+        self.assertIn("DELTA_TIME=ON", config)
         self.assertIn("RESIZE_MOVIES=OFF", config)
 
     def test_rotate_mode_is_written_to_the_isolated_settings(self):

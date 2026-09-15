@@ -167,6 +167,8 @@ def prepare_session(args, work, engine, port):
     if getattr(args, "language", None):
         text = setting(text, "LANGUAGE", args.language)
     if getattr(args, "turns_per_second", None):
+        # The legacy fixed pacing ignores the rate, so the delta-time loop has to be on.
+        text = setting(text, "DELTA_TIME", "ON")
         text = setting(text, "TURNS_PER_SECOND", args.turns_per_second)
     if getattr(args, "movie_scaling", None) is not None:
         text = setting(text, "RESIZE_MOVIES", "ON" if args.movie_scaling else "OFF")
