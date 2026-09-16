@@ -14,6 +14,7 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ver_defs.h" "#define VER_STRING \"cursor
 add_executable(cursor_test cursor_test.cpp native.c
     "${KFX_ROOT}/src/bflib_mspointer.cpp"
     "${KFX_ROOT}/src/bflib_vidsurface.c"
+    "${KFX_ROOT}/src/kfx/renderer/GpolyCapture.c"
     "${KFX_ROOT}/src/kfx/renderer/WgpuCursor.cpp"
     "${KFX_ROOT}/src/kfx/renderer/software/bflib_vidraw_spr_norm.c")
 set_source_files_properties(native.c PROPERTIES COMPILE_OPTIONS "-fno-sanitize=alignment")

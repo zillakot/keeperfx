@@ -1424,6 +1424,98 @@ int main()
             assert(keyed_creates == created && live_resources == live + 1);
             assert(bridge.GetCounters().failures == 0);
         }
+        /* The cursor is a sprite whose artwork carries the cursor flag. It keys in a
+           namespace of its own, because the pointer path expands one address into
+           different coverage bytes than the sprite path does. */
+        {
+            std::vector<uint8_t> cursor_artwork = artwork;
+            cursor_artwork[0] ^= 0x33;
+            for (size_t i = 0; i < 4 * 3u; ++i) cursor_artwork[2 * i + 1] = 1;
+            KfxWgpuNativeResource cursor_art = {cursor_artwork.data(), cursor_artwork.size(),
+                1, 1, 1, nullptr, 0, 1};
+            // One pointer sprite across a scene is one upload; only the ranges are per call.
+            {
+                WgpuTerrainBridge bridge(0, false, false);
+                const uint64_t created = keyed_creates;
+                const uint64_t snapshot = bridge.GetCounters().resource_snapshot_bytes;
+                KfxWgpuSpriteAssets assets = {&cursor_art, &rng, &map, nullptr,
+                    cursor_artwork.data(), 31, KFX_REMAP_NONE};
+                for (unsigned i = 0; i < 5; ++i)
+                    assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets,
+                        nullptr, nullptr) == 1);
+                assert(keyed_creates == created + 1);
+                assert(bridge.GetCounters().resource_snapshot_bytes ==
+                    snapshot + cursor_artwork.size() + 5 * ranges.size() + remap.size());
+                assert(sprite_pixels[3 * 24 + 2] == cursor_artwork[0]);
+                // A pointer pack reloaded behind the same address: the bump re-uploads.
+                for (auto& value : cursor_artwork) value ^= 0x5a;
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets,
+                    nullptr, nullptr) == 1);
+                assert(sprite_pixels[3 * 24 + 2] == (cursor_artwork[0] ^ 0x5a) &&
+                    keyed_creates == created + 1);
+                assets.generation = 32;
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets,
+                    nullptr, nullptr) == 1);
+                assert(sprite_pixels[3 * 24 + 2] == cursor_artwork[0] &&
+                    keyed_creates == created + 2);
+                for (auto& value : cursor_artwork) value ^= 0x5a;
+            }
+            // One address on both paths stays two uploads: neither expansion serves the other.
+            {
+                WgpuTerrainBridge bridge(0, false, false);
+                const uint64_t created = keyed_creates;
+                KfxWgpuSpriteAssets cursor = {&cursor_art, &rng, &map, nullptr,
+                    cursor_artwork.data(), 41, KFX_REMAP_NONE};
+                KfxWgpuSpriteAssets sprite = {&art, &rng, &map, nullptr,
+                    cursor_artwork.data(), 41, 0};
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &cursor,
+                    nullptr, nullptr) == 1);
+                assert(sprite_pixels[3 * 24 + 2] == cursor_artwork[0]);
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &sprite,
+                    nullptr, nullptr) == 1);
+                assert(sprite_pixels[3 * 24 + 2] == artwork[0]);
+                assert(keyed_creates == created + 2);
+                assert(bridge.GetCounters().failures == 0);
+            }
+            // A key names one extent: a second extent under one generation is refused.
+            {
+                WgpuTerrainBridge bridge(0, false, false);
+                std::vector<uint8_t> shorter(cursor_artwork.begin(), cursor_artwork.end() - 2);
+                KfxWgpuNativeResource narrow = cursor_art;
+                narrow.bytes = shorter.data();
+                narrow.length = shorter.size();
+                KfxWgpuSpriteAssets assets = {&cursor_art, &rng, &map, nullptr,
+                    cursor_artwork.data(), 51, KFX_REMAP_NONE};
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets,
+                    nullptr, nullptr) == 1);
+                assets.artwork = &narrow;
+                assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets,
+                    nullptr, nullptr) == 0);
+                assert(bridge.GetCounters().failures == 1);
+            }
+            /* One name, two positions in one frame: the ranges carry where the pointer
+               sits, so verification must hold for both pixel sets. */
+            {
+                WgpuTerrainBridge bridge(0, false, true);
+                KfxWgpuSpriteAssets assets = {&cursor_art, &rng, &map, nullptr,
+                    cursor_artwork.data(), 61, KFX_REMAP_NONE};
+                const std::pair<uint32_t, uint32_t> places[] = {{2, 3}, {9, 6}};
+                for (const auto& place : places) {
+                    command.x = place.first;
+                    command.y = place.second;
+                    SpriteVerify expected = {cursor_artwork[0], place.first, place.second};
+                    assert(kfx_wgpu_native_draw_sprite(&sprite_target, &command, &assets,
+                        sprite_verify_oracle, &expected) == 1);
+                }
+                command.x = 2;
+                command.y = 3;
+                assert(sprite_pixels[3 * 24 + 2] == cursor_artwork[0]);
+                assert(sprite_pixels[6 * 24 + 9] == cursor_artwork[0]);
+                assert(bridge.GetCounters().gpu_sprite_commands == 2);
+                assert(bridge.GetCounters().verification_cpu_commands == 2);
+                assert(bridge.GetCounters().failures == 0);
+            }
+        }
     }
 #endif
     std::puts("Terrain bridge ordering, batching, resource ownership, CPU interleave and failure reconstruction passed");

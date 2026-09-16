@@ -10,19 +10,37 @@ const TARGET: u32 = 64;
 const W: usize = 9;
 const H: usize = 7;
 
+/// Only a host with no adapter at all stands down, printing why; an adapter that cannot
+/// give the storage binding these tests need is a finding, not a reason to go quiet.
 fn drawing(binding: u64) -> Option<DrawRenderer> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_limits: wgpu::Limits {
-            max_storage_buffer_binding_size: binding,
+    let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            // Own line: libtest leaves "test … ... " unterminated, and CI anchors
+            // the stand-down at the start of a line.
+            eprintln!("\nskipping: no wgpu adapter on this host: {error}");
+            return None;
+        }
+    };
+    let info = adapter.get_info();
+    let (device, queue) =
+        match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits {
+                max_storage_buffer_binding_size: binding,
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    }))
-    .ok()?;
-    let renderer = keeperfx_frame_replay::gpu::Renderer::new(device, queue).ok()?;
-    DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).ok()
+        })) {
+            Ok(pair) => pair,
+            Err(error) => panic!(
+                "on {:?} adapter {:?}: a {binding}-byte storage binding is out of reach: {error}",
+                info.backend, info.name
+            ),
+        };
+    eprintln!("running on {:?} adapter {:?}", info.backend, info.name);
+    let renderer = keeperfx_frame_replay::gpu::Renderer::new(device, queue).unwrap();
+    Some(DrawRenderer::new(&renderer, wgpu::TextureFormat::Rgba8Unorm).unwrap())
 }
 
 /// Index/coverage pairs for one opaque run per row, `2` marking the run's last pixel
