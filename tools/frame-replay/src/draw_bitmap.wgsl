@@ -1,6 +1,37 @@
+fn bitmap_split(c: Command, pixel: vec2<u32>) -> u32 {
+    let base = c.assets.x;
+    let artwork = c.options.z - 1u;
+    var lo = 0u;
+    var hi = c.source.w;
+    while lo < hi {
+        let mid = lo + (hi-lo)/2u;
+        let row = base+mid*8u;
+        if pixel.y >= asset_word(row)+asset_word(row+4u) { lo=mid+1u; }
+        else { hi=mid; }
+    }
+    if lo == c.source.w { return 256u; }
+    let row = base+lo*8u;
+    if pixel.y < asset_word(row) { return 256u; }
+    let records = artwork+asset_word(artwork+lo*8u);
+    let count = asset_word(artwork+lo*8u+4u);
+    let columns = base+c.source.w*8u;
+    var first=0u; var last=count;
+    while first < last {
+        let mid=first+(last-first)/2u;
+        let column=columns+(asset_word(records+mid*4u) & 0xffffu)*8u;
+        if pixel.x >= asset_word(column)+asset_word(column+4u) { first=mid+1u; }
+        else { last=mid; }
+    }
+    if first == count { return 256u; }
+    let record=asset_word(records+first*4u);
+    let column=columns+(record & 0xffffu)*8u;
+    if pixel.x < asset_word(column) { return 256u; }
+    return (record >> 16u) & 255u;
+}
 fn bitmap_sample(c: Command, pixel: vec2<u32>) -> u32 {
     let base = c.assets.x;
     if c.source.x == 0u {
+        if c.options.z != 0u { return bitmap_split(c, pixel); }
         var lo = 0u;
         var hi = c.source.w;
         while lo < hi {

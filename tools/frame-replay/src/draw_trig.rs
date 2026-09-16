@@ -8,6 +8,7 @@ use super::*;
 pub(super) fn validate(
     c: &Command,
     source: &Resource,
+    texture: Option<&Resource>,
     width: u32,
     height: u32,
 ) -> Result<[i64; 4]> {
@@ -24,8 +25,18 @@ pub(super) fn validate(
             && c.transparent == OPAQUE,
         "invalid general triangle bounds/options"
     );
+    let geometry = match texture {
+        Some(page) => {
+            ensure!(
+                page.bytes.len() == c.source_y as usize,
+                "invalid triangle texture page"
+            );
+            60
+        }
+        None => 60 + c.source_y as usize,
+    };
     ensure!(
-        source.bytes.len() == 60 + c.source_y as usize && c.source_y <= 65536,
+        source.bytes.len() == geometry && c.source_y <= 65536,
         "invalid triangle vertex/texture resource"
     );
     ensure!(

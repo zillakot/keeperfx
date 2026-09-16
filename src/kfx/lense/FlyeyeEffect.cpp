@@ -231,6 +231,7 @@ FlyeyeEffect::~FlyeyeEffect()
 
 void FlyeyeEffect::FreeLookupTable()
 {
+    KfxLensTablesChanged();
     if (m_lookup_table != nullptr)
     {
         free(m_lookup_table);
@@ -390,7 +391,9 @@ TbBool FlyeyeEffect::Draw(LensRenderContext* ctx)
     }
     
     KfxLensRemap(ctx->dstbuf, ctx->dstpitch, ctx->srcbuf + ctx->viewport_x,
-        ctx->srcpitch, ctx->width, ctx->height, m_lookup_table);
+        ctx->srcpitch, ctx->width, ctx->height, m_lookup_table,
+        {static_cast<uint64_t>(KFX_LENS_FLYEYE) << 32 |
+            static_cast<uint32_t>(m_current_lens), KfxLensGeneration()});
 
     ctx->buffer_copied = true;
     return true;

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define KFX_WGPU_DRAW_ABI_VERSION 2u
+#define KFX_WGPU_DRAW_ABI_VERSION 3u
 #define KFX_WGPU_DRAW_CLEAR 0u
 #define KFX_WGPU_DRAW_RECT 1u
 #define KFX_WGPU_DRAW_IMAGE 2u
@@ -38,9 +38,20 @@ extern "C" {
 #define KFX_WGPU_DRAW_TRANSITION 16u
 /* MOVIE source_x bits select width doubling, line doubling and interlace;
  * start is the signed native image origin. Packed doubling omits width tails. */
-/* TRIG source begins with three x/y/u/v/shade little-endian i32 vertices,
- * then source_y texture bytes. source_x is the native mode, source_width is
+/* TRIG source begins with three x/y/u/v/shade little-endian i32 vertices. The
+ * source_y texture bytes are a separate resource whose handle the record carries in
+ * start_low/high; an emitter with no name for the page appends them to the source
+ * instead and leaves the handle zero. source_x is the native mode, source_width is
  * the native long width (64). Table is 64 fade rows followed by 256 ghost rows. */
+/* BITMAP with source_x 0 draws a huge sprite. Its artwork -- per source row a run of
+ * little-endian u32 records holding the source column in bits 0-15 and the palette
+ * index in bits 16-23 -- is a separate resource whose handle the record carries in
+ * start_low/high. The source then holds the per-call geometry: source_height rows of
+ * destination y, copy count, artwork byte offset and record count, followed by
+ * source_width pairs of destination x and width. An emitter with no name for the
+ * artwork passes the flattened destination-space run list as the source alone. */
+/* LENS_EFFECT carries its lens map in start_low/high and its fade rows in
+ * step_low/high; a zero handle leaves that table inside the per-call source. */
 /* RAW_IMAGE covers the target; start is signed image origin and step is destination size. */
 /* Circle radius is source_width; bounds are the inclusive diameter square. */
 #define KFX_WGPU_DRAW_REPLACE 0u
@@ -183,6 +194,10 @@ uint64_t kfx_wgpu_draw_resource_create(void *drawing, const uint8_t *bytes, size
 #define KFX_WGPU_DRAW_KEY_TILED_IMAGE 6u
 #define KFX_WGPU_DRAW_KEY_GLYPH 7u
 #define KFX_WGPU_DRAW_KEY_CURSOR_ARTWORK 8u
+#define KFX_WGPU_DRAW_KEY_TRIG_TEXTURE 9u
+#define KFX_WGPU_DRAW_KEY_HUGE_SPRITE 10u
+#define KFX_WGPU_DRAW_KEY_LENS_MAP 11u
+#define KFX_WGPU_DRAW_KEY_LENS_FADE 12u
 /* Creates or resolves the resource resident for (kind, key_hi, key_lo), so repeated
  * uses of one asset keep a single handle instead of a fresh handle per command.
  * A generation the key has not been seen with takes a new handle, because the bytes

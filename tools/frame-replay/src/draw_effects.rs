@@ -8,7 +8,19 @@ fn header(bytes: &[u8]) -> Result<[u32; 16]> {
     }))
 }
 
-fn validate(command: &Command, bytes: &[u8], width: u32, height: u32) -> Result<[u32; 16]> {
+/// The lens tables a command names, `None` when they stay inside the per-call source.
+struct Tables<'a> {
+    map: Option<&'a Resource>,
+    fade: Option<&'a Resource>,
+}
+
+fn validate(
+    command: &Command,
+    bytes: &[u8],
+    tables: &Tables,
+    width: u32,
+    height: u32,
+) -> Result<[u32; 16]> {
     let h = header(bytes)?;
     ensure!(
         command.abi_version == ABI_VERSION
@@ -42,12 +54,17 @@ fn validate(command: &Command, bytes: &[u8], width: u32, height: u32) -> Result<
             && h[11] == 64,
         "invalid lens parameters"
     );
+    let named = tables.map.is_some();
+    ensure!(
+        named == (h[12] == 0 && h[13] == 0),
+        "a named lens table must leave its source offset unset"
+    );
     let source_length = (height as u64 - 1) * h[3] as u64 + width as u64;
     let destination_length = (height as u64 - 1) * h[4] as u64 + width as u64;
     ensure!(
         source_length <= 32 * 1024 * 1024
             && destination_length <= 32 * 1024 * 1024
-            && h[12] as u64 == 64 + source_length,
+            && (named || h[12] as u64 == 64 + source_length),
         "invalid lens source extent"
     );
     ensure!(
@@ -65,11 +82,20 @@ fn validate(command: &Command, bytes: &[u8], width: u32, height: u32) -> Result<
             h[14] as u64 * h[15] as u64
         }
     };
-    ensure!(
-        h[13] as u64 == h[12] as u64 + asset_length
-            && bytes.len() as u64 == h[13] as u64 + if h[0] == 1 { 33 * 256 } else { 0 },
-        "invalid lens asset extent"
-    );
+    let fade_length = if h[0] == 1 { 33 * 256 } else { 0 };
+    match tables.map {
+        Some(map) => ensure!(
+            map.bytes.len() as u64 == asset_length
+                && bytes.len() as u64 == 64 + source_length
+                && tables.fade.map_or(0, |f| f.bytes.len() as u64) == fade_length,
+            "invalid named lens table extent"
+        ),
+        None => ensure!(
+            h[13] as u64 == h[12] as u64 + asset_length
+                && bytes.len() as u64 == h[13] as u64 + fade_length,
+            "invalid lens asset extent"
+        ),
+    }
     let sw = if h[0] == 2 { h[14] } else { 640 };
     let sh = if h[0] == 2 { h[15] } else { 480 };
     ensure!(
@@ -77,7 +103,11 @@ fn validate(command: &Command, bytes: &[u8], width: u32, height: u32) -> Result<
         "invalid lens scaling"
     );
     if h[0] == 0 {
-        for pair in bytes[h[12] as usize..].as_chunks::<4>().0 {
+        let lookup = match tables.map {
+            Some(map) => &map.bytes[..],
+            None => &bytes[h[12] as usize..],
+        };
+        for pair in lookup.as_chunks::<4>().0 {
             let x = i16::from_le_bytes(pair[..2].try_into().unwrap());
             let y = i16::from_le_bytes(pair[2..].try_into().unwrap());
             ensure!(
@@ -100,7 +130,24 @@ impl DrawRenderer {
             .resources
             .get(&command.source)
             .context("unknown lens source")?;
-        let h = validate(command, &source.bytes, target.width, target.height)?;
+        let (map_id, fade_id) = sprites::handles(command);
+        ensure!(
+            map_id != 0 || fade_id == 0,
+            "a lens fade table without a lens map"
+        );
+        let h = {
+            let tables = Tables {
+                map: match map_id {
+                    0 => None,
+                    id => Some(self.resources.get(&id).context("unknown lens map")?),
+                },
+                fade: match fade_id {
+                    0 => None,
+                    id => Some(self.resources.get(&id).context("unknown lens fade rows")?),
+                },
+            };
+            validate(command, &source.bytes, &tables, target.width, target.height)?
+        };
         let dispatch = if h[6] != 0 {
             [1, 1]
         } else {
@@ -145,6 +192,16 @@ impl DrawRenderer {
             limit,
         );
         let base = packer.offset(command.source, bytes, ResourceKind::Lens)?;
+        let mut bases = [0u32; 2];
+        for (slot, id) in [map_id, fade_id].into_iter().enumerate() {
+            if id != 0 {
+                let table = self.resources.get(&id).context("unknown lens table")?;
+                bases[slot] = packer
+                    .offset(id, &table.bytes, ResourceKind::Lens)?
+                    .checked_add(1)
+                    .context("lens table offset overflow")?;
+            }
+        }
         let words = packer.finish();
         let assets = match &words {
             Some(words) => byte_buffer(
@@ -164,7 +221,16 @@ impl DrawRenderer {
             &self.device,
             &mut self.counters,
             "effect target view",
-            &[target.width, target.pitch, target.offset, base],
+            &[
+                target.width,
+                target.pitch,
+                target.offset,
+                base,
+                bases[0],
+                bases[1],
+                0,
+                0,
+            ],
             wgpu::BufferUsages::UNIFORM,
         );
         let pipeline = self.effects.clone().unwrap();
@@ -200,6 +266,11 @@ impl DrawRenderer {
 mod tests {
     use super::*;
 
+    const NO_TABLES: Tables<'static> = Tables {
+        map: None,
+        fade: None,
+    };
+
     #[test]
     fn malformed_lens_resources_reject_before_submission() {
         let h: [u32; 16] = [
@@ -230,15 +301,15 @@ mod tests {
             clip_height: 2,
             ..Command::default()
         };
-        validate(&command, &bytes, 2, 2).unwrap();
+        validate(&command, &bytes, &NO_TABLES, 2, 2).unwrap();
         bytes[68] = 255;
         bytes[69] = 255;
-        assert!(validate(&command, &bytes, 2, 2).is_err());
+        assert!(validate(&command, &bytes, &NO_TABLES, 2, 2).is_err());
         bytes[68] = 2;
         bytes[69] = 0;
-        assert!(validate(&command, &bytes, 2, 2).is_err());
+        assert!(validate(&command, &bytes, &NO_TABLES, 2, 2).is_err());
         bytes[68] = 0;
-        assert!(validate(&command, &bytes[..83], 2, 2).is_err());
+        assert!(validate(&command, &bytes[..83], &NO_TABLES, 2, 2).is_err());
         assert!(
             validate(
                 &Command {
@@ -246,12 +317,13 @@ mod tests {
                     ..command
                 },
                 &bytes,
+                &NO_TABLES,
                 2,
                 2
             )
             .is_err()
         );
         bytes[24] = 2;
-        assert!(validate(&command, &bytes, 2, 2).is_err());
+        assert!(validate(&command, &bytes, &NO_TABLES, 2, 2).is_err());
     }
 }

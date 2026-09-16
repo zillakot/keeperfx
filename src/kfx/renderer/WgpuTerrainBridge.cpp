@@ -84,6 +84,20 @@ extern "C" int kfx_wgpu_native_draw_sprite(const KfxGpolyTarget* target,
         oracle, oracle_context, assets);
 }
 
+extern "C" int kfx_wgpu_native_draw_parts(const KfxGpolyTarget* target,
+    const KfxWgpuDrawCommand* command, const KfxWgpuNativeResource* source,
+    const KfxWgpuNativePart* parts, unsigned count, const KfxWgpuNativeResource* table,
+    KfxWgpuNativeOracle oracle, void* oracle_context)
+{
+    if (active_bridge == nullptr || active_bridge->IsOracleActive() || target == nullptr ||
+        command == nullptr || count > KFX_WGPU_NATIVE_PARTS ||
+        (count != 0 && parts == nullptr)) return 0;
+    for (unsigned i = 0; i < count; ++i)
+        if (parts[i].resource.bytes == nullptr || parts[i].resource.tail != nullptr) return 0;
+    return active_bridge->SubmitNative(*target, *command, source, table, oracle, oracle_context,
+        nullptr, nullptr, parts, count);
+}
+
 extern "C" uint64_t kfx_wgpu_native_snapshot(const KfxGpolyTarget* target,
     uint32_t width, uint32_t height, uint32_t pitch, uint8_t* checkpoint)
 {
@@ -1181,7 +1195,8 @@ void WgpuTerrainBridge::EmitterBoundary()
 int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
     const KfxWgpuDrawCommand& command, const KfxWgpuNativeResource* source,
     const KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context,
-    const KfxWgpuSpriteAssets* sprite, const KfxWgpuNativeKey* name)
+    const KfxWgpuSpriteAssets* sprite, const KfxWgpuNativeKey* name,
+    const KfxWgpuNativePart* parts, unsigned part_count)
 {
     const KfxWgpuNativeResource* ranges = sprite != nullptr ? sprite->ranges : nullptr;
     const KfxWgpuNativeResource* remap = sprite != nullptr ? sprite->remap : nullptr;
@@ -1232,8 +1247,11 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
             return resource && (aliases_range(resource->bytes, resource->length) ||
                 aliases_range(resource->tail, resource->tail_length));
         };
-        if (aliases_target(source) || aliases_target(ranges) || aliases_target(remap) ||
-            aliases_target(table)) {
+        bool aliased = aliases_target(source) || aliases_target(ranges) ||
+            aliases_target(remap) || aliases_target(table);
+        for (unsigned i = 0; i < part_count; ++i)
+            aliased = aliases_target(&parts[i].resource) || aliased;
+        if (aliased) {
             ++m_counts.target_alias_barriers;
             for (const auto* resource : {source, ranges, remap, table}) {
                 if (resource == nullptr) continue;
@@ -1241,6 +1259,9 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
                 if (resource->tail && !ReadBarrier(resource->tail, resource->tail_length))
                     return Fail(nullptr);
             }
+            for (unsigned i = 0; i < part_count; ++i)
+                if (!ReadBarrier(parts[i].resource.bytes, parts[i].resource.length))
+                    return Fail(nullptr);
         }
         KfxWgpuDrawCommand owned = command;
         OwnedResource guard = {m_context, 0};
@@ -1298,6 +1319,16 @@ int WgpuTerrainBridge::SubmitNative(const KfxGpolyTarget& target,
             owned.step_low = static_cast<uint32_t>(remap_handle);
             owned.step_high = static_cast<uint32_t>(remap_handle >> 32);
         }
+        for (unsigned i = 0; i < part_count; ++i) {
+            const KfxWgpuNativeResource& asset = parts[i].resource;
+            const KfxWgpuNativeKey& key = parts[i].name;
+            const uint64_t handle = KeyedResourceRaw(key.kind, key.hi, key.lo, key.generation,
+                asset.bytes, {asset.length, asset.width, asset.height, asset.pitch});
+            if (handle == 0) return Fail(nullptr);
+            uint32_t* const words = i == 0 ? &owned.start_low : &owned.step_low;
+            words[0] = static_cast<uint32_t>(handle);
+            words[1] = static_cast<uint32_t>(handle >> 32);
+        }
         bool success = false;
         if (resources_ready) {
             AppendCommand(owned, guard.Take());
@@ -1346,4 +1377,7 @@ extern "C" int kfx_wgpu_native_draw_named(const KfxGpolyTarget*, const KfxWgpuDr
     KfxWgpuNativeOracle, void*) { return 0; }
 extern "C" int kfx_wgpu_native_draw_sprite(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
     const KfxWgpuSpriteAssets*, KfxWgpuNativeOracle, void*) { return 0; }
+extern "C" int kfx_wgpu_native_draw_parts(const KfxGpolyTarget*, const KfxWgpuDrawCommand*,
+    const KfxWgpuNativeResource*, const KfxWgpuNativePart*, unsigned,
+    const KfxWgpuNativeResource*, KfxWgpuNativeOracle, void*) { return 0; }
 #endif

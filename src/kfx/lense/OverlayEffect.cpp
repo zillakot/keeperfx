@@ -46,7 +46,7 @@ public:
     
     TbBool LoadOverlay(long lens_idx);
     void Render(unsigned char *dstbuf, long dstpitch, unsigned char *srcbuf, long srcpitch, 
-                long width, long height);
+                long width, long height, long lens_idx);
     
 private:
     OverlayEffect* m_parent;         // Parent effect for asset loading
@@ -159,7 +159,7 @@ TbBool COverlayRenderer::LoadOverlay(long lens_idx)
 }
 
 void COverlayRenderer::Render(unsigned char *dstbuf, long dstpitch, unsigned char *srcbuf, long srcpitch,
-                              long width, long height)
+                              long width, long height, long lens_idx)
 {
     if (!m_loaded || m_overlay_data == NULL)
     {
@@ -167,7 +167,9 @@ void COverlayRenderer::Render(unsigned char *dstbuf, long dstpitch, unsigned cha
     }
     
     KfxLensOverlay(dstbuf, dstpitch, srcbuf, srcpitch, width, height,
-        m_overlay_data, m_width, m_height, m_alpha);
+        m_overlay_data, m_width, m_height, m_alpha,
+        {static_cast<uint64_t>(KFX_LENS_OVERLAY) << 32 | static_cast<uint32_t>(lens_idx),
+            KfxLensGeneration()});
 }
 
 /******************************************************************************/
@@ -188,6 +190,7 @@ OverlayEffect::~OverlayEffect()
 TbBool OverlayEffect::Setup(long lens_idx)
 {
     SYNCDBG(8, "Setting up overlay effect for lens %ld", lens_idx);
+    KfxLensTablesChanged();
     
     struct LensConfig* cfg = get_lens_config(lens_idx);
     if (cfg == NULL)
@@ -222,6 +225,7 @@ TbBool OverlayEffect::Setup(long lens_idx)
 
 void OverlayEffect::Cleanup()
 {
+    KfxLensTablesChanged();
     if (m_current_lens >= 0)
     {
         if (m_user_data != NULL)
@@ -248,7 +252,7 @@ TbBool OverlayEffect::Draw(LensRenderContext* ctx)
     // Overlay reads from source (3D view) and composites with overlay sprite to destination
     unsigned char* viewport_src = ctx->srcbuf + ctx->viewport_x;
     renderer->Render(ctx->dstbuf, ctx->dstpitch, viewport_src, ctx->srcpitch,
-                    ctx->width, ctx->height);
+                    ctx->width, ctx->height, m_current_lens);
     
     ctx->buffer_copied = true;  // We wrote the full frame to dstbuf
     return true;

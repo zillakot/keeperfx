@@ -19,6 +19,9 @@ fn native_general_triangles() -> Result<()> {
     let target = draw.create_target(width, height)?;
     let texture = data[..65536].to_vec();
     data = &data[65536..];
+    // The page is one asset for every triangle that samples it, so the per-call source
+    // is the 60 geometry bytes alone.
+    let page = draw.create_resource(&texture, 1, 1, 1)?;
     let table = draw.create_resource(&data[..81920], 256, 320, 256)?;
     data = &data[81920..];
     draw.submit(
@@ -32,6 +35,9 @@ fn native_general_triangles() -> Result<()> {
     let mut commands = Vec::new();
     let mut sources = Vec::new();
     let mut last = None;
+    let mut first_textured_geometry = None;
+    let mut texture_uploaded = false;
+    let mut warm_geometry_varied = false;
     for n in 0..count {
         let mode = word(&mut data);
         let colour = word(&mut data);
@@ -39,7 +45,8 @@ fn native_general_triangles() -> Result<()> {
         data = &data[60..];
         let textured = matches!(mode, 2 | 3 | 5..=13 | 18..=26);
         if textured {
-            source.extend_from_slice(&texture);
+            let first = first_textured_geometry.get_or_insert_with(|| source.clone());
+            warm_geometry_varied |= texture_uploaded && source != *first;
         }
         let source_id = draw.create_resource(&source, 1, 1, 1)?;
         source.fill(0);
@@ -53,6 +60,8 @@ fn native_general_triangles() -> Result<()> {
             width,
             height,
             colour,
+            start_low: if textured { page as u32 } else { 0 },
+            start_high: if textured { (page >> 32) as u32 } else { 0 },
             ..Default::default()
         };
         commands.push(command);
@@ -61,7 +70,22 @@ fn native_general_triangles() -> Result<()> {
         let expected = &data[..(width * height) as usize];
         data = &data[expected.len()..];
         if commands.len() == 6 || n + 1 == count {
+            let before = draw.counters();
             draw.submit(target, &commands)?;
+            let after = draw.counters();
+            if texture_uploaded {
+                ensure!(
+                    after.arena_trig_texture_source_bytes == before.arena_trig_texture_source_bytes,
+                    "triangle {n}: resident texture page was uploaded again"
+                );
+            } else if commands.iter().any(|command| command.source_y != 0) {
+                ensure!(
+                    after.arena_trig_texture_source_bytes - before.arena_trig_texture_source_bytes
+                        == 65536,
+                    "triangle {n}: first textured batch did not upload the full texture page"
+                );
+                texture_uploaded = true;
+            }
             let result = draw.readback(target)?;
             if result != expected {
                 let i = result
@@ -83,6 +107,10 @@ fn native_general_triangles() -> Result<()> {
             }
         }
     }
+    ensure!(
+        warm_geometry_varied,
+        "fixture did not reuse the resident texture page with different geometry"
+    );
     let original = draw.readback(target)?;
     let command = last.unwrap();
     ensure!(

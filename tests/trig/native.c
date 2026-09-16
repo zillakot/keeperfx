@@ -9,6 +9,7 @@ void native_trig_case(unsigned mode, int cpu, uint8_t *output)
     vec_screen = pixels + 83; poly_screen = pixels; vec_map = block_mem;
     for (unsigned i = 0; i < sizeof(texture); i++) texture[i] = ((i * 13) ^ (i >> 8)) & 63;
     memcpy(block_mem, texture, sizeof(texture));
+    kfx_render_assets_changed();
     for (unsigned i = 0; i < sizeof(pixmap.fade_tables); i++) pixmap.fade_tables[i] = (i * 7) ^ (i >> 8);
     for (unsigned i = 0; i < sizeof(pixmap.ghost); i++) pixmap.ghost[i] = (i * 17) ^ (i >> 8);
     vec_mode = mode; vec_colour = 17;
@@ -42,6 +43,8 @@ void native_trig_extent_case(unsigned variant, int cpu, uint8_t *output)
     vec_map = variant == 3 ? texture : block_mem + offset[variant == 4 ? 0 : variant];
     unsigned sample = variant == 3 ? 0 : index[variant == 4 ? 0 : variant];
     vec_map[sample] = 39;
+    /* The page is keyed by its offset in block_mem: rewriting it is an asset change. */
+    kfx_render_assets_changed();
     vec_mode = variant == 4 ? 26 : 2; vec_colour = 17;
     struct PolyPoint a = {0,0,(sample & 255)*65536,(sample >> 8)*65536,31*65536};
     struct PolyPoint b = a, c = a; b.X = 70; c.Y = 60;

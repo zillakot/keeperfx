@@ -9,6 +9,9 @@ static FILE *fixture;
 static unsigned submissions, count, barriers;
 static int enabled = 1, decline, barrier_ok = 1;
 static struct { int keyed; uint32_t kind; uint64_t hi, lo, generation; } last_key;
+struct PartRecord { unsigned count; size_t length; uint32_t kind; uint64_t hi, lo, generation;
+    const uint8_t *bytes; };
+static struct PartRecord pending_part, last_part;
 enum { WIDTH = 83, HEIGHT = 61, SIZE = WIDTH * HEIGHT };
 static uint8_t pixels[SIZE], expected[SIZE], initial[SIZE];
 static void require(int condition, const char *message)
@@ -28,6 +31,16 @@ int kfx_wgpu_native_draw(const struct KfxGpolyTarget *target,
 {
     return kfx_wgpu_native_draw_named(target, command, source, NULL, table, oracle, context);
 }
+int kfx_wgpu_native_draw_parts(const struct KfxGpolyTarget *target,
+    const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
+    const struct KfxWgpuNativePart *parts, unsigned count,
+    const struct KfxWgpuNativeResource *table, KfxWgpuNativeOracle oracle, void *context)
+{
+    require(count == 1, "unexpected part count");
+    pending_part = (struct PartRecord){count, parts[0].resource.length, parts[0].name.kind,
+        parts[0].name.hi, parts[0].name.lo, parts[0].name.generation, parts[0].resource.bytes};
+    return kfx_wgpu_native_draw_named(target, command, source, NULL, table, oracle, context);
+}
 int kfx_wgpu_native_draw_named(const struct KfxGpolyTarget *target,
     const struct KfxWgpuDrawCommand *command, const struct KfxWgpuNativeResource *source,
     const struct KfxWgpuNativeKey *name, const struct KfxWgpuNativeResource *table,
@@ -35,6 +48,8 @@ int kfx_wgpu_native_draw_named(const struct KfxGpolyTarget *target,
 {
     (void)table;
     submissions++;
+    last_part = pending_part;
+    pending_part = (struct PartRecord){0};
     last_key.keyed = name != NULL;
     last_key.kind = name ? name->kind : 0;
     last_key.hi = name ? name->hi : 0;
@@ -52,10 +67,12 @@ int kfx_wgpu_native_draw_named(const struct KfxGpolyTarget *target,
     require(!memcmp(pixels, initial, SIZE), "oracle changed native target");
     if (fixture) {
         uint32_t info[] = {target->width, target->height, target->pitch,
-            source ? source->width : 0, source ? source->height : 0, source ? source->pitch : 0, source ? source->length : 0};
+            source ? source->width : 0, source ? source->height : 0, source ? source->pitch : 0,
+            source ? source->length : 0, (uint32_t)last_part.length};
         fwrite(info, sizeof(info), 1, fixture);
         fwrite(command, sizeof(*command), 1, fixture);
         if (source) fwrite(source->bytes, source->length, 1, fixture);
+        if (last_part.length) fwrite(last_part.bytes, last_part.length, 1, fixture);
         fwrite(expected, SIZE, 1, fixture);
         count++;
     }
@@ -151,6 +168,9 @@ int main(int argc, char **argv)
         word(rle + length, 0); length += 4;
     }
     struct TbHugeSprite huge = {rle, lines, 7, 5};
+    /* Named artwork: the runs are the sprite's own, the scroll and clip are the call's. */
+    kfx_render_asset_range(rle, sizeof(rle));
+    kfx_render_asset_range(lines, sizeof(lines));
     int scales[] = {8, 16, 24, 32, 48, 80};
     for (unsigned s = 0; s < 6; s++)
         for (int x = -4; x <= 4; x += 2)
@@ -158,6 +178,11 @@ int main(int argc, char **argv)
                 unsigned old = submissions;
                 LbHugeSpriteDraw(&huge, length, pixels, WIDTH, HEIGHT, x, y, scales[s]);
                 require(submissions == old + 1, "valid huge sprite declined");
+                require(last_part.count == 1 && last_part.kind == KFX_WGPU_DRAW_KEY_HUGE_SPRITE &&
+                    last_part.hi == (uint64_t)(uintptr_t)lines &&
+                    last_part.lo == (uint64_t)(uintptr_t)rle &&
+                    last_part.generation == kfx_render_asset_generation,
+                    "huge artwork name wrong");
             }
     uint8_t wide_rle[65536]; int32_t wide_lines[61];
     int huge_sizes[][2] = {{17,23},{83,61},{127,89}};
@@ -183,6 +208,7 @@ int main(int argc, char **argv)
                 unsigned old = submissions;
                 LbHugeSpriteDraw(&wide, used, pixels, WIDTH, HEIGHT, shift * 7, shift * 11, scales[scale]);
                 require(submissions == old + 1, "clipped huge row declined");
+                require(last_part.count == 0, "unnamed huge artwork was named");
             }
     }
     LbSpriteSetScalingData(0, 0, 7, 5, 7, 5);

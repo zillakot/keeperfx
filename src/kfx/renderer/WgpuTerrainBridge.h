@@ -54,6 +54,18 @@ int kfx_wgpu_native_draw_named(const struct KfxGpolyTarget* target,
     const struct KfxWgpuDrawCommand* command, const struct KfxWgpuNativeResource* source,
     const struct KfxWgpuNativeKey* name, const struct KfxWgpuNativeResource* table,
     KfxWgpuNativeOracle oracle, void* oracle_context);
+/* An immutable asset a command names beside its per-call source. Every part is named:
+ * an emitter with no name for its bytes packs them into the source instead. The handles
+ * travel in the record's accumulator words, which these kinds leave free. */
+struct KfxWgpuNativePart {
+    struct KfxWgpuNativeResource resource;
+    struct KfxWgpuNativeKey name;
+};
+enum { KFX_WGPU_NATIVE_PARTS = 2 };
+int kfx_wgpu_native_draw_parts(const struct KfxGpolyTarget* target,
+    const struct KfxWgpuDrawCommand* command, const struct KfxWgpuNativeResource* source,
+    const struct KfxWgpuNativePart* parts, unsigned count,
+    const struct KfxWgpuNativeResource* table, KfxWgpuNativeOracle oracle, void* oracle_context);
 /* A sprite's three resources: artwork of 2*w*h index/coverage pairs, per-call scaling
  * ranges and a 256-byte remap. identity is a stable address naming the artwork, under
  * which the drawing context keeps it resident instead of re-uploading it per command;
@@ -141,7 +153,8 @@ public:
     int SubmitNative(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table,
         KfxWgpuNativeOracle oracle, void* oracle_context,
-        const KfxWgpuSpriteAssets* sprite = nullptr, const KfxWgpuNativeKey* name = nullptr);
+        const KfxWgpuSpriteAssets* sprite = nullptr, const KfxWgpuNativeKey* name = nullptr,
+        const KfxWgpuNativePart* parts = nullptr, unsigned part_count = 0);
     int SubmitShadow(const KfxGpolyTarget& target, const KfxWgpuDrawCommand& command,
         const KfxWgpuNativeResource* source, const KfxWgpuNativeResource* table, uint8_t* scratch,
         KfxWgpuNativeOracle oracle, void* oracle_context);
