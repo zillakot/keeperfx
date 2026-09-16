@@ -1515,6 +1515,33 @@ impl AssetPacker<'_> {
         self.prefix(id, bytes, bytes.len(), kind)
     }
 
+    pub(super) fn trig_texture_offset(&mut self, id: u64, bytes: &[u8]) -> Result<u32> {
+        match self {
+            Self::Arena {
+                device,
+                queue,
+                arena,
+                counters,
+                generation,
+            } => {
+                let source_before = counters.arena_by_kind[arena_kinds::TRIG_KIND].source_bytes;
+                let texture_before = counters.arena_trig_texture_source_bytes;
+                let offset = arena.offset_of(
+                    device,
+                    queue,
+                    counters,
+                    (id, *generation),
+                    bytes,
+                    ResourceKind::Trig,
+                )?;
+                counters.arena_trig_texture_source_bytes = texture_before
+                    + (counters.arena_by_kind[arena_kinds::TRIG_KIND].source_bytes - source_before);
+                Ok(offset)
+            }
+            Self::Batch { .. } => self.offset(id, bytes, ResourceKind::Trig),
+        }
+    }
+
     /// Only the batch path honours `length`; the arena keeps whole resources
     /// resident and the kernels read no further than their own bounds.
     pub(super) fn prefix(
@@ -1889,7 +1916,7 @@ fn pack_records<'a>(
                 if let Some(page) = texture {
                     split = true;
                     part_offset = packer
-                        .offset(texture_id, &page.bytes, ResourceKind::Trig)?
+                        .trig_texture_offset(texture_id, &page.bytes)?
                         .checked_add(1)
                         .context("trig texture offset overflow")?;
                 }

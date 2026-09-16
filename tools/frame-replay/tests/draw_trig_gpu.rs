@@ -35,12 +35,19 @@ fn native_general_triangles() -> Result<()> {
     let mut commands = Vec::new();
     let mut sources = Vec::new();
     let mut last = None;
+    let mut first_textured_geometry = None;
+    let mut texture_uploaded = false;
+    let mut warm_geometry_varied = false;
     for n in 0..count {
         let mode = word(&mut data);
         let colour = word(&mut data);
         let mut source = data[..60].to_vec();
         data = &data[60..];
         let textured = matches!(mode, 2 | 3 | 5..=13 | 18..=26);
+        if textured {
+            let first = first_textured_geometry.get_or_insert_with(|| source.clone());
+            warm_geometry_varied |= texture_uploaded && source != *first;
+        }
         let source_id = draw.create_resource(&source, 1, 1, 1)?;
         source.fill(0);
         let command = Command {
@@ -63,7 +70,22 @@ fn native_general_triangles() -> Result<()> {
         let expected = &data[..(width * height) as usize];
         data = &data[expected.len()..];
         if commands.len() == 6 || n + 1 == count {
+            let before = draw.counters();
             draw.submit(target, &commands)?;
+            let after = draw.counters();
+            if texture_uploaded {
+                ensure!(
+                    after.arena_trig_texture_source_bytes == before.arena_trig_texture_source_bytes,
+                    "triangle {n}: resident texture page was uploaded again"
+                );
+            } else if commands.iter().any(|command| command.source_y != 0) {
+                ensure!(
+                    after.arena_trig_texture_source_bytes - before.arena_trig_texture_source_bytes
+                        == 65536,
+                    "triangle {n}: first textured batch did not upload the full texture page"
+                );
+                texture_uploaded = true;
+            }
             let result = draw.readback(target)?;
             if result != expected {
                 let i = result
@@ -85,10 +107,9 @@ fn native_general_triangles() -> Result<()> {
             }
         }
     }
-    let texture_bytes = draw.counters().arena_trig_texture_source_bytes;
     ensure!(
-        texture_bytes <= 65536,
-        "the page was uploaded more than once: {texture_bytes} texture source bytes"
+        warm_geometry_varied,
+        "fixture did not reuse the resident texture page with different geometry"
     );
     let original = draw.readback(target)?;
     let command = last.unwrap();
